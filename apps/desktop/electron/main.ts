@@ -1206,24 +1206,25 @@ if (IS_WINDOWS || process.platform === 'linux') {
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 
-// Keep the renderer's PROCESS priority normal while its windows are hidden —
-// a deprioritized renderer streams a live answer visibly slower once the
-// window is minimized. This switch only affects scheduling priority; it does
-// not exempt timers from throttling and costs nothing at idle.
-//
-// The timer/rAF throttling story is deliberately NOT handled here anymore.
+// The timer/rAF throttling story is deliberately NOT handled here.
 // The old process-wide `disable-background-timer-throttling` /
 // `disable-backgrounding-occluded-windows` switches (plus a static
 // `backgroundThrottling: false` on every chat window) pinned every renderer's
 // `document.visibilityState` to 'visible' forever — which silently turned all
 // the renderer's visibility-gated backstop polls and clock ticks into
 // always-on timers. A completely idle, minimized Hermes burned ~20% CPU
-// around the clock. Throttling is now a runtime dial scoped to streaming:
-// see createStreamThrottle() — chat windows are unthrottled while any turn is
-// in flight (so a live answer keeps painting while blurred, occluded, or
-// minimized, exactly as before) and return to Chromium's default throttling
-// once the work settles.
-app.commandLine.appendSwitch('disable-renderer-backgrounding')
+// around the clock. Throttling is now a runtime dial scoped to streaming and
+// to whether the window is actually on screen: see createStreamThrottle() —
+// a visible window is unthrottled while any turn is in flight, and a
+// minimized / hidden / other-Space window keeps Chromium's throttling even
+// mid-turn, because nobody is looking at the frames it would paint.
+//
+// `disable-renderer-backgrounding` is gone with them. It kept hidden windows'
+// renderers at normal scheduling priority, so macOS left them on P-cores and
+// they kept painting the compositor for a window the user cannot see. The
+// only thing it bought was a marginally faster catch-up when a minimized
+// window was restored, which the store makes redundant: the deltas are
+// already applied, and the first paint after `show` renders the transcript.
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 

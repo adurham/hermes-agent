@@ -4,6 +4,37 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (desktop) — a busy app pinned the compositor with its window minimized
+
+**Symptom (owner, on battery).** Six live Desktop sessions, pack drawing **44 W** with the battery
+falling ~1%/3 min. Per-process CPU by cputime delta: gateway python 35% of a core (a turn was
+genuinely running), **renderer 12.6%**, GPU helper 6.8%, main 1.6%, WindowServer 42%. The renderer was
+spending that while the window sat behind Safari, where nothing it painted could be seen.
+
+**Cause.** `createStreamThrottle()` implemented "a turn may be in flight, so paint" as "**every**
+registered chat window gets `setBackgroundThrottling(false)`", and `disable-renderer-backgrounding`
+kept every hidden renderer at normal scheduling priority. With several sessions live, at least one
+turn is always in flight, so the app was never throttled — exactly the ~20%-CPU-while-minimized state
+that the static `backgroundThrottling: false` flag used to cause before the dial replaced it.
+
+**Fix.** The dial is per window and visibility-scoped: a window that is minimized or hidden keeps
+Chromium's throttling **even mid-turn** — the deltas are already applied in the store, so the first
+paint after `show` renders the whole transcript — while a window that is on screen still paints at
+full cadence. `show`/`hide`/`minimize`/`restore` re-apply it in both directions, and
+`disable-renderer-backgrounding` is gone so a hidden renderer is also scheduled on efficiency cores.
+Nothing changes for the visible case, and everything still re-throttles 5 s after the last turn
+settles.
+
+**Verification.** `electron/stream-throttle.test.ts` covers minimized→shown and hidden→shown in both
+directions, a window registered while hidden, and the trailing re-throttle. Live wattage numbers wait
+on a rebuild, because the running app predates the change.
+
+**Still open.** A window that is merely *occluded* (another app in front, not minimized) still
+reports `isVisible() === true` in Electron, so it keeps painting; only Chromium's own occlusion
+tracking knows better, and `setBackgroundThrottling(false)` overrides it. The fix for that is a
+renderer→main visibility report, not another geometry guess.
+
+
 ### 2026-10-30 (gateway) — a Desktop chat's queued row could be deleted, never sent
 
 The owner: "I need a way to force send a specific queued message too" (screenshot: the 1Password chat's
