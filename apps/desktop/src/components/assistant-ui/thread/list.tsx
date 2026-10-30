@@ -1248,10 +1248,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       resizeObserver.observe(contentRef.current)
     }
 
-    const cancelRestore = () => {
-      // No trace here on purpose: this runs from the restore effect's cleanup, i.e. once per content
-      // height change — while the transcript is growing it fires every frame and drowns the log
-      // (measured: 2650 of 2924 trace lines).
+    const cancelRestore = (reason: string) => {
+      // Only an IN-FLIGHT restore is interesting here (the glue has not landed): the effect cleanup
+      // also calls this on every content height change, which would drown the log. What matters is
+      // which input abandoned a restore mid-flight — a stray trackpad wheel during a reveal, a
+      // layout-induced foreign scroll, or the reader deliberately taking over.
+      if (!loadSettledRef.current) {
+        scrollTrace('cancel', {
+          client: el.clientHeight,
+          height: el.scrollHeight,
+          key: sessionKey,
+          parkedFromBottom: restoreFromBottomRef.current,
+          reason,
+          target,
+          top: el.scrollTop
+        })
+      }
+
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
@@ -1268,7 +1281,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
     }
 
-    cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
+    cancelRestoreRef.current = target.kind === 'offset' ? () => cancelRestore('ref') : () => resizeObserver.disconnect()
 
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
@@ -1282,7 +1295,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
 
       if (event.deltaY !== 0) {
-        cancelRestore()
+        cancelRestore(`wheel:${Math.round(event.deltaY)}`)
       }
     }
 
@@ -1295,11 +1308,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         return
       }
 
-      cancelRestore()
+      cancelRestore(`foreign-scroll:${Math.round(el.scrollTop)}:own=${Math.round(ownScrollTop ?? -1)}`)
     }
 
     jumpRestoreRef.current = () => {
-      cancelRestore()
+      cancelRestore('jump')
       // A jump replaces reading intent, including an in-flight prepend anchor.
       // Re-arm resize protection: deferred markdown may grow after this click.
       target = THREAD_SCROLL_BOTTOM
@@ -1322,8 +1335,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     el.addEventListener('wheel', onWheel, { passive: true })
     el.addEventListener('scroll', onScroll, { passive: true })
-    el.addEventListener('pointerdown', cancelRestore, { passive: true })
-    el.addEventListener('keydown', cancelRestore)
+    el.addEventListener('pointerdown', () => cancelRestore('pointerdown'), { passive: true })
+    el.addEventListener('keydown', () => cancelRestore('keydown'))
 
     return () => {
       cancelRestoreRef.current = null
@@ -1332,8 +1345,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       jumpRestoreRef.current = null
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('scroll', onScroll)
-      el.removeEventListener('pointerdown', cancelRestore)
-      el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)
       releaseSwitching()
       record()
