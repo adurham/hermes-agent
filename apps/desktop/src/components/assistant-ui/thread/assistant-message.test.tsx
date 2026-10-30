@@ -25,9 +25,13 @@ import { Thread } from '.'
 const requestFreshSession = vi.hoisted(() => vi.fn())
 const startManualProviderOAuth = vi.hoisted(() => vi.fn())
 const requestModelMenuToggle = vi.hoisted(() => vi.fn<() => boolean>(() => true))
+const requestComposerSubmit = vi.hoisted(() => vi.fn<(text: string, options?: unknown) => boolean>(() => true))
+const requestComposerInsert = vi.hoisted(() => vi.fn())
 
 vi.mock('@/app/chat/composer/focus', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  requestComposerInsert: (text: string, options?: unknown) => requestComposerInsert(text, options),
+  requestComposerSubmit: (text: string, options?: unknown) => requestComposerSubmit(text, options),
   requestModelMenuToggle: () => requestModelMenuToggle()
 }))
 
@@ -490,7 +494,22 @@ describe('error card layout (Error System Overhaul)', () => {
     expect(screen.queryByRole('button', { name: en.assistant.thread.dismissError })).toBeNull()
   })
 
-  it('speaks for an out-of-credits turn only when the banner is not up for this chat', async () => {
+  it('Continue sends "continue" through this chat\'s composer, or leaves it in the input', async () => {
+    const truncated = () => failedMessage({ code: 'truncated', layer: 'provider', provider: 'openai', retryable: true })
+    const view = render(<Harness assistant={truncated()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: en.assistant.thread.errorContinue }))
+    expect(requestComposerSubmit).toHaveBeenCalledWith('continue', { target: 'main' })
+    expect(requestComposerInsert).not.toHaveBeenCalled()
+    view.unmount()
+
+    requestComposerSubmit.mockReturnValueOnce(false)
+    render(<Harness assistant={truncated()} />)
+    fireEvent.click(await screen.findByRole('button', { name: en.assistant.thread.errorContinue }))
+    expect(requestComposerInsert).toHaveBeenCalledWith('continue', { target: 'main' })
+  })
+
+  it('names an out-of-credits turn on its card too: the banner may be off screen', async () => {
     render(
       <MemoryRouter>
         <Harness

@@ -38,8 +38,7 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   },
   truncated: {
     title: '回复被截断',
-    body: (_provider, model) =>
-      `${model || '模型'} 在完成前达到了输出上限，因此未执行任何操作。点击“继续”从中断处接着生成。`
+    body: (_provider, model) => `${model || '模型'} 在完成前停止，因此最后一步没有执行。点击“继续”从中断处接着生成。`
   },
   loop_error: {
     title: 'Hermes 无法完成此步骤',
