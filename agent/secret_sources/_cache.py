@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Dict, Generic, Optional, TypeVar
 
 from hermes_constants import secure_parent_dir
-from utils import atomic_json_write
+from utils import adopt_legacy_file, atomic_json_write
 
 __all__ = [
     "CachedFetch",
@@ -26,6 +26,8 @@ __all__ = [
     "atomic_write_json",
     "entry_from_payload",
     "fingerprint",
+    "live_cache_path",
+    "remove_cache_file",
     "resolve_cache_home",
 ]
 
@@ -53,6 +55,21 @@ def resolve_cache_home(home_path: Optional[Path] = None) -> Path:
 
         home_path = get_hermes_home()
     return home_path
+
+
+def live_cache_path(home: Path, name: str) -> Path:
+    """``<home>/<name>``, after moving a copy from ``<home>/cache/``, where earlier releases kept
+    the secret caches; that old path when the move fails."""
+    return adopt_legacy_file(home / name, home / "cache" / name)
+
+
+def remove_cache_file(home: Path, name: str) -> None:
+    """Delete ``<home>/<name>`` and an old ``<home>/cache/<name>`` copy if present (idempotent)."""
+    for path in (home / name, home / "cache" / name):
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def entry_from_payload(payload: object) -> Optional[CachedFetch]:
@@ -86,9 +103,12 @@ K = TypeVar("K")
 class DiskCache(Generic[K]):
     """Best-effort, profile-aware on-disk cache for fetched secret values.
 
-    One JSON object per backend at ``<hermes_home>/cache/<basename>``::
+    One JSON object per backend at ``<hermes_home>/<basename>``::
 
         {"key": "<serialized cache key>", "secrets": {...}, "fetched_at": 1.0}
+
+    The file sits at the top of the home, where a sandbox can hide it by path: a folder the
+    agent writes (``cache/``) can be renamed to expose a hidden file below it.
 
     The file holds only secret *values*, never raw auth material — backends
     fingerprint tokens/sessions before they reach ``key_serializer``. Both
@@ -102,14 +122,17 @@ class DiskCache(Generic[K]):
         self._key_serializer = key_serializer
 
     def path(self, home_path: Optional[Path] = None) -> Path:
-        return resolve_cache_home(home_path) / "cache" / self._basename
+        return resolve_cache_home(home_path) / self._basename
+
+    def _live_path(self, home_path: Optional[Path]) -> Path:
+        return live_cache_path(resolve_cache_home(home_path), self._basename)
 
     def read(self, key: K, ttl_seconds: float, home_path: Optional[Path] = None) -> Optional[CachedFetch]:
         """Fresh cached entry for ``key``, or None (I/O error, mismatch, stale)."""
         if ttl_seconds <= 0:
             return None
         try:
-            with open(self.path(home_path), "r", encoding="utf-8-sig") as f:
+            with open(self._live_path(home_path), "r", encoding="utf-8-sig") as f:
                 payload = json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
@@ -124,16 +147,13 @@ class DiskCache(Generic[K]):
             return
         payload = {"key": self._key_serializer(key), "secrets": entry.secrets, "fetched_at": entry.fetched_at}
         try:
-            atomic_write_json(self.path(home_path), payload)
+            atomic_write_json(self._live_path(home_path), payload)
         except OSError:
             pass  # best-effort — a disk-cache miss next invocation is fine
 
     def clear(self, home_path: Optional[Path] = None) -> None:
         """Delete the on-disk cache file if present (idempotent)."""
-        try:
-            self.path(home_path).unlink()
-        except (FileNotFoundError, OSError):
-            pass
+        remove_cache_file(resolve_cache_home(home_path), self._basename)
 
 
 class SecretCache(Generic[K]):
