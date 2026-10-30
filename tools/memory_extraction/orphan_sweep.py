@@ -130,7 +130,7 @@ def sweep_orphaned_buffers(
                 if getattr(verdict, "verdict", "") == "DUPLICATE":
                     summary["skipped"] += 1
                     continue
-                outcome = _conflict.apply_verdict(verdict, proposal, auto_commit=False)
+                outcome = _conflict.apply_verdict(verdict, proposal, auto_commit=True)  # matches the session-end commit: a contradiction supersedes, never silently drops
                 if outcome.get("action") in _COMMITTED_ACTIONS:
                     summary["committed"] += 1
                 else:

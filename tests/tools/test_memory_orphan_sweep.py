@@ -61,8 +61,8 @@ def test_sweeps_stale_ended_buffers(harness):
     assert result["sessions"] == 1
     assert result["committed"] == 2
     assert [c["content"] for c in calls] == ["fact one", "fact two"]
-    # contradiction verdicts stay uncommitted, exactly like the session-end path
-    assert all(c["auto_commit"] is False for c in calls)
+    # same commit policy as the session-end path: contradictions supersede, never drop
+    assert all(c["auto_commit"] is True for c in calls)
     assert "sess-stale" not in mbuf.all_sessions()
 
 
