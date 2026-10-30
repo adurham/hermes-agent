@@ -40,8 +40,7 @@ import {
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
-  threadScrollTargetTop,
-  threadScrollTranscriptHeight
+  threadScrollTargetTop
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -49,7 +48,6 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
-import { scrollTrace } from './scroll-trace'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
@@ -862,12 +860,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const restoredStorageKeyRef = useRef(scrollStorageKey)
 
   const liveScrollStateRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
-  // TEMPORARY (scroll-trace): the DOM-event effects below do not depend on
-  // `sessionKey`, so their closures would attribute a line to a stale session.
-  // Remove with scroll-trace.ts.
-  const sessionKeyRef = useRef(sessionKey)
 
-  sessionKeyRef.current = sessionKey
   // Key the restore loop has already applied to the current transcript — the
   // record gate: an instance records only the state it actually showed under
   // its own key (an empty-transcript instance still holds the PREVIOUS
@@ -899,16 +892,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       previousResizeMetrics = resizeMetrics()
       const nextState = threadScrollStateFromMetrics(el)
 
-      if (nextState.kind !== liveScrollStateRef.current.kind) {
-        scrollTrace('live', {
-          client: el.clientHeight,
-          height: el.scrollHeight,
-          key: sessionKeyRef.current,
-          state: nextState,
-          top: el.scrollTop
-        })
-      }
-
       liveScrollStateRef.current = nextState
     }
 
@@ -935,16 +918,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       previousResizeMetrics = nextResizeMetrics
       const nextState = threadScrollStateFromMetrics(el)
 
-      if (nextState.kind !== liveScrollStateRef.current.kind) {
-        scrollTrace('live-ro', {
-          client: el.clientHeight,
-          height: el.scrollHeight,
-          key: sessionKeyRef.current,
-          state: nextState,
-          top: el.scrollTop
-        })
-      }
-
       liveScrollStateRef.current = nextState
     }
 
@@ -968,14 +941,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const flush = () => {
       const willSave = Boolean(sessionKey) && loadSettledRef.current && restoredContentKeyRef.current === sessionKey
-
-      scrollTrace('flush', {
-        gate: restoredContentKeyRef.current,
-        key: sessionKey,
-        settled: loadSettledRef.current,
-        state: liveScrollStateRef.current,
-        willSave
-      })
 
       if (willSave && sessionKey) {
         saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
@@ -1022,7 +987,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // layout, and re-arm the normal restore loop when the pane is revealed.
     // The outgoing visible effect's cleanup has already saved its position.
     if (!paneVisible) {
-      scrollTrace('hidden', { key: sessionKey, state: liveScrollStateRef.current, top: el.scrollTop })
       loadSettledRef.current = false
       restoredContentKeyRef.current = null
       restoreFromBottomRef.current = null
@@ -1044,19 +1008,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     restoredContentKeyRef.current = plan.gate
 
-    scrollTrace('plan', {
-      cold: plan.cold,
-      gate: plan.gate,
-      groups: hasGroups,
-      height: el.scrollHeight,
-      key: sessionKey,
-      restore: plan.restore,
-      settled: loadSettledRef.current,
-      switched: sessionSwitched,
-      top: el.scrollTop,
-      visible: paneVisible
-    })
-
     // Record only states that were actually shown under this key: the gate
     // equals this closure's sessionKey exactly when this instance restored
     // content (cleanups run before the next instance's effect, so a later
@@ -1068,15 +1019,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // the session's real reading position.
     const record = () => {
       const willSave = Boolean(sessionKey) && loadSettledRef.current && restoredContentKeyRef.current === sessionKey
-
-      scrollTrace('record', {
-        gate: restoredContentKeyRef.current,
-        key: sessionKey,
-        settled: loadSettledRef.current,
-        state: liveScrollStateRef.current,
-        top: el.scrollTop,
-        willSave
-      })
 
       if (willSave && sessionKey) {
         saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
@@ -1106,8 +1048,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
     let target = remembered ?? THREAD_SCROLL_BOTTOM
-
-    scrollTrace('restore', { key: sessionKey, remembered, target })
 
     // The previous session's parting state must not leak into this one: from
     // here every scroll/RO event describes the restored session.
@@ -1177,17 +1117,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       if (stableFrames >= 2 || ++frame > 15) {
         releaseSwitching()
 
-        scrollTrace('settle', {
-          clamped,
-          client: node.clientHeight,
-          frames: frame,
-          height,
-          key: sessionKey,
-          stable: stableFrames,
-          target: target.kind,
-          top: node.scrollTop
-        })
-
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
           // (images, highlight) keeps following the bottom.
@@ -1238,14 +1167,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // bottom target too: a composer-only resize (every keystroke) used to
       // yank a view the user had moved away from the bottom back down.
       if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
-        scrollTrace('ro', {
-          after: threadScrollTranscriptHeight(next),
-          before: threadScrollTranscriptHeight(previous),
-          key: sessionKey,
-          settled: loadSettledRef.current,
-          target: target.kind,
-          top: el.scrollTop
-        })
         applyTarget(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
@@ -1255,23 +1176,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       resizeObserver.observe(contentRef.current)
     }
 
-    const cancelRestore = (reason: string) => {
-      // Only an IN-FLIGHT restore is interesting here (the glue has not landed): the effect cleanup
-      // also calls this on every content height change, which would drown the log. What matters is
-      // which input abandoned a restore mid-flight — a stray trackpad wheel during a reveal, a
-      // layout-induced foreign scroll, or the reader deliberately taking over.
-      if (!loadSettledRef.current) {
-        scrollTrace('cancel', {
-          client: el.clientHeight,
-          height: el.scrollHeight,
-          key: sessionKey,
-          parkedFromBottom: restoreFromBottomRef.current,
-          reason,
-          target,
-          top: el.scrollTop
-        })
-      }
-
+    const cancelRestore = () => {
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
@@ -1288,7 +1193,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
     }
 
-    cancelRestoreRef.current = target.kind === 'offset' ? () => cancelRestore('ref') : () => resizeObserver.disconnect()
+    cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
 
     const onWheel = (event: WheelEvent) => {
       resizeObserver.disconnect()
@@ -1302,7 +1207,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
 
       if (event.deltaY !== 0) {
-        cancelRestore(`wheel:${Math.round(event.deltaY)}`)
+        cancelRestore()
       }
     }
 
@@ -1333,11 +1238,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         return
       }
 
-      cancelRestore(`foreign-scroll:${Math.round(el.scrollTop)}:own=${Math.round(ownScrollTop ?? -1)}`)
+      cancelRestore()
     }
 
     jumpRestoreRef.current = () => {
-      cancelRestore('jump')
+      cancelRestore()
       // A jump replaces reading intent, including an in-flight prepend anchor.
       // Re-arm resize protection: deferred markdown may grow after this click.
       target = THREAD_SCROLL_BOTTOM
@@ -1360,8 +1265,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     el.addEventListener('wheel', onWheel, { passive: true })
     el.addEventListener('scroll', onScroll, { passive: true })
-    el.addEventListener('pointerdown', () => cancelRestore('pointerdown'), { passive: true })
-    el.addEventListener('keydown', () => cancelRestore('keydown'))
+    el.addEventListener('pointerdown', () => cancelRestore(), { passive: true })
+    el.addEventListener('keydown', () => cancelRestore())
 
     return () => {
       cancelRestoreRef.current = null
