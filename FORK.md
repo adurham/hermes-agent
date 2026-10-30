@@ -44,8 +44,14 @@ shipped one, same authority, same queued row — for four of his own chats (`loc
 `local-11f3d55d…` Switch 2, `local-0323bc73…` Nest camera, `local-4efbd27a…` itself): pre-fix `[]`, shipped
 `['steer', 'replace']`.
 
-Not yet proven live: the running gateway (pid 63638) still reports `code_sha: c460bab7b9`, so the Steer affordance has not
-appeared on a live Desktop queued row yet — that needs the restart onto this commit.
+Proven live (gateway restarted onto `6457f1616b`, `gateway_state.json` `code_sha` matches): a probe client on the
+supported client path (`hermes_cli.gateway_client.connect_gateway`) created a scratch `gui`/`desktop` session, kept its
+turn busy with a foreground `sleep 40`, queued one prompt behind it, and read the row the owner publishes — the exact
+list `apps/desktop` paints its per-row buttons from — as `controls: ['steer', 'replace']`; `prompt.steer_queued` answered
+`started` (generation 1) and the row settled `outcome: 'steered'`, so that one queued message reached the live turn and
+never ran as its own. The scratch session was deleted afterwards. The `local`-stored shape itself cannot be probed this
+way — those chats belong to the Desktop's own principal, which correctly refuses another caller's `prompt.submit` — so
+for them the evidence is the live A/B above plus the fact that the running owner executes the same decision.
 
 ### 2026-10-30 (gateway) — a background completion reaches the RUNNING turn instead of the next one
 
