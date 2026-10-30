@@ -22300,3 +22300,25 @@ provider, else from the plan's owner, so a post-restart session cannot draw a po
 `session.usage` frame from one definition.
 
 **Still needed:** a gateway restart (Python only — the renderer at 15:11 already draws the chip).
+
+## 2026-10-29 (desktop) — decorative animations painted at display cadence whenever the window was merely unfocused
+
+Owner's Battery pane named Hermes. Measured on the installed build (4h25m uptime, 6 live
+sessions): renderer helper 37 power units, GPU helper 19, main 6 — and a 10-second `sample`
+of the renderer found its **main thread busy 47% of wall time** while no text was streaming.
+WindowServer tracked at 42-47%. Cumulative: 50 min renderer + 58 min GPU CPU.
+
+Mechanism: Chromium throttles an occluded or minimized page, not a *visible but unfocused*
+one, and `installRendererAnimationPauseState()` mirrored only hidden/minimized onto
+`data-renderer-animations-paused`. So every infinite animation the gate already covers
+(sidebar running-session arcs, shimmer, spinners, code-card glow, pet) kept painting at
+120 Hz behind other apps. The 47% busy main thread in a no-stream window is that paint,
+not a runaway JS loop — the compositor thread was 14%, and the delta flush is timer-driven
+so streamed text never depended on those frames.
+
+**Change.** `installRendererAnimationPauseState({ pauseWhenUnfocused })` (default false, so
+overlays and the SDK keep the old look); the main window passes true, so blur joins
+hidden/minimized in the pause predicate. Two cases in `renderer-loop-pause.test.ts`.
+
+**Open.** Needs the rebuilt app installed and a before/after CPU read; 30fps→8fps unfocused
+delta flush is the next lever if the win is not enough on its own.
