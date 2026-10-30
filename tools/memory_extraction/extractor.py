@@ -859,7 +859,13 @@ def on_session_end(
                 verdict = attached
             else:
                 verdict = _conflict.classify(proposal["content"])
-            outcome = _conflict.apply_verdict(verdict, proposal, auto_commit=False)
+            # auto_commit=True: this is the non-interactive commit path, and the owner's
+            # posture is full automation with no review queue (memory.auto_apply /
+            # auto_commit_session_end). A CONTRADICTION writes the new fact and tags the
+            # matched one "[superseded by fact N]" — kept, not deleted — so a wrong call is
+            # recoverable. auto_commit=False here meant the proposal was counted `skipped`
+            # and then dropped by the buffer clear, i.e. silent loss.
+            outcome = _conflict.apply_verdict(verdict, proposal, auto_commit=True)
             summary["actions"].append({
                 "content": proposal["content"][:120],
                 "verdict": verdict.verdict,
