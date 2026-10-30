@@ -60,8 +60,9 @@ describe('decideLivenessForceClose', () => {
 describe('probeGatewayLiveness', () => {
   // The backend answers `gateway.ping` on its socket reader; every other RPC, `ping` included,
   // waits behind the connection's serial control lane. A probe stuck behind a slow control RPC
-  // closed a healthy socket (#145737).
-  it('is answered while the control lane is busy', async () => {
+  // closed a healthy socket (#145737). The reader fast path itself is pinned by
+  // tests/tui_gateway/test_tui_gateway_ws.py::test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch.
+  it('sends the reader-answered gateway.ping, never a method queued behind control RPCs', async () => {
     const gateway = {
       request: (method: string) =>
         method === 'gateway.ping' ? Promise.resolve({ ok: true }) : new Promise<unknown>(() => undefined)
