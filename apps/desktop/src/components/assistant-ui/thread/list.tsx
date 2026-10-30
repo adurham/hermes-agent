@@ -1249,13 +1249,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const cancelRestore = () => {
-      scrollTrace('cancel', {
-        height: el.scrollHeight,
-        key: sessionKey,
-        settled: loadSettledRef.current,
-        state: liveScrollStateRef.current,
-        top: el.scrollTop
-      })
+      // No trace here on purpose: this runs from the restore effect's cleanup, i.e. once per content
+      // height change — while the transcript is growing it fires every frame and drowns the log
+      // (measured: 2650 of 2924 trace lines).
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
