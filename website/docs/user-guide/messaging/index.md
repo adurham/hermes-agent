@@ -575,7 +575,7 @@ You can also set this via environment variable:
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
 
-With `terminal(background=true, notify_on_complete=true)` the finished process starts a new agent turn and the agent reports the result itself, so no separate status line is sent. The exception is a process that finishes while the turn that launched it is still running: the completion is queued as the agent's next turn and you get the one-line `concise` status right away (unless the mode is `off`, or `error` with a zero exit code), instead of silence until that turn ends.
+With `terminal(background=true, notify_on_complete=true)` the finished process starts a new agent turn and the agent reports the result itself, so no separate status line is sent. The exception is a process that finishes while the turn that launched it is still running: the completion is handed **into that running turn** — it is delivered at the turn's next tool boundary as its own user row, carrying the process card's display kind and an internal-notification footer (never an out-of-band user marker, so the agent does not read it as something you wrote) — so the agent can act on a finished process without waiting for the turn to end, and you also get the one-line `concise` status right away (unless the mode is `off`, or `error` with a zero exit code). A completion the running turn never takes (it ended first) stays queued and runs as its own turn exactly as before, so nothing is lost and nothing is delivered twice.
 
 ### Use Cases
 

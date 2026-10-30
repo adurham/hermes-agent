@@ -108,6 +108,32 @@ def _steer_fates(agent) -> dict:
     return vars(agent).setdefault("_steer_ticket_fates", {})
 
 
+def _notice_parts(agent) -> list:
+    """The buffered notices as ``(ticket, text, display_kind, display_metadata)`` parts. Unlike the steer
+    buffer this one has no second writer and no joined mirror: every notice carries the provenance it is
+    delivered with, so the parts are the buffer."""
+    return list(vars(agent).get("_pending_notices") or [])
+
+
+def _set_notice_parts(agent, parts: list) -> None:
+    agent._pending_notices = parts
+
+
+def _notice_fates(agent) -> dict:
+    """``{ticket: consumed}`` for ticketed notices that left the buffer: True when a drain handed the text
+    to the turn. ``withdraw_notice`` reads each one once (the same contract as ``_steer_fates``)."""
+    return vars(agent).setdefault("_notice_ticket_fates", {})
+
+
+def requeue_drained_notices(agent, parts: list) -> None:
+    """Put drained notices back (nothing took them): the seam had no tool result to deliver them after, so
+    their tickets read unconsumed again and the delivery that pushed them settles as undelivered."""
+    with _ic_lock(agent, "_pending_notices_lock"):
+        for part in parts or ():
+            _notice_fates(agent).pop(part[0], None)
+        _set_notice_parts(agent, _notice_parts(agent) + list(parts or ()))
+
+
 def requeue_drained_steer(agent, steer_text: str) -> None:
     """Put drained steer text back (nothing took it). When it is the last drain's text, its parts go back
     with their tickets, so a transfer in it reads unconsumed again."""
@@ -487,4 +513,47 @@ class InterruptControlMixin:
             if len(kept) == len(parts):
                 return consumed is False
             _set_steer_parts(self, kept)
+        return True
+
+    def push_notice(self, text: str, *, display_kind: str, display_metadata=None, ticket=None) -> bool:
+        """Buffer a MACHINE notice for delivery as its own row after the current tool batch (no interrupt).
+
+        The mid-turn sibling of ``steer()`` for text the user did not write: a gateway delivery that would
+        otherwise have to wait for this turn to end. Two differences, both deliberate: the row is injected
+        with the caller's ``display_kind``/``display_metadata`` and WITHOUT the out-of-band user marker —
+        the notice carries its own machine provenance in its text and must not claim user authority — and
+        ``_turn_user_intervened`` is left alone, because the user did not intervene. ``ticket`` names the
+        delivery, so ``withdraw_notice`` can settle exactly it once the turn ends (same contract as steer).
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        with _ic_lock(self, "_pending_notices_lock"):
+            _set_notice_parts(self, _notice_parts(self) + [(ticket, cleaned, display_kind, display_metadata)])
+        return True
+
+    def _drain_pending_notices(self) -> list:
+        """Return and clear the buffered notices as ``(ticket, text, display_kind, display_metadata)`` parts;
+        every ticket in them reads consumed from now on (only ``requeue_drained_notices`` undoes that)."""
+        with _ic_lock(self, "_pending_notices_lock"):
+            parts = _notice_parts(self)
+            _set_notice_parts(self, [])
+        for part in parts:
+            if part[0] is not None:
+                _notice_fates(self)[part[0]] = True
+        return parts
+
+    def withdraw_notice(self, ticket) -> bool:
+        """Settle one ``push_notice(..., ticket=...)`` by identity: True when no drain handed it to the turn
+        (still buffered — taken out now — or dropped unread); False once a drain consumed it, or when the
+        ticket names no notice of this agent (a steer ticket, an unrelated id)."""
+        if ticket is None:
+            return False
+        with _ic_lock(self, "_pending_notices_lock"):
+            parts = _notice_parts(self)
+            kept = [part for part in parts if part[0] != ticket]
+            consumed = _notice_fates(self).pop(ticket, None)
+            if len(kept) == len(parts):
+                return consumed is False
+            _set_notice_parts(self, kept)
         return True

@@ -558,6 +558,11 @@ _CONTROL_STATE: dict[str, Any] = {
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
     "_pending_steer_lock": threading.Lock,
+    # FORK mid-turn machine notices (agent/interrupt_control.py::push_notice): a gateway delivery the
+    # session's RUNNING turn takes at its own drain instead of waiting for it to end. Same delivery seam
+    # as /steer, but the row keeps its own display kind and carries no out-of-band user marker.
+    "_pending_notices": None,
+    "_pending_notices_lock": threading.Lock,
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,

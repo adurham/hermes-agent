@@ -600,6 +600,21 @@ def steer_user_row(steer_text: str) -> dict[str, Any]:
             "display_kind": STEER_DISPLAY_KIND}
 
 
+def notice_user_row(text: str, display_kind: str, display_metadata: Any = None) -> dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn MACHINE notice is delivered as (after the newest tool
+    result) — the same seam and the same row rules as ``steer_user_row``: its own row, appended after the
+    newest tool result, typed so the alternation repair never merges the next real prompt into it.
+
+    The two differences from a steer row are the point: no out-of-band user marker (a gateway notice must
+    not claim the user wrote it — it carries its own machine provenance in its text, added by the caller),
+    and the caller's ``display_kind``/``display_metadata`` so history renderers keep painting the notice as
+    what it is (e.g. the desktop's background-process card) instead of a user bubble."""
+    row = {"role": "user", "content": text, "display_kind": display_kind}
+    if display_metadata:
+        row["display_metadata"] = display_metadata
+    return row
+
+
 STEER_CHANNEL_NOTE = (
     # Only what the marker cannot say about itself: it is the ONLY trusted shape and carries full user authority.
     # Dieted (#95681, maintainer-directed). History: #40240 added this note when the marker was bare and

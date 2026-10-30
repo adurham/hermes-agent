@@ -200,6 +200,11 @@ def prepare_iteration(
     if _pre_api_steer:
         _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
 
+    # FORK: a MACHINE notice (a gateway delivery — a process completion, a delegation result — that the
+    # running turn would otherwise not see until it ended) rides the same seam as a steer and in the same
+    # iteration, as its own row that keeps its display kind and carries no out-of-band user marker.
+    _drain_midturn_notices(agent, messages)
+
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
     if getattr(agent, "run_budget_seconds", None):
@@ -319,6 +324,31 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
+
+
+def _drain_midturn_notices(agent: Any, messages: Any) -> None:
+    """Deliver this iteration's buffered mid-turn machine notices, each as its own user row after the
+    newest tool result (the same seam, and the same row contract, as a steer: after the newest tool row,
+    never smeared onto it). With no tool message there is nothing to deliver after, so the notices go
+    back: the delivery that pushed them then settles undelivered and its admission stays queued, which is
+    what keeps this at-least-once — a notice is never dropped and never delivered twice."""
+    drain: Any = getattr(agent, "_drain_pending_notices", None)
+    if not callable(drain):
+        return
+    parts: Any = drain()
+    if not parts:
+        return
+    index = next((_i for _i in range(len(messages) - 1, -1, -1)
+                  if isinstance(messages[_i], dict) and messages[_i].get("role") == "tool"), None)
+    if index is None:
+        from agent.interrupt_control import requeue_drained_notices
+        requeue_drained_notices(agent, parts)
+        return
+    from agent.prompt_builder import notice_user_row
+    for _ticket, _text, _kind, _metadata in parts:
+        index += 1
+        messages.insert(index, notice_user_row(_text, _kind, _metadata))
+        logger.debug("Pre-API-call notice drain: appended notice row after tool msg at index %d", index)
 
 
 @dataclass
