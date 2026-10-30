@@ -2297,6 +2297,20 @@ function syncTileStripOrder() {
   }
 }
 
+// `sessionTiles` is the REPLAY order: whenever panes have to be re-adopted —
+// a connection/profile scope swap drops the visible tiles' panes, ⌘⇧T re-opens
+// a closed tab, a restart re-docks the persisted set — the mirror docks them in
+// array order. Only the OPEN/MOVE paths used to re-sync it, so a plain strip
+// drag (reorderTreePanes) left the array in the pre-drag order and the next
+// re-adoption silently reshuffled the tabs (a restart on a different primary
+// source did it every launch). The tree is the truth for tab order: follow
+// every mutation of it, and re-align once at module load so an array left stale
+// by an older build heals on the first run instead of on the next drag.
+if (!isSecondaryWindow() && !isBrowserWindow()) {
+  $layoutTree.listen(syncTileStripOrder)
+  syncTileStripOrder()
+}
+
 /** Open a tile for a stored session, or MOVE an existing one to the new dock
  *  (`dir`; `center` = stack into the anchor's zone, `before` = strip slot). The
  *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop

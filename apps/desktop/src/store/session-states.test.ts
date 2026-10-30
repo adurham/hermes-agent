@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { $layoutTree, noteActiveTreeGroup, reorderTreePanes } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
   forgetActivePane,
@@ -1886,5 +1886,45 @@ describe('rekeySessionTile (#98622 — pane identity across compression tip rota
     rekeySessionTile('tip-old', 'tip-old')
 
     expect($sessionTiles.get()).toEqual([{ storedSessionId: 'tip-old' }])
+  })
+})
+
+// Tab order must survive a relaunch. `$sessionTiles` is the REPLAY order: a
+// restart (or any re-adoption, e.g. a connection-scope swap that prunes the
+// visible tiles' panes) docks the tabs in array order. A strip drag commits
+// through `reorderTreePanes` alone, so an array left in the pre-drag order came
+// back as a reshuffled strip on the next launch.
+describe('a strip drag keeps the replayed tab order in step with the tree', () => {
+  it('re-orders the persisted tile array when a tab is dragged', () => {
+    $sessionTiles.set([
+      { storedSessionId: 'a' },
+      { storedSessionId: 'b' },
+      { storedSessionId: 'c' }
+    ])
+    $layoutTree.set(
+      group(['workspace', tilePane('a'), tilePane('b'), tilePane('c')], { active: 'workspace', id: 'main' })
+    )
+
+    // Drag tab C to the front of its own strip (index 0 among the others).
+    reorderTreePanes('main', [tilePane('c')], 0)
+
+    expect(findGroupOfPane($layoutTree.get()!, 'workspace')?.panes).toEqual([
+      tilePane('c'),
+      'workspace',
+      tilePane('a'),
+      tilePane('b')
+    ])
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('leaves the array alone when a tree edit does not move a tab', async () => {
+    $sessionTiles.set([{ storedSessionId: 'a' }, { storedSessionId: 'b' }])
+    $layoutTree.set(group(['workspace', tilePane('a'), tilePane('b')], { active: 'workspace', id: 'main' }))
+
+    const before = $sessionTiles.get()
+
+    $layoutTree.set(group(['workspace', tilePane('a'), tilePane('b')], { active: tilePane('b'), id: 'main' }))
+
+    expect($sessionTiles.get()).toBe(before)
   })
 })
