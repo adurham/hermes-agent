@@ -265,7 +265,6 @@ describe('tab switch scroll memory', () => {
       act(() => deliverContentResize(scrollHeightValue))
       await settleScroll(10)
 
-      // eslint-disable-next-line no-console -- evidence for the investigation
       console.error(`[tab-scroll-memory] top after collapse = ${vp.scrollTop} of ${SCROLL_H - 3000 - CLIENT_H}`)
 
       expect(vp.scrollTop).toBeGreaterThan(0)
