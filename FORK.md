@@ -43,15 +43,20 @@ Files: `gateway/session_automation.py`, `gateway/session_queued_controls.py`,
 `agent/agent_init.py` (the notice buffer's two slots), plus the two docs sections that promised the old
 behaviour (`user-guide/messaging/index.md`, `developer-guide/gateway-internals.md`).
 
-Tests: `tests/agent/test_midturn_notice_row.py` (5 — the row's shape/provenance/kind, the own-row-not-smeared
+Tests: `tests/agent/test_midturn_notice_row.py` (6 — the row's shape/provenance/kind, the own-row-not-smeared
 anchoring pin, the no-tool-result path returning the notice with its ticket unconsumed, steer/notice ticket
-independence, empty refusal) and `tests/gateway/test_completion_midturn_handoff.py` (6 — handoff consumed →
-`steered` and never re-run / not consumed → back to its FIFO place and run once, idle session, no-seam
-fallback, the call site incl. "a heartbeat is not handed over", the wrapper's metadata extraction and its
-swallow-on-error). Verified: 11 pass; 98 pass across the queued-transfer/queued-controls/FIFO-wake/
-completion-delivery/subagent-hold/CLI-holdoff/process-result suites; 126 pass across the agent steer/
-interrupt/finalizer/iteration-budget set. Not proven live: the gateway has not been restarted onto this
-code, so no completion has yet been observed arriving mid-turn in a real session — that needs the restart.
+independence, empty refusal, and the seam on a real `AIAgent` through `prepare_iteration`) and
+`tests/gateway/test_completion_midturn_handoff.py` (6 — handoff consumed → `steered` and never re-run / not
+consumed → back to its FIFO place and run once, idle session, no-seam fallback, the call site incl. "a
+heartbeat is not handed over", the wrapper's metadata extraction and its swallow-on-error). Fail-before, run
+both ways on this commit with one line disabled at a time: without the seam call
+`test_the_real_turn_seam_injects_a_pushed_notice` fails (nothing is injected mid-turn); without the
+`admit_process_notice` call `test_the_completion_admission_path_hands_the_row_over` fails (`calls == []` —
+the row is admitted and nothing hands it to the turn). Verified: 12 pass; 98 pass across the
+queued-transfer/queued-controls/FIFO-wake/completion-delivery/subagent-hold/CLI-holdoff/process-result
+suites; 126 pass across the agent steer/interrupt/finalizer/iteration-budget set. Not proven live: the
+gateway has not been restarted onto this code, so no completion has yet been observed arriving mid-turn in
+a real session — that needs the restart.
 
 ### 2026-10-30 (desktop) — a restore that never landed left the reader mid-flight
 
