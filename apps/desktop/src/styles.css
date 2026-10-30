@@ -1611,6 +1611,9 @@
 .arc-static::after {
   animation: none;
   transform: translate3d(61.11%, 0, 0);
+  /* A parked band needs no layer of its own; without this every non-selected
+     running row keeps two permanently composited 45%-wide strips. */
+  will-change: auto;
 }
 
 /* Keyframes live here, not in per-instance <style> tags: inserting or removing an
