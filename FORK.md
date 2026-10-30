@@ -4,6 +4,39 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (gateway) — a Desktop chat's queued row could be deleted, never sent
+
+The owner: "I need a way to force send a specific queued message too" (screenshot: the 1Password chat's
+drawer reading "1 Queued"). One queued message, and no gesture that sends it.
+
+Cause, measured on the live state DB: his Desktop chats are stored `source='local'` with the creating
+surface in `created_source` (`local-f1f52424…`, the 1Password chat: `local`/`desktop`; 104 rows read
+`local` — created_source cli 79, desktop 20, tui 5), while `session_queued_controls._interactive`
+compared `sessions.source` ALONE against `{'cli','tui','gui','desktop','acp'}`. `local` is not a surface
+(`session_policy._NOT_A_SURFACE`), so `queued_controls()` answered `[]` for every queued row of every
+owner-local session; only 606 older rows keep an interactive label in `source` (`created_source` NULL),
+which is why the check looked healthy.
+
+In the Desktop panel that is a missing PATH, not a missing button: a server row with no controls hides
+Steer and Edit alike and the ⏎ send-now renders only for a client-side row, so the only affordance on a
+queued message was Discard. There is no reorder verb by design ("one FIFO per session"), which makes
+`prompt.steer_queued` the force-send for a server row — and the owner was refusing it.
+
+Fix: `_interactive` reads both label columns and accepts a surface name in either one
+(`_launch_labels`); `local` alone still admits nothing. Same primitive as the completion handoff below, so
+the chosen row's text reaches the turn already running: taken by a drain → `steered`, the turn ending
+first → back in its FIFO place and run once. Nothing is dropped and nothing is delivered twice.
+
+Tests (`tests/gateway/test_prompt_queued_transfer.py`): the shape walk now covers the live shapes —
+`local`+`desktop`, `local`+`cli`, `local`+`tui` offered; `gui`/`desktop`/`tui`/`cli`/`acp` offered from
+`source` alone; `local` with no `created_source` refused; cron, kanban, a2a, bot_room, subagent, oneshot
+and tool refused — plus a new end-to-end
+`test_a_desktop_chats_own_queued_row_is_advertised_and_steerable`: the row a Desktop chat holds advertises
+`['steer', 'replace']`, a steer delivers that exact row's text into the running turn, and the row is never
+re-run on its own. Fail-before: the `('local', 'desktop')` case asserted `('local', [])`. Not proven live:
+the gateway has not been restarted onto this code, so the Steer affordance has not yet appeared on a live
+Desktop queued row.
+
 ### 2026-10-30 (gateway) — a background completion reaches the RUNNING turn instead of the next one
 
 The owner: "these IMPORTANT messages get queued up from background procs that close/die off, and they keep

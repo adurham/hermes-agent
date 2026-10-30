@@ -527,10 +527,42 @@ def test_only_interactive_local_sessions_are_offered_queued_controls(tmp_path, m
     row = {'status': 'queued', 'target_session_id': 's', 'payload': {'text': 'hello'}}
     with db:
         assert session_queued_controls.queued_controls(authority, row) == [], 'no launch policy: not interactive'
-        # ``desktop``: a Desktop chat migrated from main keeps main's source label.
-        for source, offered in (('gui', True), ('desktop', True), ('tui', True), ('cli', True), ('acp', True),
-                                ('cron', False), ('kanban', False), ('a2a', False), ('bot_room', False)):
+        # The shapes a live row has: an owner-local session is STORED ``local`` with the creating
+        # surface in ``created_source`` — the two label columns are read together — a chat migrated
+        # from main keeps ``desktop`` in ``source``, an older CLI row keeps ``cli`` there. ``local``
+        # alone is not a surface (session_policy._NOT_A_SURFACE): it admits nothing by itself.
+        for source, created, offered in (('local', 'desktop', True), ('local', 'cli', True), ('local', 'tui', True),
+                                         ('gui', 'desktop', True), ('desktop', None, True), ('tui', None, True),
+                                         ('cli', None, True), ('acp', 'acp', True),
+                                         ('local', None, False), ('cron', 'cron', False), ('kanban', None, False),
+                                         ('a2a', 'a2a', False), ('bot_room', None, False), ('subagent', 'subagent', False),
+                                         ('oneshot', 'oneshot', False), ('tool', None, False)):
             authority.launch_sources = {}
-            interactive(db, source=source)
+            interactive(db, source=source, created=created)
             controls = session_queued_controls.queued_controls(authority, row)
-            assert controls == (['steer', 'replace'] if offered else []), (source, controls)
+            assert controls == (['steer', 'replace'] if offered else []), (source, created, controls)
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_chats_own_queued_row_is_advertised_and_steerable(tmp_path, monkeypatch):
+    """The live shape of the row a Desktop chat holds: STORED ``local`` with the creating surface in
+    ``created_source``. Judged on ``source`` alone, every such row advertised no verb at all, so the
+    panel could only offer Discard — a queued message could be deleted, never sent. Both verbs are
+    served here and a steer delivers that exact row's text into the turn already running."""
+    from dataclasses import asdict
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source='local', created='desktop')
+    turn = Turn(monkeypatch)
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(turn.claimed.wait(), 30)
+        queued = await _submit(authority, 'follow-up')
+        advertised = {row['admission_id']: asdict(authority._pending_receipt(row))['controls']
+                      for row in authority._pending_rows(REF)}
+        assert advertised[queued.admission_id] == ['steer', 'replace'], advertised
+        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert 'error' not in reply, reply
+        assert turn.agent.steers == ['follow-up'], 'the chosen row reached the running turn'
+        turn.release.set()
+        await _drained(authority)
+    assert turn.ran == ['running'], 'a steered row is never re-run on its own'
