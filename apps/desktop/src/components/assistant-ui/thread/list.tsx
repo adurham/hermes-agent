@@ -35,6 +35,8 @@ import {
   readThreadScrollResizeMetrics,
   resetPublishedThreadScroll,
   saveThreadScrollPosition,
+  shouldApplyThreadScrollAnchor,
+  shouldDisarmThreadFollow,
   shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
   type ThreadScrollState,
@@ -576,6 +578,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Where to land after a prepend, in distance-from-bottom (survives the
   // height change). Shared by "Show earlier" and the budget backfill below.
   const restoreFromBottomRef = useRef<number | null>(null)
+  // True while the anchor above is a parked OFFSET TARGET (an unreachable remembered offset, parked
+  // on the settle loop's clamped exit) rather than a CAPTURED reading position (a prepend/expand, or
+  // a restore the reader's own input cancelled). A parked target is the position the reader asked
+  // for and must be applied when the content covers it, even though their clamped viewport no longer
+  // matches the anchor; a captured one may only be applied to a reader still at it.
+  const parkedOffsetRef = useRef(false)
   // scrollHeight when the anchor was recorded. The restore effect below also
   // runs on commits that do not grow the content (the transcript arriving
   // under the first-paint budget; a "Show earlier" whose page comes from the
@@ -629,6 +637,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     restoreFromBottomRef.current =
       liveScrollStateRef.current.kind === 'bottom' ? el.clientHeight : el.scrollHeight - el.scrollTop
     anchorHeightRef.current = el.scrollHeight
+    // A captured reading position, not a parked target: it is only good while its reader is at it.
+    parkedOffsetRef.current = false
   }, [scrollRef])
 
   // Weights (part count + visible character cost) fold into the BUDGET only.
@@ -892,6 +902,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       previousResizeMetrics = resizeMetrics()
       const nextState = threadScrollStateFromMetrics(el)
 
+      // The reader left the bottom band: disarm the sticky follow from the app's own classifier
+      // rather than trusting the library's escape heuristic — see shouldDisarmThreadFollow. Without
+      // this, a scrollbar drag / keyboard page / find-in-page jump during a live turn is re-pinned
+      // to the bottom by the next growth, and the position recorded for the session is that bottom.
+      if (shouldDisarmThreadFollow(liveScrollStateRef.current, nextState)) {
+        stopScroll()
+      }
+
       liveScrollStateRef.current = nextState
     }
 
@@ -929,7 +947,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('scroll', update)
       observer.disconnect()
     }
-  }, [contentRef, paneVisible, scrollRef])
+  }, [contentRef, paneVisible, scrollRef, stopScroll])
 
   // Persist the live position on app close, so a reading position survives a
   // quit without a session switch (the switch cleanup below only runs on
@@ -1132,6 +1150,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           // effect flips settled once it consumes the parked value.
           restoreFromBottomRef.current = target.fromBottom + node.clientHeight
           anchorHeightRef.current = height
+          // The reader asked for this offset; it is a target, not a captured position.
+          parkedOffsetRef.current = true
           // Wake paging even when the current render budget has stopped growing.
           autoGrowPagesRef.current = 0
           setRestoreGrowTick(tick => tick + 1)
@@ -1191,6 +1211,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       loadSettledRef.current = true
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
+      // The reader's own position, captured: only good while they are still at it.
+      parkedOffsetRef.current = false
     }
 
     cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
@@ -1520,8 +1542,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.scrollHeight > (anchorHeightRef.current ?? 0) &&
       el.scrollHeight >= restoreFromBottom
     ) {
-      el.scrollTop = el.scrollHeight - restoreFromBottom
+      // A captured anchor with a reader who has since moved is stale: applying it would drag them
+      // back to where they were when it was taken — an unconditional app write, with no library
+      // escape able to stop it. Drop it instead; a parked-offset TARGET is applied regardless,
+      // because its reader was clamped away from the position they asked for.
+      if (
+        parkedOffsetRef.current ||
+        shouldApplyThreadScrollAnchor({ anchor: restoreFromBottom, anchorHeight: anchorHeightRef.current, metrics: el })
+      ) {
+        el.scrollTop = el.scrollHeight - restoreFromBottom
+      }
+
       restoreFromBottomRef.current = null
+      parkedOffsetRef.current = false
       // Consuming a parked offset (clamped-exit) means the view just landed at
       // its real reading position — the load is settled from here on.
       loadSettledRef.current = true

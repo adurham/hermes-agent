@@ -53,6 +53,62 @@ never ran as its own. The scratch session was deleted afterwards. The `local`-st
 way — those chats belong to the Desktop's own principal, which correctly refuses another caller's `prompt.submit` — so
 for them the evidence is the live A/B above plus the fact that the running owner executes the same decision.
 
+### 2026-10-30 (desktop) — a reading position was re-pinned to the bottom by the app's own writes
+
+**Symptom (reported by the owner, twice).** "When I'm bouncing around tabs it doesn't always remember where we
+were on the page." The store said the same thing: `hermes.desktop.threadScroll.v1.profile.default` held **11
+sessions and every value was `{kind:'bottom'}`** — no reading position survived, so no tab could come back to
+one. The 2026-10-29 entry had found "real offsets for three sessions"; by 2026-10-30 the code of the 11:37 build
+recorded **261 positions, all `bottom`** (and 257 hides, 255 restores — all `bottom`).
+
+**Where it was lost.** The same build's `[scroll-trace]` (probe removed at 11:41; 2.5h of real use) classified a
+deep reading position 34 times, and **every one was gone within 4-28ms of being taken** — no `plan`, no `settle`,
+no cancel: an app write the probe did not log. The landing values name the writer. At `scrollHeight` 8077 the
+reader was re-pinned to `7313.181640625`, and at 8229 to `7465`. The app's own bottom is an integer
+(`threadScrollTargetTop` = `scrollHeight - clientHeight`: 7314, 7466) and use-stick-to-bottom's target is
+`scrollHeight - 1 - clientHeight` (7313, 7465) — neither produces a fraction. `el.scrollTop = el.scrollHeight -
+restoreFromBottom` does: an anchor of 763.818359375, i.e. one **captured** (as `scrollHeight - scrollTop`) while
+the reader sat a fraction of a pixel above the bottom, then **applied** later, after they had moved up. That is
+the post-load anchor effect, and it is the writer for every fractional landing in the trace.
+
+**Fix (two writers, one class: an app write landing on a reader who had moved).** `store/thread-scroll.ts` gains
+two pure gates, each used at its write site in `thread/list.tsx`:
+
+- `shouldDisarmThreadFollow` — the app's own classifier (the same one that records the reading position) breaks
+  the sticky follow the moment the reader leaves the bottom band, instead of leaving it to use-stick-to-bottom's
+  escape. That escape only fires from `handleWheel` (needs a wheel event) or from `handleScroll`'s
+  `isScrollingUp` check, which **returns early when a content resize landed in the same frame**
+  (`if (state.resizeDifference || scrollTop === ignoreScrollToTop) return`) — and a live turn resizes the
+  transcript every few frames. Every move that got yanked in the trace was a single scroll event of 400-2400px,
+  which no wheel can produce: scrollbar drags, keyboard pages, find-in-page reveals. The app's own signal must
+  decide, and it does so now.
+- `shouldApplyThreadScrollAnchor` — a **captured** anchor (a prepend/expand, or a restore the reader's own input
+  cancelled) is applied while it still describes the reader: where it puts them, or the scrollTop they had when it
+  was taken (so a prepend the browser has not yet adjusted for still lands). A reader who has scrolled is at
+  neither, and the anchor is **dropped** rather than applied behind them. The parked-offset TARGET (an unreachable
+  remembered offset, parked on the settle loop's clamped exit) still applies regardless, via a `parkedOffsetRef`
+  tag: that anchor is the position the reader asked for, and the clamp put them somewhere else by design.
+
+**Deliberately not gated.** One more app write over a moved reader is visible in the trace: the restore effect's
+own ResizeObserver re-applying a settled `bottom` target (`ro {settled:true, target:bottom}` at 13:19:11, a reader
+190px up; and again after a reveal at 14:05:53). A gate on it was written, and it contradicts a documented
+behaviour with its own test — "a settled bottom target ignores a composer-only resize but still follows transcript
+growth" (`list-restore-composer-resize.test.tsx`) — on evidence that cannot be told apart from the intended follow
+of a reader who was transiently off the bottom. So it stays as it is, with the observation recorded here.
+
+**Tests.** `list-session-scroll.test.tsx`: "disarms the follow for a reader who left the bottom without a wheel,
+so the next growth cannot re-pin them" (asserts `data-following` flips to false and the position survives a
+streamed growth — the wheel-less move is the case every existing driver missed, because all of them dispatch a
+`WheelEvent` first, and `list-session-scroll.test.tsx`'s own "a reader who scrolled up is not yanked" case does
+too, with `requestAnimationFrame` held) and "does not re-pin a settled reader to the bottom when the transcript
+grows under them". `thread-scroll.test.ts`: unit cases for both gates. Fail-before, one gate disabled at a time:
+without the disarm the follow still reads `true` and the reader lands at 4799 instead of 3200; without the anchor
+gate the reader is re-pinned to 5100 instead of 2900. Full desktop UI suite: 11619 pass / 3 fail, and all
+three fail identically with this change stashed (`right-sidebar/terminal/persistent.test.tsx` ×2,
+`store/dead-session-prune.test.ts`) — pre-existing on this machine, not regressions. **Not yet proven live**:
+the fix needs a rebuilt app and a restart, so no session has yet come back to a reading position on the
+installed build.
+
 ### 2026-10-30 (gateway) — a background completion reaches the RUNNING turn instead of the next one
 
 The owner: "these IMPORTANT messages get queued up from background procs that close/die off, and they keep
