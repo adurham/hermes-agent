@@ -22385,6 +22385,12 @@ of GPU). The focused figure is where it was before the review fixes: it was neve
 decoration-dominated while a turn streams, and the ablated build still reads 11-22%
 there. That is the streaming pipeline, and it is the next piece of work.
 
+**Upstream.** Two of these are up as drafts against `NousResearch/hermes-agent`:
+#146717 (env-gated trace capture) and #146718 (unfocused decoration pause). The
+flush-floor change and the compositor rewrite stay fork-local until each has its
+own single-commit A/B run; arc gating stays here regardless, since it is a product
+decision rather than a general win.
+
 **Still open.** (33-41% renderer while a turn streams
 with the window in front). Fable's read: that half is JS/DOM work, not the arcs' paint — the
 per-event writes that bypass the text queue (tool progress/stdout, status, usage) committing
