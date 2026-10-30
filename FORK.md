@@ -22329,7 +22329,27 @@ the burn is gone once nobody is looking at the window — ~70% of a core down to
 8fps while a real blur is in effect (latched on blur/focus, not `document.hasFocus()`), since a
 flush is a React commit plus a Streamdown re-parse of the growing block.
 
-**Still open.** The focused case is unchanged by design (33-41% renderer while a turn streams
+**Second pass, same day (21:0x).** The focused case was not JS at all: injecting
+`animation: none` into the live window dropped renderer 33-41% -> 2% and the GPU
+helper 20-36% -> 0%, while main stayed at 1%. So the decorative animation stack was
+the entire focused-case burn, with the sidebar's per-running-session arcs (4-6 live
+sessions is this user's normal) the bulk of it.
+Two changes followed. `session-row.tsx` now gives the arc to the selected session
+only; every other running row keeps the identical ring through `.arc-static`
+(`animation: none`), keyed off the existing `isSelected` prop. And `styles.css` was
+rewritten to stop animating paint-only properties: `.arc-border` no longer cuts its
+ring with `mask` + `mask-composite` over a moving 240% gradient (a mask over a moving
+subtree rebuilds a render surface every frame) but uses an inset box-shadow track
+with two pre-painted bands that only `translate3d`; `row-pulse-underline` animates
+transform instead of `left`; `quest-glow` and the streaming card bloom pulse by
+opacity instead of `box-shadow`; `.shimmer` breathes instead of sweeping (a text-clip
+sweep repaints glyphs and cannot be composited). Every gate is unchanged.
+
+Measured after installing: focused window, turn running — main 0%, GPU 1%, renderer
+2%. Locked screen — 0/0/0. That is the same as the fully-ablated build, i.e. the
+decorative layer now costs nothing measurable.
+
+**Still open.** (33-41% renderer while a turn streams
 with the window in front). Fable's read: that half is JS/DOM work, not the arcs' paint — the
 per-event writes that bypass the text queue (tool progress/stdout, status, usage) committing
 into the unvirtualised newest turn are the next suspects, and should be attributed with a
