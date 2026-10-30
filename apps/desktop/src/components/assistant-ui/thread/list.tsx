@@ -861,6 +861,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const restoredStorageKeyRef = useRef(scrollStorageKey)
 
   const liveScrollStateRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
+  // TEMPORARY (scroll-trace): the DOM-event effects below do not depend on
+  // `sessionKey`, so their closures would attribute a line to a stale session.
+  // Remove with scroll-trace.ts.
+  const sessionKeyRef = useRef(sessionKey)
+
+  sessionKeyRef.current = sessionKey
   // Key the restore loop has already applied to the current transcript — the
   // record gate: an instance records only the state it actually showed under
   // its own key (an empty-transcript instance still holds the PREVIOUS
@@ -890,7 +896,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const update = () => {
       previousResizeMetrics = resizeMetrics()
-      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      const nextState = threadScrollStateFromMetrics(el)
+
+      if (nextState.kind !== liveScrollStateRef.current.kind) {
+        scrollTrace('live', {
+          client: el.clientHeight,
+          height: el.scrollHeight,
+          key: sessionKeyRef.current,
+          state: nextState,
+          top: el.scrollTop
+        })
+      }
+
+      liveScrollStateRef.current = nextState
     }
 
     const onResize = () => {
@@ -914,7 +932,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
 
       previousResizeMetrics = nextResizeMetrics
-      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      const nextState = threadScrollStateFromMetrics(el)
+
+      if (nextState.kind !== liveScrollStateRef.current.kind) {
+        scrollTrace('live-ro', {
+          client: el.clientHeight,
+          height: el.scrollHeight,
+          key: sessionKeyRef.current,
+          state: nextState,
+          top: el.scrollTop
+        })
+      }
+
+      liveScrollStateRef.current = nextState
     }
 
     el.addEventListener('scroll', update, { passive: true })
