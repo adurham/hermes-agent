@@ -79,6 +79,34 @@ def _replaced_tick_claimed(runner, prepared):
     return bool(row) and row['status'] != 'queued'
 
 
+async def hand_completion_midturn(runner, authority, receipt, event) -> bool:
+    """FORK: a completion the session's RUNNING turn can take mid-turn is handed to it now, instead of
+    waiting for that turn to end (see ``session_queued_controls.hand_notice_to_running_claim``).
+
+    Best-effort by construction: an idle session, a turn with no steer seam, a claim that ended in the
+    meantime, or any error at all leaves the row exactly where it was — queued, and running as its own
+    turn when the claim ends. That is what makes this a latency fix and never a delivery change: the row
+    is still the delivery, the transfer only moves it into the turn that is already running.
+    """
+    admission_id = getattr(receipt, 'admission_id', None)
+    text = str(getattr(event, 'text', '') or '')
+    metadata = getattr(event, 'metadata', None) or {}
+    kind = metadata.get('display_kind')
+    if not admission_id or not text.strip() or not kind:
+        return False
+    from gateway.session_queued_controls import hand_notice_to_running_claim
+    display_metadata = {key: metadata[key] for key in ('display_text', 'notification_category')
+                        if isinstance(metadata.get(key), str)}
+    try:
+        return await hand_notice_to_running_claim(
+            authority, getattr(receipt, 'ref', None), admission_id, text,
+            display_kind=kind, display_metadata=display_metadata or None)
+    except Exception:
+        logger.debug("Mid-turn completion handoff failed for %s; the row stays queued", admission_id,
+                     exc_info=True)
+        return False
+
+
 async def admit_process_notice(runner, authority, adapter, event, evt):
     """Admit a process notice. A completion and the withdrawal of its process's waiting ticks hold
     the heartbeat lock together; a tick already holds it (``deliver_heartbeat``)."""
@@ -93,6 +121,7 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
         return await authority.admit_automation(adapter, event, identity)
     async with _heartbeat_lock(runner):
         receipt = await authority.admit_automation(adapter, event, identity)
+        await hand_completion_midturn(runner, authority, receipt, event)
         await withdraw_process_ticks(runner, evt)
         return receipt
 

@@ -4,6 +4,55 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (gateway) — a background completion reaches the RUNNING turn instead of the next one
+
+The owner: "these IMPORTANT messages get queued up from background procs that close/die off, and they keep
+piling up; they aren't flushed back to the model as often as I think they should." Measured, not assumed:
+session `local-11f3d55d…` (the Switch-2 work, served by gateway pid 85365) held **one** turn from 11:38:16
+to past 13:10, and two completions sat `status='queued'` behind it — `["completion","proc_395b7b937e8f",
+1793378657.88]` at 84 minutes old and `["completion","proc_d435057decd7",1793382368.42]` at 22 — while the
+desktop drawer read "2 Queued". Earlier the same session ran five completions back to back as five separate
+model turns (11:21-11:22). A completion's only delivery was a NEW queued turn (`admit_automation`, intent
+`queue`), so a turn that never ends is a completion the model never sees; upstream's answer to this
+(`#112033`) was a human-facing one-line receipt while the model stayed blind.
+
+Fix — the handoff `prompt.steer_queued` already performs, applied to the completion the gateway just
+admitted. `session_automation.py::admit_process_notice` (completion branch only) now calls
+`hand_completion_midturn` → `session_queued_controls.py::hand_notice_to_running_claim`: when the target
+session has a **running** claim with an adoptable agent, the admitted row goes `queued` → terminal
+`steering` bound to that claim's generation (`steer_session_input`), and the notice text is pushed into the
+claim's agent via a new `agent/interrupt_control.py::push_notice`, delivered at the pre-API-call seam
+(`agent/turn_iteration_prep.py::_drain_midturn_notices`) as its own `role:user` row after the newest tool
+result — the /steer seam and row rules, minus the two things that made reusing steer() wrong: the out-of-band
+user marker (a machine notice must not claim the user wrote it; it already carries the gateway's
+INTERNAL NOTIFICATION footer) and `_turn_user_intervened` (the user did not intervene). The row keeps the
+caller's `display_kind`/`display_metadata` (`process_complete` + its `display_text`), so the desktop keeps
+painting its process card instead of a user bubble — `apps/desktop`'s card test is content- and kind-based,
+and `PERSISTENCE_ONLY_MESSAGE_FIELDS` keeps both off the wire.
+
+Nothing about delivery semantics changed. The row is still the delivery and the claim's own settlement still
+decides it (`steer_transfers` / `settle_steer_transfers`, extended to settle a notice ticket via
+`_withdraw_ticket`): taken by a drain of the turn → `steered`, never replayed; **not** taken (the turn ended
+first, or had no tool result to deliver after) → queued again in its own FIFO place and run once as its own
+turn — exactly today's behaviour. An idle session, a session with no authority, a turn with no steer seam
+(cron, a managed worker), a claim that ended in the meantime, or any exception at all leaves the row queued.
+So the worst case of this change is the old behaviour, never a lost or duplicated completion.
+
+Files: `gateway/session_automation.py`, `gateway/session_queued_controls.py`,
+`agent/interrupt_control.py`, `agent/prompt_builder.py` (`notice_user_row`), `agent/turn_iteration_prep.py`,
+`agent/agent_init.py` (the notice buffer's two slots), plus the two docs sections that promised the old
+behaviour (`user-guide/messaging/index.md`, `developer-guide/gateway-internals.md`).
+
+Tests: `tests/agent/test_midturn_notice_row.py` (5 — the row's shape/provenance/kind, the own-row-not-smeared
+anchoring pin, the no-tool-result path returning the notice with its ticket unconsumed, steer/notice ticket
+independence, empty refusal) and `tests/gateway/test_completion_midturn_handoff.py` (6 — handoff consumed →
+`steered` and never re-run / not consumed → back to its FIFO place and run once, idle session, no-seam
+fallback, the call site incl. "a heartbeat is not handed over", the wrapper's metadata extraction and its
+swallow-on-error). Verified: 11 pass; 98 pass across the queued-transfer/queued-controls/FIFO-wake/
+completion-delivery/subagent-hold/CLI-holdoff/process-result suites; 126 pass across the agent steer/
+interrupt/finalizer/iteration-budget set. Not proven live: the gateway has not been restarted onto this
+code, so no completion has yet been observed arriving mid-turn in a real session — that needs the restart.
+
 ### 2026-10-30 (desktop) — a restore that never landed left the reader mid-flight
 
 A tab left at the bottom could come back a few messages up, with the agent idle. The trace (behind a

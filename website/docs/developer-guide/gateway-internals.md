@@ -696,7 +696,19 @@ _register_completion_watcher` → `run_notifications.py::arm_process_watcher`); 
 is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
 while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
 receipt (the agent's next turn is the report) unless the launching turn is still running at exit
-— then the injection only queues a follow-up, so the concise receipt goes out immediately.
+— then the completion is handed into that running turn as a mid-turn notice and the concise
+receipt goes out immediately.
+
+The mid-turn handoff (`session_automation.py::hand_completion_midturn` →
+`session_queued_controls.py::hand_notice_to_running_claim`) is the transfer `prompt.steer_queued`
+already used for a queued prompt: the admitted completion row goes `queued` → terminal
+`steering` bound to the running claim's generation, its text is pushed to that claim's agent as a
+mid-turn notice (`agent/interrupt_control.py::push_notice`, delivered at the pre-API-call seam as
+its own user row — the caller's display kind, no out-of-band user marker), and the claim's own
+settlement decides it: taken by a drain of the turn → `steered`, never replayed; not taken (the
+turn ended first) → queued again in its own FIFO place and run once as its own turn. An idle
+session, a turn with no steer seam (cron, a managed worker) or a claim that ended meanwhile
+leaves the row exactly as it was, so the handoff is a latency fix and never a delivery change.
 
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
 required. Notify-off drains these without waking. Transport failures are retried; unavailable
