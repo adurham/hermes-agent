@@ -10,7 +10,8 @@ import {
   requestScrollToBottom,
   resetPublishedThreadScroll,
   resetThreadScroll,
-  setThreadAtBottom
+  setThreadAtBottom,
+  threadScrollStateFromMetrics
 } from './thread-scroll'
 
 afterEach(() => {
@@ -135,5 +136,24 @@ describe('requestScrollToBottom', () => {
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledOnce()
     stopSecond()
+  })
+})
+
+describe('threadScrollStateFromMetrics', () => {
+  const metrics = (fromBottom: number) => ({ clientHeight: 762, scrollHeight: 5000, scrollTop: 5000 - 762 - fromBottom })
+
+  it('records the follow loop\'s one-frame lag as the bottom, not a reading position', () => {
+    // The lag values seen on live traces while a tool card re-renders under a reader who is following
+    // the tail. Recorded as offsets, they came back as a deliberate position just outside the follow
+    // zone, so the follow disarmed and the transcript walked away under the reader.
+    for (const lag of [0, 1, 16.9, 24.18, 32, 41, 80.09, 96]) {
+      expect(threadScrollStateFromMetrics(metrics(lag))).toEqual({ kind: 'bottom' })
+    }
+  })
+
+  it('still records a position the reader actually stopped at', () => {
+    for (const parked of [97, 281, 800, 1500]) {
+      expect(threadScrollStateFromMetrics(metrics(parked))).toEqual({ fromBottom: parked, kind: 'offset' })
+    }
   })
 })

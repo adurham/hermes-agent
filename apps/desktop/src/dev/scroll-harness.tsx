@@ -102,12 +102,23 @@ function Harness() {
 
   const totals = counts
 
+  // A hidden pane's transcript is PRUNED in the real app (its runtime window collapses to a short
+  // tail — the live trace shows a hidden pane around 989px where the revealed one is 4385px). That
+  // prune-and-regrow on reveal is the case this harness has to model, because a reader parked at the
+  // bottom must still be at the bottom once the full transcript lays back out.
+  const PRUNED_ROWS = 2
+
   const messages = useMemo(
     () =>
       Object.fromEntries(
-        KEYS.map(key => [key, turns(key, totals[key] ?? 0).slice(-Math.max(1, mounted[key] ?? 1))])
+        KEYS.map(key => {
+          const window = mounted[key] ?? 1
+          const rows = key === active ? window : Math.min(window, PRUNED_ROWS)
+
+          return [key, turns(key, totals[key] ?? 0).slice(-Math.max(1, rows))]
+        })
       ) as Record<string, ThreadMessage[]>,
-    [mounted, totals]
+    [active, mounted, totals]
   )
 
   const grow = (by: number) => setCounts(current => ({ ...current, [active]: (current[active] ?? 0) + by }))
@@ -142,11 +153,10 @@ function Harness() {
     return map
   }, [expand])
 
-  // Re-entering a session rebuilds its runtime window at the tail (what the app does when a pane is
-  // re-adopted), which is the case a deep reading position has to survive. Done in the switch
-  // handler rather than an effect, so no reactive value is mirrored into a ref.
+  // Switching tabs does not shrink the runtime window — a kept-alive pane comes back at whatever it
+  // had (the real trace: a revealed pane at 4385px that was 989px while hidden, the prune being the
+  // hidden-render rule below). Only a cold re-adopt rebuilds the window at the tail.
   const selectTab = (key: string) => {
-    setMounted(current => ({ ...current, [active]: MODEL_WINDOW[active] ?? 8 }))
     setActive(key)
   }
 
