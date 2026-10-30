@@ -567,9 +567,12 @@ export class JsonRpcRequestChannel {
     // a deadline on its age alone dropped every idle hidden socket.
     let lastPingAt = 0
     let lastTickAt = Date.now()
-    // One probe per silence episode: a tick that ran late cannot tell local
-    // suspension from a dead peer, so it re-probes once instead of dropping a
-    // socket whose pong is still queued behind the stall.
+    let previousTickLate = false
+    // One probe per silence episode: a one-off late tick (an on-time tick, then
+    // a stall) cannot tell local suspension from a dead peer, so it re-probes
+    // once instead of dropping a socket whose pong is still queued behind the
+    // stall. Steady throttling makes every tick late; that is not a stall, and
+    // its dead-socket detection stays two throttled ticks.
     let graceProbeSent = false
 
     this.heartbeatTimer = setInterval(() => {
@@ -579,8 +582,10 @@ export class JsonRpcRequestChannel {
 
       const now = Date.now()
       const late = now - lastTickAt >= this.options.heartbeatIntervalMs * LATE_TICK_INTERVALS
+      const stalled = late && !previousTickLate
 
       lastTickAt = now
+      previousTickLate = late
 
       const unanswered = lastPingAt > this.lastLivenessAt
 
@@ -589,7 +594,7 @@ export class JsonRpcRequestChannel {
       }
 
       if (unanswered && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
-        if (!late || graceProbeSent) {
+        if (!stalled || graceProbeSent) {
           this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
           return
