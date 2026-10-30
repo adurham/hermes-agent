@@ -453,6 +453,28 @@ def _start_gateway_start_cron_and_housekeeping(runner):
                 "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
         daemon=True, name="gateway-housekeeping")
     process_ownership.start_writer(housekeeping_thread)
+
+    # Memory-pipeline self-heal. A shutdown-deferred session end keeps its extraction
+    # buffer on disk "for the next session end of the same session_id" — which never
+    # comes, because a session id ends once — and the 7-day prune then drops every
+    # proposal silently. Drain those orphans in the background, per profile home,
+    # through the same commit path the non-interactive session end uses.
+    def _drain_orphaned_memory_buffers():
+        try:
+            import contextlib
+            from hermes_constants import get_default_hermes_root
+            from gateway.run import _profile_runtime_scope
+            from tools.memory_extraction.orphan_sweep import sweep_orphaned_buffers
+            root = get_default_hermes_root()
+            homes = [root] + sorted(p for p in (root / "profiles").glob("*") if p.is_dir())
+            for home in homes:
+                with contextlib.suppress(Exception), _profile_runtime_scope(home):
+                    sweep_orphaned_buffers()
+        except Exception:
+            logger.debug("memory buffer sweep failed", exc_info=True)
+
+    threading.Thread(target=_drain_orphaned_memory_buffers, daemon=True,
+                     name="memory-buffer-sweep").start()
     return cron_stop, cron_provider, cron_thread, housekeeping_thread
 
 
