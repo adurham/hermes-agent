@@ -4,6 +4,21 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (desktop) — a restore that never landed left the reader mid-flight
+
+A tab left at the bottom could come back a few messages up, with the agent idle. The trace (behind a
+temporary renderer probe, since removed) showed restores that were planned and then never settled, and
+every in-flight cancel was `foreign-scroll` with the position 13-14px off the app's own apply
+(top=192 own=206, top=1198 own=1212, top=509 own=523, top=1914 own=1927) and the target already at the
+new bottom. The app records `ownScrollTop` when it applies a target, but a same-frame content resize
+(a shrinking card, the composer clearance growing) makes the browser clamp scrollTop before the app
+measures the new height, so the exact-match test in the scroll handler read its own clamp as reader
+input and cancelled the restore. Fixed by forgiving a small deviation from the in-flight restore's own
+target when the transcript height changed under it (`THREAD_SCROLL_GLUE_TOLERANCE_PX`); a reader's
+scrollbar drag changes no height and still ends the restore. The dev harness
+(`scroll-harness.html` + `scripts/diag-scroll-*.mjs`) does not reproduce it — the trigger is the live
+pane's own layout — so this one rests on the live trace, not a headless case.
+
 ### 2026-10-30 (harness, documented, not fixed) — a tool call cannot get the time it asks for
 
 `terminal` advertises a 600 s foreground maximum, but what actually kills a call is the concurrent-tool
