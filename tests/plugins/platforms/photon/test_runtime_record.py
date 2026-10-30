@@ -75,27 +75,30 @@ def test_record_lives_at_the_top_of_the_profile_home() -> None:
     assert photon_adapter._runtime_record_path() == get_hermes_home() / "photon-sidecar.json"
 
 
-def test_read_moves_a_record_from_the_previous_location(record_path: Path) -> None:
-    data = {"port": 8789, "token": "tok", "pid": 4242}
-    previous = _previous_record(record_path, data)
+def test_read_deletes_a_previous_record_unread(record_path: Path) -> None:
+    previous = _previous_record(record_path, {"port": 8789, "token": "tok", "pid": 4242})
 
-    assert photon_adapter._read_runtime_record() == data
-    assert json.loads(record_path.read_text(encoding="utf-8")) == data
+    assert photon_adapter._read_runtime_record() is None
     assert not previous.exists()
-
-
-def test_a_failed_move_reads_the_previous_record(record_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    data = {"port": 8789, "token": "tok", "pid": 4242}
-    previous = _previous_record(record_path, data)
-
-    def refuse(*_args: Any, **_kwargs: Any) -> None:
-        raise PermissionError(13, "Access is denied")
-
-    monkeypatch.setattr(os, "rename", refuse)
-
-    assert photon_adapter._read_runtime_record() == data
-    assert previous.exists()
     assert not record_path.exists()
+
+
+def test_a_previous_symlink_is_removed_and_its_target_kept(record_path: Path) -> None:
+    target = record_path.parent / "workspace" / "leak.json"
+    target.parent.mkdir()
+    target.write_text("{}", encoding="utf-8")
+    previous = record_path.parent / "runtime" / record_path.name
+    previous.parent.mkdir()
+    try:
+        previous.symlink_to(target)
+    except OSError:
+        pytest.skip("creating a symlink needs a privilege this host lacks")
+
+    photon_adapter._write_runtime_record(8789, "new", 4242)
+
+    assert not os.path.lexists(previous)
+    assert target.read_text(encoding="utf-8") == "{}"
+    assert json.loads(record_path.read_text(encoding="utf-8"))["token"] == "new"
 
 
 def test_write_and_delete_leave_no_previous_record(record_path: Path) -> None:

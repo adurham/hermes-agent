@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-# Where earlier releases kept the same stores; the first read moves them to the profile home.
+# Where earlier releases kept the same stores; Hermes deletes a copy there unread.
 PREVIOUS_LOCATIONS = (
     "cache/bws_cache.json", "cache/bws_cache.enc.json", "cache/op_cache.json", "runtime/photon-sidecar.json",
 )
@@ -51,6 +51,14 @@ def _touch(base: Path, rel: str) -> Path:
 
 def test_the_stores_sit_at_the_top_of_the_profile_home(home):
     assert _current(home) == ("bws_cache.json", "bws_cache.enc.json", "op_cache.json", "photon-sidecar.json")
+
+
+def test_the_shared_list_names_both_locations(home):
+    from hermes_cli.home_data_layout import LEGACY_SECRET_CACHE_PATHS, SECRET_CACHE_FILES, SECRET_CACHE_STORES
+
+    assert SECRET_CACHE_FILES == _current(home)
+    assert LEGACY_SECRET_CACHE_PATHS == PREVIOUS_LOCATIONS
+    assert SECRET_CACHE_STORES == (*SECRET_CACHE_FILES, *LEGACY_SECRET_CACHE_PATHS)
 
 
 def test_profile_credential_paths_list_both_locations(home):

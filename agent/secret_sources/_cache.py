@@ -12,21 +12,22 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Generic, Optional, TypeVar
 
 from hermes_constants import secure_parent_dir
-from utils import adopt_legacy_file, atomic_json_write
+from utils import atomic_json_write
 
 __all__ = [
     "CachedFetch",
     "DiskCache",
     "SecretCache",
     "atomic_write_json",
+    "current_cache_path",
     "entry_from_payload",
     "fingerprint",
-    "live_cache_path",
     "remove_cache_file",
     "resolve_cache_home",
 ]
@@ -57,10 +58,12 @@ def resolve_cache_home(home_path: Optional[Path] = None) -> Path:
     return home_path
 
 
-def live_cache_path(home: Path, name: str) -> Path:
-    """``<home>/<name>``, after moving a copy from ``<home>/cache/``, where earlier releases kept
-    the secret caches; that old path when the move fails."""
-    return adopt_legacy_file(home / name, home / "cache" / name)
+def current_cache_path(home: Path, name: str) -> Path:
+    """``<home>/<name>``. A copy at ``<home>/cache/<name>``, where earlier releases kept the secret
+    caches, is deleted first without being read: the agent can write that folder."""
+    with suppress(OSError):
+        (home / "cache" / name).unlink()
+    return home / name
 
 
 def remove_cache_file(home: Path, name: str) -> None:
@@ -124,15 +127,15 @@ class DiskCache(Generic[K]):
     def path(self, home_path: Optional[Path] = None) -> Path:
         return resolve_cache_home(home_path) / self._basename
 
-    def _live_path(self, home_path: Optional[Path]) -> Path:
-        return live_cache_path(resolve_cache_home(home_path), self._basename)
+    def _current_path(self, home_path: Optional[Path]) -> Path:
+        return current_cache_path(resolve_cache_home(home_path), self._basename)
 
     def read(self, key: K, ttl_seconds: float, home_path: Optional[Path] = None) -> Optional[CachedFetch]:
         """Fresh cached entry for ``key``, or None (I/O error, mismatch, stale)."""
         if ttl_seconds <= 0:
             return None
         try:
-            with open(self._live_path(home_path), "r", encoding="utf-8-sig") as f:
+            with open(self._current_path(home_path), "r", encoding="utf-8-sig") as f:
                 payload = json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
@@ -147,7 +150,7 @@ class DiskCache(Generic[K]):
             return
         payload = {"key": self._key_serializer(key), "secrets": entry.secrets, "fetched_at": entry.fetched_at}
         try:
-            atomic_write_json(self._live_path(home_path), payload)
+            atomic_write_json(self._current_path(home_path), payload)
         except OSError:
             pass  # best-effort — a disk-cache miss next invocation is fine
 

@@ -45,7 +45,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from gateway.platforms.send_targets import regex_stripped_parser
-from utils import adopt_legacy_file, atomic_json_write
+from utils import atomic_json_write
 
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
@@ -114,22 +114,25 @@ def _legacy_runtime_record_path() -> Path:
     return path.parent / "runtime" / path.name
 
 
-def _live_runtime_record_path() -> Path:
-    """The record path, after moving a record left at the legacy path (that path if the move fails)."""
-    return adopt_legacy_file(_runtime_record_path(), _legacy_runtime_record_path())
+def _current_runtime_record_path() -> Path:
+    """The record path. A record at the legacy path is deleted first without being read: the agent
+    can write that folder."""
+    with contextlib.suppress(OSError):
+        _legacy_runtime_record_path().unlink()
+    return _runtime_record_path()
 
 
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
     """Atomically persist ``{port, token, pid}`` 0600 from creation (best-effort)."""
     try:
-        atomic_json_write(_live_runtime_record_path(), {"port": port, "token": token, "pid": pid}, indent=None, mode=0o600)
+        atomic_json_write(_current_runtime_record_path(), {"port": port, "token": token, "pid": pid}, indent=None, mode=0o600)
     except Exception as e:
         logger.warning("[photon] failed to write sidecar runtime record: %s", e)
 
 
 def _read_runtime_record() -> Optional[dict[str, Any]]:
     try:
-        raw = json.loads(_live_runtime_record_path().read_text(encoding="utf-8-sig"))
+        raw = json.loads(_current_runtime_record_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None

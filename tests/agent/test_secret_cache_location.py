@@ -2,15 +2,14 @@
 
 A sandbox that hides credential stores by path can hide a file safely only at the top of the
 profile home: a writable folder above a hidden file can be renamed to expose it, and the
-sandboxed backend has to write ``cache/``. Earlier releases kept these caches in ``cache/``; the
-first read moves such a copy to the new location, and every path keeps a single live copy.
+sandboxed backend has to write ``cache/``. Earlier releases kept these caches in ``cache/``; Hermes
+deletes such a copy on first use without reading it, since the agent could have written it.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import stat
 import time
 from pathlib import Path
 
@@ -47,13 +46,6 @@ def _previous(home: Path, name: str) -> Path:
     return path
 
 
-def _refuse_rename(monkeypatch):
-    def refuse(*_args, **_kwargs):
-        raise PermissionError(13, "Access is denied")
-
-    monkeypatch.setattr(os, "rename", refuse)
-
-
 def test_caches_live_at_the_top_of_the_profile_home(home):
     assert bw._disk_cache_path(home) == home / "bws_cache.json"
     assert bw._encrypted_disk_cache_path(home) == home / "bws_cache.enc.json"
@@ -68,31 +60,14 @@ def test_a_write_lands_in_the_profile_home(home):
     assert not (home / "cache").exists()
 
 
-def test_the_first_read_moves_a_cache_from_the_previous_location(home):
+def test_the_first_read_deletes_a_previous_copy_unread(home):
     cache = DiskCache("probe.json", key_serializer=str)
     previous = _previous(home, "probe.json")
     previous.write_text(_payload("k", {"A": "b"}), encoding="utf-8")
 
-    entry = cache.read("k", 60, home)
-
-    assert entry is not None and entry.secrets == {"A": "b"}
-    assert (home / "probe.json").is_file()
+    assert cache.read("k", 60, home) is None
     assert not previous.exists()
-
-
-@pytest.mark.platforms("posix")  # POSIX permission bits
-def test_the_move_keeps_the_file_mode(home):
-    cache = DiskCache("probe.json", key_serializer=str)
-    previous = _previous(home, "probe.json")
-    previous.write_text(_payload("k", {"A": "b"}), encoding="utf-8")
-    previous.chmod(0o600)
-    old_umask = os.umask(0o022)  # a copy instead of a rename would come out 0o644
-    try:
-        assert cache.read("k", 60, home) is not None
-    finally:
-        os.umask(old_umask)
-
-    assert stat.S_IMODE((home / "probe.json").stat().st_mode) == 0o600
+    assert not (home / "probe.json").exists()
 
 
 def test_a_current_cache_wins_and_the_previous_copy_is_removed(home):
@@ -107,37 +82,43 @@ def test_a_current_cache_wins_and_the_previous_copy_is_removed(home):
     assert not previous.exists()
 
 
-def test_a_failed_move_keeps_working_from_the_previous_copy(home, monkeypatch):
+def test_a_write_deletes_a_previous_copy(home):
     cache = DiskCache("probe.json", key_serializer=str)
     previous = _previous(home, "probe.json")
-    previous.write_text(_payload("k", {"A": "b"}), encoding="utf-8")
-    _refuse_rename(monkeypatch)
-
-    entry = cache.read("k", 60, home)
-    assert entry is not None and entry.secrets == {"A": "b"}
-    assert previous.is_file()
+    previous.write_text(_payload("k", {"A": "previous"}), encoding="utf-8")
 
     cache.write("k", CachedFetch(secrets={"A": "c"}, fetched_at=time.time()), 60, home)
-    copies = [p for p in (home / "probe.json", previous) if p.exists()]
-    assert len(copies) == 1, copies
-    assert json.loads(copies[0].read_text(encoding="utf-8"))["secrets"] == {"A": "c"}
+
+    assert not previous.exists()
+    assert json.loads((home / "probe.json").read_text(encoding="utf-8"))["secrets"] == {"A": "c"}
 
 
-def test_a_move_another_process_finished_reads_the_new_location(home, monkeypatch):
+def test_a_previous_symlink_is_removed_and_its_target_kept(home):
     cache = DiskCache("probe.json", key_serializer=str)
+    target = home / "workspace" / "leak.json"
+    target.parent.mkdir()
+    target.write_text("{}", encoding="utf-8")
     previous = _previous(home, "probe.json")
-    previous.write_text(_payload("k", {"A": "b"}), encoding="utf-8")
-    real_rename = os.rename
+    try:
+        previous.symlink_to(target)
+    except OSError:
+        pytest.skip("creating a symlink needs a privilege this host lacks")
 
-    def raced(src, dst):
-        real_rename(src, dst)  # a concurrent reader moved it first
-        raise FileNotFoundError(2, "The system cannot find the file specified")
+    cache.write("k", CachedFetch(secrets={"A": "c"}, fetched_at=time.time()), 60, home)
 
-    monkeypatch.setattr(os, "rename", raced)
+    assert not os.path.lexists(previous)
+    assert target.read_text(encoding="utf-8") == "{}"
+    assert json.loads((home / "probe.json").read_text(encoding="utf-8"))["secrets"] == {"A": "c"}
 
-    entry = cache.read("k", 60, home)
 
-    assert entry is not None and entry.secrets == {"A": "b"}
+def test_a_previous_directory_is_left_alone(home):
+    cache = DiskCache("probe.json", key_serializer=str)
+    (_previous(home, "probe.json") / "inner").mkdir(parents=True)
+
+    cache.write("k", CachedFetch(secrets={"A": "c"}, fetched_at=time.time()), 60, home)
+
+    assert (home / "cache" / "probe.json" / "inner").is_dir()
+    assert json.loads((home / "probe.json").read_text(encoding="utf-8"))["secrets"] == {"A": "c"}
 
 
 def test_clear_removes_both_locations(home):
@@ -152,16 +133,14 @@ def test_clear_removes_both_locations(home):
     assert not previous.exists()
 
 
-def test_onepassword_cache_moves_from_the_previous_location(home):
+def test_onepassword_cache_deletes_the_previous_copy_unread(home):
     key = ("auth-fp", "account", str(home), "refs-fp")
     previous = _previous(home, "op_cache.json")
     previous.write_text(_payload(op._disk_key_str(key), {"OP_KEY": "v"}), encoding="utf-8")
 
-    entry = op._STORE.disk.read(key, 60, home)
-
-    assert entry is not None and entry.secrets == {"OP_KEY": "v"}
-    assert (home / "op_cache.json").is_file()
+    assert op._STORE.disk.read(key, 60, home) is None
     assert not previous.exists()
+    assert not (home / "op_cache.json").exists()
 
 
 def _seed_encrypted(home: Path) -> tuple[tuple[str, str, str], Path]:
@@ -175,26 +154,14 @@ def _seed_encrypted(home: Path) -> tuple[tuple[str, str, str], Path]:
     return cache_key, previous
 
 
-def test_bitwarden_encrypted_cache_moves_from_the_previous_location(home):
+def test_bitwarden_encrypted_cache_deletes_the_previous_copy_unread(home):
     cache_key, previous = _seed_encrypted(home)
 
     entry = bw._read_encrypted_disk_cache(cache_key=cache_key, access_token="0.t",
                                           max_age_seconds=3600, home_path=home)
 
-    assert entry is not None and entry.secrets == {"K": "v"}
-    assert (home / "bws_cache.enc.json").is_file()
+    assert entry is None
     assert not previous.exists()
-
-
-def test_bitwarden_encrypted_cache_failed_move_reads_the_previous_copy(home, monkeypatch):
-    cache_key, previous = _seed_encrypted(home)
-    _refuse_rename(monkeypatch)
-
-    entry = bw._read_encrypted_disk_cache(cache_key=cache_key, access_token="0.t",
-                                          max_age_seconds=3600, home_path=home)
-
-    assert entry is not None and entry.secrets == {"K": "v"}
-    assert previous.is_file()
     assert not (home / "bws_cache.enc.json").exists()
 
 

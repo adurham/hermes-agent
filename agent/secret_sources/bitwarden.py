@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
-    fingerprint as _token_fingerprint, live_cache_path, remove_cache_file, resolve_cache_home,
+    current_cache_path, fingerprint as _token_fingerprint, remove_cache_file, resolve_cache_home,
 )
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
@@ -58,8 +58,8 @@ def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
     return resolve_cache_home(home_path) / _ENCRYPTED_CACHE_BASENAME
 
 
-def _live_encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    return live_cache_path(resolve_cache_home(home_path), _ENCRYPTED_CACHE_BASENAME)
+def _current_encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    return current_cache_path(resolve_cache_home(home_path), _ENCRYPTED_CACHE_BASENAME)
 
 
 # First matching rule wins. The BSM identity endpoint rejects a revoked /
@@ -143,7 +143,7 @@ def _write_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, entr
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, serialized_key.encode("utf-8"))
         payload = {"version": _ENCRYPTED_CACHE_VERSION, "key": serialized_key,
                    "salt": _b64e(salt), "nonce": _b64e(nonce), "ciphertext": _b64e(ciphertext)}
-        atomic_write_json(_live_encrypted_disk_cache_path(home_path), payload)
+        atomic_write_json(_current_encrypted_disk_cache_path(home_path), payload)
         _STORE.disk.clear(home_path)
     except Exception:
         return
@@ -157,7 +157,7 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-        payload = json.loads(_live_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8-sig"))
+        payload = json.loads(_current_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8-sig"))
         serialized_key = _cache_key_str(cache_key)
         if (not isinstance(payload, dict)
                 or payload.get("version") != _ENCRYPTED_CACHE_VERSION

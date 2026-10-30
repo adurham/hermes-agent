@@ -341,28 +341,6 @@ def unlink_files_older_than(directory: str | Path, pattern: str, max_age_seconds
     return removed
 
 
-def adopt_legacy_file(path: str | Path, legacy: str | Path) -> Path:
-    """Move the file at *legacy* (where an earlier release kept it) to *path*; return the path to use.
-
-    The move is a rename, so the file keeps its permissions. When *path* already exists the legacy
-    copy is a stale duplicate and is removed. When the move fails *legacy* is returned, so the caller
-    keeps working from the old copy and never holds two live copies. Never raises.
-    """
-    path, legacy = Path(path), Path(legacy)
-    if not os.path.lexists(legacy):
-        return path
-    if os.path.lexists(path):
-        with suppress(OSError):
-            legacy.unlink()
-        return path
-    try:
-        os.rename(legacy, path)
-    except OSError:
-        if os.path.lexists(legacy):  # still there; gone means another process moved it first
-            return legacy
-    return path
-
-
 def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
     """``shutil.rmtree`` that can also delete read-only trees.
 
