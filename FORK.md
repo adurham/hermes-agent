@@ -22345,9 +22345,23 @@ transform instead of `left`; `quest-glow` and the streaming card bloom pulse by
 opacity instead of `box-shadow`; `.shimmer` breathes instead of sweeping (a text-clip
 sweep repaints glyphs and cannot be composited). Every gate is unchanged.
 
-Measured after installing: focused window, turn running — main 0%, GPU 1%, renderer
-2%. Locked screen — 0/0/0. That is the same as the fully-ablated build, i.e. the
-decorative layer now costs nothing measurable.
+Measured after installing, then re-measured because the first table compared two different
+UI states. The honest numbers, focused window, this machine:
+
+  turn idle (nothing streaming):        renderer 2%,  GPU 1%
+  turn live, animations on:             renderer 28-30%, GPU 4-7%
+  turn live, animations force-ablated:  renderer 22%, GPU 4%
+
+The compositor work bought the GPU half outright (20-36% -> 4-7%) and took the decorative
+layer from ~11-19% down to ~6-8%. What is left while a turn streams — ~22% of one core on
+the renderer with every animation disabled — is the streaming pipeline itself (a commit
+plus a Streamdown re-parse per flush), not decoration. The "2%" figure that first went in
+here was an idle-UI reading, not the streaming number.
+
+Visual check done from a screenshot rather than by the owner: ring continuous all four
+sides, bright segments on the top and bottom edges, no diagonal and nothing crossing the
+row interior; two frames 1.5s apart differ by ~46k pixels in the sidebar, so the band is
+actually travelling.
 
 **Still open.** (33-41% renderer while a turn streams
 with the window in front). Fable's read: that half is JS/DOM work, not the arcs' paint — the
