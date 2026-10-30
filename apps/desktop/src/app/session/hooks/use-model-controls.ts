@@ -315,8 +315,26 @@ export function useModelControls({
         cacheSelection(snapshot.provider, snapshot.model)
       }
 
-      paintSelection()
+      // A paint that throws used to reject this promise into a fire-and-forget caller
+      // (`void onSelect(...)` in the menu): the row closed, nothing moved, and no surface
+      // said anything. Surface it like any other failed switch instead of vanishing.
+      try {
+        paintSelection()
+      } catch (err) {
+        notifyError(err, copy.modelSwitchFailed)
+
+        return false
+      }
+
       cacheSelection(selection.provider, selection.model)
+
+      // Which surface picked what — the one record a silent no-op leaves behind.
+      console.info('[model-pick]', {
+        before: `${before.provider}:${before.model}`,
+        session: liveSessionId,
+        surface: touchesPrimary ? 'primary' : 'tile',
+        target: `${selection.provider}:${selection.model}`
+      })
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
@@ -371,6 +389,8 @@ export function useModelControls({
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
         if (!result?.deferred) {
+          console.info('[model-pick] applied')
+
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })
@@ -386,12 +406,18 @@ export function useModelControls({
       try {
         const result = await requestSwitch()
 
+        console.info('[model-pick] answer', result)
+
         if (result?.confirm_required) {
           // A newer pick already owns the pill; asking to confirm this one
           // would only offer to undo it.
           const restored = settleUnapplied()
 
           if (!restored) {
+            // Nothing was asked and nothing was repainted: the pick is gone
+            // without a word, which reads as a dead menu. Say so instead.
+            console.warn('[model-pick] guarded target superseded before its dialog could ask')
+
             return false
           }
 
@@ -452,6 +478,8 @@ export function useModelControls({
 
         return true
       } catch (err) {
+        console.warn('[model-pick] failed', err)
+
         // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
         // deferring it. Don't punish the user for a backend they haven't
         // updated: keep the pick painted as the composer's selection, which is
