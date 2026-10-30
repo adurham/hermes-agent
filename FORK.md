@@ -4,6 +4,16 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (harness, documented, not fixed) — a tool call cannot get the time it asks for
+
+`terminal` advertises a 600 s foreground maximum, but what actually kills a call is the concurrent-tool
+deadline in `agent/tool_executor.py` (`_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0`), and a call's own
+`timeout` argument never raises it. A call that asked for 480 s died at 420 s ("Error executing tool
+'terminal': timed out after 420.0s"), which the GUI shows as a "Result unavailable" card while the run is
+still in flight. Either honour an explicit `timeout=` up to the advertised maximum (`_extend_tool_timeout`
+is the seam) or lower the advertised maximum to match; the owner has explicitly deprioritised both, so this
+stays a note rather than a change.
+
 ### 2026-10-30 (desktop) — an unreachable reading position stranded the reader at the top of the loaded rows
 
 **Symptom (reported by the owner).** "When I'm bouncing around tabs it doesn't always remember where we were
