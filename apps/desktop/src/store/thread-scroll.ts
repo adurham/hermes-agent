@@ -211,6 +211,43 @@ export function threadScrollStateFromMetrics(
   return fromBottom <= threshold ? THREAD_SCROLL_BOTTOM : { fromBottom, kind: 'offset' }
 }
 
+/**
+ * How far a scrollTop may sit from an in-flight restore's target and still count as the app's own
+ * scroll rather than the reader's.
+ *
+ * The app records `ownScrollTop` when it applies a target, but a content resize in the same frame (a
+ * shrinking card, the composer clearance growing) makes the browser clamp scrollTop before the app
+ * measures the new height — so `ownScrollTop` is stale by exactly that jitter, and the scroll
+ * handler's exact-match test called the app's own clamp a FOREIGN scroll. That cancelled the restore
+ * and left the reader wherever the transient frame was, which is the reported "I scrolled to the
+ * bottom, bounced, and came back a few messages up": live trace has it as top=192 own=206,
+ * top=1198 own=1212, top=509 own=523, top=1914 own=1927 — every one 13-14px, every one with the
+ * target already at the new bottom. Well inside a message row, so a real scrollbar drag, rail jump or
+ * find-in-page reveal still ends the restore.
+ */
+export const THREAD_SCROLL_GLUE_TOLERANCE_PX = 32
+
+/**
+ * True when a scroll position is the app's own rather than reader input: either the position it
+ * applied itself, or — while the restore is still landing — a small deviation from its target, which
+ * is the browser clamping after a same-frame content resize.
+ */
+export function isOwnThreadScroll(args: {
+  heightChanged: boolean
+  loadSettled: boolean
+  ownScrollTop: number | null
+  scrollTop: number
+  targetTop: number
+}): boolean {
+  if (args.scrollTop === args.ownScrollTop || args.scrollTop === args.targetTop) {
+    return true
+  }
+
+  return (
+    !args.loadSettled && args.heightChanged && Math.abs(args.scrollTop - args.targetTop) <= THREAD_SCROLL_GLUE_TOLERANCE_PX
+  )
+}
+
 /** The scrollTop that re-applies `state` at the current content height. */
 export function threadScrollTargetTop(
   state: ThreadScrollState,
