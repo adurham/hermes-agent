@@ -22364,6 +22364,27 @@ sides, bright segments on the top and bottom edges, no diagonal and nothing cros
 row interior; two frames 1.5s apart differ by ~46k pixels in the sidebar, so the band is
 actually travelling.
 
+**After the reviews (same night).** Three adversarial reviews and Fable all said
+"revise, don't kill", and they were right about four things that shipped broken:
+both focus latches could strand on a missed `focus` event (stream pinned at 8fps, or
+the CSS pause stuck on :root for the session); blur-pause was also installed in
+popped-out session windows — the ones opened *to be watched* from another display;
+pausing everything froze spinners and the streaming cursor mid-frame on a window
+someone was still looking at; and `.row-pulse-underline::before` still carried a
+`filter: drop-shadow()`, i.e. an offscreen Skia blur per frame, the exact render
+surface the rewrite existed to remove. Blur pause is now a second attribute
+(`data-renderer-animations-unfocused`) covering decoration only, primary window only,
+with the latch healed by `document.hasFocus()` plus a capture-phase input listener.
+The trace hook lost its default output path, writes 0600, deletes the tracer's own
+copy and reports which step failed.
+
+Re-measured on the installed build: focused turn live 24-27% renderer / 6-8% GPU;
+blurred 5% renderer / 8% GPU with status cues still animating (the old
+pause-everything build read 6% / 2%, so keeping the spinner alive costs a few points
+of GPU). The focused figure is where it was before the review fixes: it was never
+decoration-dominated while a turn streams, and the ablated build still reads 11-22%
+there. That is the streaming pipeline, and it is the next piece of work.
+
 **Still open.** (33-41% renderer while a turn streams
 with the window in front). Fable's read: that half is JS/DOM work, not the arcs' paint — the
 per-event writes that bypass the text queue (tool progress/stdout, status, usage) committing
