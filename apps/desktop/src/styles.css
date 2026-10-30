@@ -64,6 +64,43 @@
   }
 }
 
+/* tw-shimmer (`@import 'tw-shimmer'`, used for every "still working" label)
+   sweeps `background-position` on a `background-clip: text` element. That
+   repaints and re-clips the glyph fill on the main thread every frame, and a
+   running turn carries a shimmer label per tool row / status line — one of the
+   biggest per-frame costs on a 120Hz display. The sweep cannot be composited:
+   the fill IS the text, so moving it means repainting the text; a duplicate
+   text layer would be needed, which is a DOM change, not a CSS one.
+
+   So the band is pinned where the sweep came to rest — tw-shimmer's own base
+   position, which centres its gradient stop on the label, i.e. the frame the
+   sweep ends on — and the LABEL breathes instead. Same "this is live" read,
+   driven by `opacity` on a promoted layer. Unlayered, so it beats
+   `@utility shimmer` whatever the layer/specificity; only these properties are
+   overridden. */
+.shimmer {
+  background-position: 0 0;
+  will-change: opacity;
+  animation-name: shimmer-breathe;
+  animation-timing-function: ease-in-out;
+  /* Set here rather than inherited from the package's per-track calc so the
+     breath has a defined period even when `--shimmer-track-*` is unset (the
+     sweep's own period was ~1.5-1.6s for the default speed, so the cadence is
+     unchanged). */
+  animation-duration: var(--shimmer-breathe-duration, 1.6s);
+  animation-iteration-count: infinite;
+}
+
+@keyframes shimmer-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: var(--shimmer-breathe-floor, 0.72);
+  }
+}
+
 /* Pause continuous animations only when the window is hidden/minimized, not
    merely unfocused. main.tsx owns this attribute for the primary window;
    wake/pet overlays retain their purpose-built visibility behavior. */
@@ -80,11 +117,23 @@
     .glyph-spinner__strip,
     .decode-cursor-blink
   ),
+/* Pseudo-element animations can't live inside :is(); they are gated by these
+   separate selectors. Every continuous animation in this file is listed here:
+   the two arc bands, the row underline sweep, the quest dot's halo, the
+   streaming code card's inner ring, and the timeline's busy bar. */
 :root[data-renderer-animations-paused] .arc-border::before,
+:root[data-renderer-animations-paused] .arc-border::after,
+:root[data-renderer-animations-paused] .row-pulse-underline::before,
+:root[data-renderer-animations-paused] .quest-glow::after,
+:root[data-renderer-animations-paused] .thread-timeline-tick[aria-busy='true'] [data-slot='timeline-bar'],
 :root[data-renderer-animations-paused]
   [data-slot='aui_assistant-message-content']
   .aui-md
-  [data-slot='code-card'][data-streaming='true'] {
+  [data-slot='code-card'][data-streaming='true'],
+:root[data-renderer-animations-paused]
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true']::after {
   animation-play-state: paused !important;
 }
 
@@ -1189,19 +1238,46 @@
   --conversation-base-line-height: 1.375rem;
 }
 
-@keyframes arc-border {
-  /* Transform travel (compositor-only), never background-position: the old
-     background-position version cost ~3,600 main-thread style recalcs per
-     minute per arc (#53902, #73082).
+/* ── The "working" arc ─────────────────────────────────────────────────────────
+   A bright band travelling around a mostly-dark 1.25px ring.
 
-     One cycle moves the ::before layer by 1.2 of the host (50% of the 240%
-     layer), which advances the gradient by exactly one period, so the loop
-     is seamless. */
+   It used to be a repeating-linear-gradient on a 240%-oversized layer, slid
+   inside a host that cut the ring out with `mask: content-box, border-box` +
+   `mask-composite: exclude` + `padding`. The travel was compositor-only, the
+   HOST was not: a mask over a subtree that moves makes Chromium build a render
+   surface for that subtree and re-apply the mask every frame. Measured on a
+   ProMotion display with one turn running: 33-41% of a core in the renderer and
+   20-36% in the GPU process, both falling to ~2%/0% with every animation
+   disabled. Every sidebar row owns one of these, so it multiplies.
+
+   Rebuilt from three pieces, none of which re-rasters per frame:
+
+     1. TRACK — an `inset box-shadow` hairline. Painted once into the host's own
+        raster: no mask, no padding hack, no composite group.
+     2. BANDS — `::before` (top run) and `::after` (bottom run): 1.25px strips
+        with a soft gradient, animated by `transform: translate3d(...)` only. Each
+        strip is rastered once and slid as a texture; nothing about it changes.
+     3. CLIP — the host's existing `overflow: hidden` + `border-radius`. Chromium
+        applies a rounded-rect clip to composited children at composite time;
+        unlike `mask`, it does not need a render surface or a mask shader.
+
+   What this costs visually, stated plainly: the band runs along the two long
+   edges instead of diagonally across all four. On a sidebar row or a composer
+   pill the left/right runs are a few px and the old 160deg band crossed them for
+   a sliver of each cycle, so the difference is small; the corners stay lit by the
+   static track. `--arc-angle` is kept as a token but no longer drives travel — a
+   band crossing the interior diagonally only reads as a ring while a mask cuts
+   it out, which is the thing being removed. */
+@keyframes arc-border {
+  /* One cycle = one pass: the band starts fully off the left edge and ends fully
+     off the right, so the loop restart is invisible (no crossfade needed).
+     Percentages are of the BAND's own width, which is 45% of the host, so the
+     end value is 100% / 0.45 = 222.22%. */
   0% {
-    transform: translate(0, 0);
+    transform: translate3d(-100%, 0, 0);
   }
   100% {
-    transform: translate(-50%, -50%);
+    transform: translate3d(222.22%, 0, 0);
   }
 }
 
@@ -1209,6 +1285,8 @@
   --arc-c0: color-mix(in srgb, var(--dt-foreground) 0%, transparent);
   --arc-c1: var(--dt-midground);
   --arc-c2: var(--dt-background);
+  /* Inert since the band moved onto the long edges (see above); kept as a
+     documented token so existing overrides still parse. */
   --arc-angle: 160deg;
   --arc-width: 0.078125rem;
   /* How far the ring stands off its host, per side. */
@@ -1224,12 +1302,13 @@
   overflow: hidden;
   border-radius: calc(var(--arc-radius) + var(--arc-standoff));
   inset: calc(var(--arc-standoff) * -1);
-  padding: var(--arc-width);
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
+  /* The track. `--arc-c2` is the old gradient's tail colour, so the track keeps
+     the same meaning: page background by default (an edge hairline, effectively
+     invisible on both themes, exactly where the old gradient was transparent),
+     a dim tint of `--arc-c1` on rows/composer which re-tint c2. 60% because the
+     band is the only thing that should read as bright; the old ring painted
+     alpha, not a solid stroke. */
+  box-shadow: inset 0 0 0 var(--arc-width) color-mix(in srgb, var(--arc-c2) 60%, transparent);
 }
 
 :root.dark .arc-border {
@@ -1261,9 +1340,11 @@
   position: absolute;
   top: 0;
   bottom: 0;
+  left: 0;
   width: 45%;
   background: linear-gradient(90deg, transparent, var(--dt-midground) 50%, transparent);
   filter: drop-shadow(0 0 0.1875rem var(--dt-midground));
+  will-change: transform;
   animation: row-pulse-sweep 2.1s ease-in-out infinite;
 }
 
@@ -1277,37 +1358,73 @@
 }
 
 @keyframes row-pulse-sweep {
+  /* `left: 100% → -45%` of the TRACK, expressed in units of the strip's own
+     width (45% of the track): 100 / 0.45 = 222.22%, -45 / 0.45 = -100%. `left`
+     was a layout property, so every frame relaid the pseudo out. */
   0% {
-    left: 100%;
+    transform: translate3d(222.22%, 0, 0);
   }
   100% {
-    left: -45%;
+    transform: translate3d(-100%, 0, 0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .row-pulse-underline::before {
     animation: none;
-    left: 27.5%;
+    /* `left: 27.5%` of the track, in the strip's own width units. */
+    transform: translate3d(61.11%, 0, 0);
   }
 }
 
 /* Quest-style "needs you" pulse for a clarify-blocked session's dot —
-   a soft amber glow that breathes so the row draws the eye without a toast. */
+   a soft amber glow that breathes so the row draws the eye without a toast.
+
+   The glow used to interpolate `box-shadow` (spread + blur + alpha) on the dot:
+   a full repaint, shadow blur included, every frame. Now the dot's own keyframe
+   only scales it and the halo lives on a pseudo-element that is painted once and
+   breathes with `opacity` — both compositor-only. `opacity` cannot shrink the
+   blur radius the way the old tween did, so the trough is a dimmer, slightly
+   smaller-feeling glow than before; at this size (a 6-8px dot) the difference is
+   not legible. (Nothing in this repo currently applies `.quest-glow`; it is kept
+   in step with the rest of the motion system so it composites when it is wired
+   back up.) */
 @keyframes quest-glow {
   0%,
   100% {
     transform: scale(1);
-    box-shadow:
-      0 0 0.1875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 70%, transparent),
-      0 0 0.5rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 45%, transparent);
   }
   50% {
     transform: scale(1.18);
-    box-shadow:
-      0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
-      0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
   }
+}
+
+@keyframes quest-glow-halo {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.quest-glow {
+  position: relative;
+}
+
+.quest-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  /* The old animation's bright end; the trough is the opacity dip above. */
+  box-shadow:
+    0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
+    0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
+  will-change: opacity;
+  animation: quest-glow-halo var(--quest-glow-duration, 2.4s) ease-in-out infinite;
 }
 /* Landed `memory` tool row — gold → purple on the brain glyph + title.
    Pair with `text-transparent` so the scaffold label color can't win. */
@@ -1352,33 +1469,46 @@
   }
 }
 
-.arc-border::before {
+/* The travelling band: one strip per long edge. `background-position` is never
+   touched and there is no mask — the only animated property is `transform`, so
+   each strip is rastered once at its 45%-of-host width and slid as a texture. */
+.arc-border::before,
+.arc-border::after {
   content: '';
   position: absolute;
-  top: 0;
   left: 0;
-  /* One period of the gradient, repeated, on a layer the host's mask and
-     overflow clip to the ring. Invariants: the period (50% of the layer's
-     gradient line) equals one cycle of travel; the layer still covers the
-     host at the end of the cycle (0.2 of the host to spare); the stops are
-     fractions of that period. Holds for --arc-angle in 90deg..180deg. */
-  width: 240%;
-  height: 240%;
-  background: repeating-linear-gradient(
-    var(--arc-angle),
+  /* 45% of the host; the keyframe's 222.22% end is 100% / 0.45, so the travel
+     length tracks this number. */
+  width: 45%;
+  height: var(--arc-width);
+  /* Head bright, tail falling off through the c2 trail colour, soft at both
+     ends so the strip's own edges never show on the track. Keeps all three
+     `--arc-*` colour stops meaningful (c0 is transparent by default, c2 is the
+     page background or, on rows/composer, a 45% tint of c1). */
+  background: linear-gradient(
+    90deg,
     transparent 0%,
-    var(--arc-c0) 18.75%,
-    var(--arc-c1) 25%,
-    var(--arc-c2) 31.25%,
-    transparent 43.75%,
-    transparent 50%
+    var(--arc-c0) 12%,
+    var(--arc-c1) 44%,
+    var(--arc-c2) 66%,
+    transparent 100%
   );
   will-change: transform;
   animation: arc-border var(--arc-duration) linear infinite;
 }
 
-/* Flip the arc's travel direction (e.g. the Nous Portal hero row). */
-.arc-border.arc-reverse::before {
+.arc-border::before {
+  top: 0;
+}
+
+.arc-border::after {
+  bottom: 0;
+}
+
+/* Flip the arc's travel direction (e.g. the Nous Portal hero row). Both bands
+   run the same cycle, so both have to flip or the two edges would sweep apart. */
+.arc-border.arc-reverse::before,
+.arc-border.arc-reverse::after {
   animation-direction: reverse;
 }
 
@@ -1419,9 +1549,26 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .arc-border::before {
+  .arc-border::before,
+  .arc-border::after {
     animation: none;
+    /* Park each band at the middle of its run (61.11% of the strip's own width
+       = 27.5% of the host) so a still arc reads as a settled highlight instead
+       of a band stuck against the left edge. Same pose the row underline parks
+       at, for the same reason. */
+    transform: translate3d(61.11%, 0, 0);
   }
+}
+
+/* Rows that are not the active one render `.arc-static` alongside the ring: same
+   track, no travel. A stopped animation is already still, so this holds under
+   `prefers-reduced-motion: reduce` without a second media query — and it is
+   parked at the same centred pose for the same reason. Declared after
+   `.arc-border::before` because the two selectors have equal specificity. */
+.arc-static::before,
+.arc-static::after {
+  animation: none;
+  transform: translate3d(61.11%, 0, 0);
 }
 
 /* Keyframes live here, not in per-instance <style> tags: inserting or removing an
@@ -2257,12 +2404,37 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
-  animation:
-    code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both,
-    code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
+  /* Enter animation only: opacity + translate, compositor-friendly. The glow
+     that used to ride along here interpolated `box-shadow` (ring alpha, blur
+     radius and offset) on the card itself every frame — a per-frame repaint of
+     the whole card, shadow blur included. The card's resting shadow is now
+     static at the animation's midpoint, and the breathing cue moved to the
+     inset ::after ring below. */
+  animation: code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
   box-shadow:
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 10%, transparent),
-    0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 8%, transparent);
+    0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 9%, transparent),
+    0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 7%, transparent);
+}
+
+/* The pulse, as an opacity ramp on a pre-painted inset ring.
+
+   Why inset: CodeCard is `overflow-hidden` (rounded slab), so a shadow hanging
+   OUTSIDE its border box would be clipped away if it lived on a descendant — and
+   a descendant is the only place a CSS-only overlay can live. The inset ring sits
+   on the inner edge of the same 1px band, and 6%→12% is exactly the old alpha
+   ramp (`opacity: 0.5 → 1` over a 12% ring). The outer bloom no longer pulses; it
+   rests at its midpoint. */
+[data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent);
+  will-change: opacity;
+  animation: code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
 }
 
 [data-slot='aui_assistant-message-content']
@@ -2711,22 +2883,24 @@ button[data-slot='aui_msg-reactions'] svg {
   }
 }
 
+/* Alpha ramp for the streaming card's inset ring: `opacity` on a pre-painted
+   12% ring, so 0.5 → 1 lands on exactly the old 6% → 12% `box-shadow` sweep
+   without repainting the card. Compositor-only. */
 @keyframes code-card-stream-glow {
   from {
-    box-shadow:
-      0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 6%, transparent),
-      0 0.5rem 1.5rem color-mix(in srgb, var(--dt-ring) 5%, transparent);
+    opacity: 0.5;
   }
 
   to {
-    box-shadow:
-      0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent),
-      0 0.75rem 2rem color-mix(in srgb, var(--dt-ring) 10%, transparent);
+    opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
+  [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'],
+  [data-slot='aui_assistant-message-content']
+    .aui-md
+    [data-slot='code-card'][data-streaming='true']::after {
     animation: none;
   }
 }
