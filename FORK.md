@@ -22320,5 +22320,17 @@ so streamed text never depended on those frames.
 overlays and the SDK keep the old look); the main window passes true, so blur joins
 hidden/minimized in the pause predicate. Two cases in `renderer-loop-pause.test.ts`.
 
-**Open.** Needs the rebuilt app installed and a before/after CPU read; 30fps→8fps unfocused
-delta flush is the next lever if the win is not enough on its own.
+**Measured after installing the build (2026-10-29 20:29, one turn in flight, 30s windows).**
+Frontmost Hermes: main 1-3%, GPU helper 20-36%, renderer 33-41%. Same turn, window behind
+Finder: main 0-1%, GPU 8% then 2%, renderer 14% then 6%. So the decorative-animation half of
+the burn is gone once nobody is looking at the window — ~70% of a core down to ~8%.
+
+**Also in this build.** `streamDeltaFlushFloorMs()` drops the streamed-text flush from 30fps to
+8fps while a real blur is in effect (latched on blur/focus, not `document.hasFocus()`), since a
+flush is a React commit plus a Streamdown re-parse of the growing block.
+
+**Still open.** The focused case is unchanged by design (33-41% renderer while a turn streams
+with the window in front). Fable's read: that half is JS/DOM work, not the arcs' paint — the
+per-event writes that bypass the text queue (tool progress/stdout, status, usage) committing
+into the unvirtualised newest turn are the next suspects, and should be attributed with a
+main-process `webContents.debugger` CPU profile rather than guessed at.
