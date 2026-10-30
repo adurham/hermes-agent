@@ -88,10 +88,10 @@ function Pane({ sessionKey, visible }: { sessionKey: string; visible: boolean })
 /** A tab zone exactly as the app builds one: every pane stays MOUNTED and the
  *  inactive ones are hidden with `visibility: hidden` (data-pane-hidden), which
  *  deliberately keeps their layout box so scroll positions can round-trip. */
-function zone(active: 'a' | 'b') {
+function zone(active: string, keys: string[] = ['a', 'b']) {
   return (
     <div data-chat-surface="">
-      {(['a', 'b'] as const).map(key => (
+      {keys.map(key => (
         <div
           className={key === active ? '' : 'pointer-events-none invisible opacity-0'}
           data-pane-hidden={key === active ? undefined : ''}
@@ -160,5 +160,55 @@ describe('tab switch scroll memory', () => {
     await settleScroll()
 
     await waitFor(() => expect(viewports(container)[0]!.scrollTop).toBe(readingTop))
+  })
+
+  it('remembers each tab’s own offset through a multi-tab bounce, and lands a never-read tab at the bottom', async () => {
+    const keys = ['a', 'b', 'c', 'd', 'e']
+    const { container, rerender } = render(zone('a', keys))
+
+    await settleScroll()
+    const topA = scrollUpTo(viewports(container)[0]!, 800)
+    await settleScroll()
+
+    rerender(zone('b', keys))
+    await settleScroll()
+    const topB = scrollUpTo(viewports(container)[1]!, 1500)
+    await settleScroll()
+
+    // c has never been read: it must sit at the bottom, never inherit b's offset.
+    rerender(zone('c', keys))
+    await settleScroll()
+    expect(viewports(container)[2]!.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    rerender(zone('a', keys))
+    await settleScroll()
+    expect(viewports(container)[0]!.scrollTop).toBe(topA)
+
+    rerender(zone('b', keys))
+    await settleScroll()
+    expect(viewports(container)[1]!.scrollTop).toBe(topB)
+
+    expect(getThreadScrollPosition('a')).toEqual({ fromBottom: 800, kind: 'offset' })
+    expect(getThreadScrollPosition('b')).toEqual({ fromBottom: 1500, kind: 'offset' })
+  })
+
+  it('keeps a tab’s offset when the reader bounces back before the restore settles', async () => {
+    const keys = ['a', 'b']
+    const { container, rerender } = render(zone('a', keys))
+
+    await settleScroll()
+    const topA = scrollUpTo(viewports(container)[0]!, 800)
+    await settleScroll()
+
+    rerender(zone('b', keys))
+    // One tick only: b's restore is still in flight when the reader leaves again.
+    await act(async () => {
+      await new Promise<void>(resolve => window.setTimeout(resolve, 0))
+    })
+    rerender(zone('a', keys))
+    await settleScroll()
+
+    expect(viewports(container)[0]!.scrollTop).toBe(topA)
+    expect(getThreadScrollPosition('a')).toEqual({ fromBottom: 800, kind: 'offset' })
   })
 })
