@@ -39,7 +39,8 @@ import {
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
-  threadScrollTargetTop
+  threadScrollTargetTop,
+  threadScrollTranscriptHeight
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -47,6 +48,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
+import { scrollTrace } from './scroll-trace'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
@@ -934,7 +936,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const storageKey = scrollStorageKey
 
     const flush = () => {
-      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
+      const willSave = Boolean(sessionKey) && loadSettledRef.current && restoredContentKeyRef.current === sessionKey
+
+      scrollTrace('flush', {
+        gate: restoredContentKeyRef.current,
+        key: sessionKey,
+        settled: loadSettledRef.current,
+        state: liveScrollStateRef.current,
+        willSave
+      })
+
+      if (willSave && sessionKey) {
         saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
       }
     }
@@ -979,6 +991,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // layout, and re-arm the normal restore loop when the pane is revealed.
     // The outgoing visible effect's cleanup has already saved its position.
     if (!paneVisible) {
+      scrollTrace('hidden', { key: sessionKey, state: liveScrollStateRef.current, top: el.scrollTop })
       loadSettledRef.current = false
       restoredContentKeyRef.current = null
       restoreFromBottomRef.current = null
@@ -1000,6 +1013,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     restoredContentKeyRef.current = plan.gate
 
+    scrollTrace('plan', {
+      cold: plan.cold,
+      gate: plan.gate,
+      groups: hasGroups,
+      height: el.scrollHeight,
+      key: sessionKey,
+      restore: plan.restore,
+      settled: loadSettledRef.current,
+      switched: sessionSwitched,
+      top: el.scrollTop,
+      visible: paneVisible
+    })
+
     // Record only states that were actually shown under this key: the gate
     // equals this closure's sessionKey exactly when this instance restored
     // content (cleanups run before the next instance's effect, so a later
@@ -1010,7 +1036,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // into a still-arriving transcript), and persisting those would corrupt
     // the session's real reading position.
     const record = () => {
-      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
+      const willSave = Boolean(sessionKey) && loadSettledRef.current && restoredContentKeyRef.current === sessionKey
+
+      scrollTrace('record', {
+        gate: restoredContentKeyRef.current,
+        key: sessionKey,
+        settled: loadSettledRef.current,
+        state: liveScrollStateRef.current,
+        top: el.scrollTop,
+        willSave
+      })
+
+      if (willSave && sessionKey) {
         saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
       }
     }
@@ -1038,6 +1075,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
     let target = remembered ?? THREAD_SCROLL_BOTTOM
+
+    scrollTrace('restore', { key: sessionKey, remembered, target })
 
     // The previous session's parting state must not leak into this one: from
     // here every scroll/RO event describes the restored session.
@@ -1101,6 +1140,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       if (stableFrames >= 2 || ++frame > 15) {
         releaseSwitching()
 
+        scrollTrace('settle', {
+          clamped,
+          client: node.clientHeight,
+          frames: frame,
+          height,
+          key: sessionKey,
+          stable: stableFrames,
+          target: target.kind,
+          top: node.scrollTop
+        })
+
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
           // (images, highlight) keeps following the bottom.
@@ -1151,6 +1201,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // bottom target too: a composer-only resize (every keystroke) used to
       // yank a view the user had moved away from the bottom back down.
       if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
+        scrollTrace('ro', {
+          after: threadScrollTranscriptHeight(next),
+          before: threadScrollTranscriptHeight(previous),
+          key: sessionKey,
+          settled: loadSettledRef.current,
+          target: target.kind,
+          top: el.scrollTop
+        })
         applyTarget(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
@@ -1161,6 +1219,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const cancelRestore = () => {
+      scrollTrace('cancel', {
+        height: el.scrollHeight,
+        key: sessionKey,
+        settled: loadSettledRef.current,
+        state: liveScrollStateRef.current,
+        top: el.scrollTop
+      })
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
