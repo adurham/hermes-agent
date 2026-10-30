@@ -86,3 +86,19 @@ describe('delegateTaskPayloads', () => {
     expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'completed' })
   })
 })
+
+describe('streamDeltaFlushFloorMs', () => {
+  it('slows to the background floor only while a real blur is in effect', () => {
+    // Fresh module state per import so the latch starts focused, the way a
+    // window does before any blur event.
+    return import('./utils').then(mod => {
+      expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
+
+      window.dispatchEvent(new Event('blur'))
+      expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_UNFOCUSED_MS)
+
+      window.dispatchEvent(new Event('focus'))
+      expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
+    })
+  })
+})
