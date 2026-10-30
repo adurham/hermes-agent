@@ -1,0 +1,164 @@
+import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { act, render, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it } from 'vitest'
+
+import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
+import { setActiveProfile } from '@/store/profile'
+import { getThreadScrollPosition } from '@/store/thread-scroll'
+
+import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
+
+import { TranscriptWindowProvider } from './transcript-window'
+
+import { Thread } from '.'
+
+stubThreadEnvironment()
+stubThreadViewportSize()
+
+const SCROLL_H = 5000
+const CLIENT_H = 600
+const VIEWPORT_SLOT = 'aui_thread-viewport'
+
+let scrollHeightValue = SCROLL_H
+
+Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+  configurable: true,
+  get() {
+    return scrollHeightValue
+  }
+})
+Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+  configurable: true,
+  get() {
+    return CLIENT_H
+  }
+})
+
+beforeEach(() => {
+  scrollHeightValue = SCROLL_H
+  window.localStorage.clear()
+  setActiveProfile('default')
+  rescopeConnectionScopedStores(null)
+})
+
+const createdAt = new Date('2026-08-01T00:00:00.000Z')
+
+function sessionMessages(key: string, turns = 4): ThreadMessage[] {
+  return Array.from({ length: turns }, (_, index) => [
+    {
+      id: `u-${key}-${index}`,
+      role: 'user',
+      content: [{ type: 'text', text: `message ${index} in ${key}` }],
+      attachments: [],
+      createdAt,
+      metadata: { custom: {} }
+    } as ThreadMessage,
+    {
+      id: `a-${key}-${index}`,
+      role: 'assistant',
+      content: [{ type: 'text', text: `response ${index} in ${key}` }],
+      status: { type: 'complete', reason: 'stop' },
+      createdAt,
+      metadata: { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
+    } as ThreadMessage
+  ]).flat()
+}
+
+function Pane({ sessionKey, visible }: { sessionKey: string; visible: boolean }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    isRunning: false,
+    messages: sessionMessages(sessionKey),
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <TranscriptWindowProvider value={{ olderAvailable: false, expandWindow: () => {} }}>
+        <PaneLifecycleContext.Provider value={visible ? 'visible' : 'hot-hidden'}>
+          <PaneVisibleContext.Provider value={visible}>
+            <Thread scrollProfile="default" sessionId={null} sessionKey={sessionKey} />
+          </PaneVisibleContext.Provider>
+        </PaneLifecycleContext.Provider>
+      </TranscriptWindowProvider>
+    </AssistantRuntimeProvider>
+  )
+}
+
+/** A tab zone exactly as the app builds one: every pane stays MOUNTED and the
+ *  inactive ones are hidden with `visibility: hidden` (data-pane-hidden), which
+ *  deliberately keeps their layout box so scroll positions can round-trip. */
+function zone(active: 'a' | 'b') {
+  return (
+    <div data-chat-surface="">
+      {(['a', 'b'] as const).map(key => (
+        <div
+          className={key === active ? '' : 'pointer-events-none invisible opacity-0'}
+          data-pane-hidden={key === active ? undefined : ''}
+          key={key}
+        >
+          <Pane sessionKey={key} visible={key === active} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function viewports(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(`[data-slot="${VIEWPORT_SLOT}"]`)]
+}
+
+async function settleScroll(ticks = 5) {
+  await act(async () => {
+    for (let tick = 0; tick < ticks; tick += 1) {
+      await new Promise<void>(resolve => window.setTimeout(resolve, 0))
+    }
+  })
+}
+
+/** What a reader does: wheel up, land at an offset, let the DOM report it. */
+function scrollUpTo(vp: HTMLElement, fromBottom: number) {
+  const top = scrollHeightValue - CLIENT_H - fromBottom
+
+  act(() => {
+    vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -160 }))
+    vp.scrollTop = top
+    vp.dispatchEvent(new Event('scroll'))
+  })
+
+  return top
+}
+
+describe('tab switch scroll memory', () => {
+  it('records the reader’s own offset when a warm switch swaps the transcript', async () => {
+    const { container, rerender } = render(<Pane sessionKey="a" visible />)
+
+    await settleScroll()
+    const vp = viewports(container)[0]!
+    scrollUpTo(vp, 800)
+    await settleScroll()
+
+    rerender(<Pane sessionKey="b" visible />)
+    await settleScroll()
+
+    expect(getThreadScrollPosition('a')).toEqual({ fromBottom: 800, kind: 'offset' })
+  })
+
+  it('remembers a kept-alive tab’s offset across a round trip', async () => {
+    const { container, rerender } = render(zone('a'))
+
+    await settleScroll()
+    const readingTop = scrollUpTo(viewports(container)[0]!, 800)
+    await settleScroll()
+
+    rerender(zone('b'))
+    await settleScroll()
+
+    expect(getThreadScrollPosition('a')).toEqual({ fromBottom: 800, kind: 'offset' })
+
+    rerender(zone('a'))
+    await settleScroll()
+
+    await waitFor(() => expect(viewports(container)[0]!.scrollTop).toBe(readingTop))
+  })
+})

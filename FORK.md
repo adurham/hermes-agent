@@ -4,6 +4,38 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-29 (desktop) — a strip drag left the replay order of the tab strip stale
+
+**Symptom (reported by the owner).** "Tab order when the app is closed and reopened is not preserved."
+
+**Mechanism.** `hermes.desktop.sessionTiles.v2` (in the app's Local Storage) is the REPLAY order used
+whenever panes are re-adopted — app restart, a connection-scope swap that prunes visible tiles' panes,
+⌘⇧T — while `hermes.desktop.layoutTree.v2` is the live strip order. `syncTileStripOrder()` derives the
+array from the tree but only the open/move paths called it; a strip DRAG commits through
+`reorderTreePanes` and left the array stale. Decoded live storage proved the drift: tree
+`c500, 87a6, 3143, ef61, 566f` against array `87a6, 3143, c500, …` — the reshuffle the owner saw.
+
+**Fix.** `session-states.ts` now listens on `$layoutTree` (primary window only) and runs
+`syncTileStripOrder()` at module load, so every tree mutation keeps the replay order in step and
+already-stale saved data heals on first run. Regression test: "a strip drag keeps the replayed tab order
+in step with the tree" (proven to fail with the listener disabled).
+
+### 2026-10-29 (desktop) — tracing the lost reading position across tab switches (temporary probe)
+
+**Symptom (reported by the owner).** "When I'm bouncing around tabs it doesn't always remember where we
+were… if it doesn't know where I was it should default to the bottom."
+
+**State of the investigation.** The per-session store (`hermes.desktop.threadScroll.v1.profile.<p>`,
+distance-from-bottom keyed by session) and its restore loop were traced end to end: warm switch, kept-alive
+tab round trip, hidden-pane drift, cold re-mount, clamped deep offsets. All of those round-trip correctly in
+tests (317 passing across the thread + store suites), and the live store shows real offsets for three
+sessions — so the failing path is one tests do not model yet, and guessing at it would be a mitigation.
+
+**Probe.** `src/components/assistant-ui/thread/scroll-trace.ts` plus call sites in `list.tsx` log the
+decision points (`plan`, `restore`, `settle`, `ro`, `record`, `flush`, `cancel`, `hidden`) through
+`console.error`, the one renderer level `electron/renderer-log.ts` forwards to `~/.hermes/logs/desktop.log`.
+One build, removed with the fix.
+
 ### 2026-10-29 — GUI sessions kept every memory proposal in a buffer the prune deleted
 
 **Symptom (reported by the owner).** Memory maintenance "ran at the end of sessions in the CLI, but in the
