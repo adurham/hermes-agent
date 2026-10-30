@@ -22350,12 +22350,13 @@ UI states. The honest numbers, focused window, this machine:
 
   turn idle (nothing streaming):        renderer 2%,  GPU 1%
   turn live, animations on:             renderer 28-30%, GPU 4-7%
-  turn live, animations force-ablated:  renderer 22%, GPU 4%
+  turn live, animations force-ablated:  renderer 11-22%, GPU 3-4%
 
 The compositor work bought the GPU half outright (20-36% -> 4-7%) and took the decorative
-layer from ~11-19% down to ~6-8%. What is left while a turn streams — ~22% of one core on
-the renderer with every animation disabled — is the streaming pipeline itself (a commit
-plus a Streamdown re-parse per flush), not decoration. The "2%" figure that first went in
+layer from ~11-19% down to ~6-8%. What is left while a turn streams — 11-22% of one core on
+the renderer with every animation disabled, and the spread tracks how much text was
+arriving during each window — is the streaming pipeline itself (a commit plus a Streamdown
+re-parse per flush), not decoration. The "2%" figure that first went in
 here was an idle-UI reading, not the streaming number.
 
 Visual check done from a screenshot rather than by the owner: ring continuous all four
