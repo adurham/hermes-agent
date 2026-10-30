@@ -36,6 +36,8 @@ function makeWindow() {
   const calls: boolean[] = []
   const listeners = new Map<string, () => void>()
   let destroyed = false
+  let visible = true
+  let minimized = false
 
   const win = {
     calls,
@@ -44,9 +46,19 @@ function makeWindow() {
       listeners.get('closed')?.()
     },
     isDestroyed: () => destroyed,
+    isMinimized: () => minimized,
+    isVisible: () => visible,
     listeners,
     on(event: string, fn: () => void) {
       listeners.set(event, fn)
+    },
+    setMinimized(next: boolean) {
+      minimized = next
+      listeners.get(next ? 'minimize' : 'restore')?.()
+    },
+    setVisible(next: boolean) {
+      visible = next
+      listeners.get(next ? 'show' : 'hide')?.()
     },
     webContents: {
       isDestroyed: () => destroyed,
@@ -258,3 +270,62 @@ test('leaving Wayland fullscreen during active work keeps the fleet unthrottled'
   throttle.update(false)
   assert.equal(timers.pendingCount, 1)
 })
+
+test('a minimized window stays throttled while a turn runs, and repaints when restored', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeWindow()
+  throttle.register(win)
+
+  throttle.update(true)
+  assert.deepEqual(win.calls, [true, false])
+
+  // Nobody can see the frames: minimization hands the window back to
+  // Chromium even though the turn is still in flight.
+  win.setMinimized(true)
+  assert.deepEqual(win.calls, [true, false, true])
+
+  // Restoring it puts the live stream back on the full cadence.
+  win.setMinimized(false)
+  assert.deepEqual(win.calls, [true, false, true, false])
+
+  // And the turn ending still re-throttles after the trailing delay.
+  throttle.update(false)
+  timers.fire()
+  assert.deepEqual(win.calls, [true, false, true, false, true])
+})
+
+test('a hidden window never unthrottles mid-turn; showing it does', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeWindow()
+  win.setVisible(false)
+  throttle.register(win)
+
+  // Registered while hidden, then a turn starts: still nothing to paint.
+  assert.deepEqual(win.calls, [true])
+  throttle.update(true)
+  assert.deepEqual(win.calls, [true, true])
+
+  win.setVisible(true)
+  assert.deepEqual(win.calls, [true, true, false])
+
+  win.setVisible(false)
+  assert.deepEqual(win.calls, [true, true, false, true])
+})
+
+test('a window hidden and re-shown with no turn in flight stays throttled throughout', () => {
+  const timers = makeTimers()
+  const throttle = createStreamThrottle(timers)
+  const win = makeWindow()
+  throttle.register(win)
+
+  win.setVisible(false)
+  win.setVisible(true)
+  win.setMinimized(true)
+  win.setMinimized(false)
+
+  assert.deepEqual(win.calls, [true, true, true, true, true])
+  assert.equal(throttle.isUnthrottled(), false)
+})
+
