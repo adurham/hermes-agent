@@ -175,11 +175,21 @@ export type ThreadScrollState = { kind: 'bottom' } | { fromBottom: number; kind:
 
 export const THREAD_SCROLL_BOTTOM: ThreadScrollState = { kind: 'bottom' }
 
-// Within this many pixels of the bottom edge counts as "parked at the bottom".
-// Deliberately tight: use-stick-to-bottom's own near-bottom band re-locks lazy
-// scrollers anyway, and recording a small real offset as `bottom` would yank a
-// reader who stopped just shy of the edge.
-export const THREAD_SCROLL_STICKY_THRESHOLD_PX = 8
+// How far off the bottom a reader can be and still be recorded as "at the bottom".
+//
+// Not a subpixel epsilon. While the transcript re-renders under a reader who is following the tail —
+// a tool card emitting progress, a streaming block, a pruned pane re-laying out — the follow loop is
+// a frame behind the growth, and the live traces show it landing 17-80px off the bottom (e.g.
+// `state: {fromBottom: 24.18, kind: 'offset'}` immediately followed by the same session measuring
+// itself at the bottom). Storing that lag as a deliberate reading position is what made a remembered
+// position drift: restoring it put the reader just outside the follow zone, so the follow disarmed
+// and every later re-render of the same content walked them further up — the reported "it's a few
+// messages up again, and the agent isn't even making new messages" (the growth is the same card
+// re-rendering). The harness measures a message row at 396px; in the app the band is at most about
+// one short one-line message, and it sits at the very bottom of the scroll area where the reader is
+// looking at the tail anyway — so the reader who stopped just shy of the edge is yanked by an amount
+// they cannot see, and no position inside the band is meaningfully different from the bottom.
+export const THREAD_SCROLL_STICKY_THRESHOLD_PX = 96
 
 export type ThreadScrollMetrics = {
   clientHeight: number
