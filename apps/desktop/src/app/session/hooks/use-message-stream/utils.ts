@@ -121,12 +121,16 @@ export const STREAM_DELTA_FLUSH_MS = 33
 // keeps paying the display-cadence price for text nobody is watching.
 export const STREAM_DELTA_FLUSH_UNFOCUSED_MS = 120
 
-// Which floor applies right now. Deliberately a real blur/focus latch rather
-// than `document.hasFocus()`: a renderer can report "not focused" for reasons
-// that are not "nobody is watching" (the app launching behind another window, a
-// devtools focus handoff, a test environment), and guessing wrong there shows a
-// visibly stalled stream. Only an actual blur slows us down; the focus and
-// visibilitychange handlers flush the queue the moment the window comes back.
+// Which floor applies right now. A real blur/focus latch alone is not enough —
+// a missed `focus` event (system dialog, IME handoff, focus-follows-mouse WM)
+// would leave a focused user's stream at 8fps for the rest of the session — so
+// the latch is required AND the live `hasFocus()` check must agree. That
+// conjunction is self-healing in both directions: a stuck latch is overridden
+// the moment the document really is focused, and a spurious "not focused"
+// report (app launching behind another window, devtools handoff, jsdom) can
+// never slow the stream on its own because no blur was ever observed.
+// The focus and visibilitychange handlers in index.ts flush the queue
+// immediately on the way back, so returning never reveals a stalled reply.
 let windowUnfocused = false
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
@@ -139,7 +143,10 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 }
 
 export function streamDeltaFlushFloorMs(): number {
-  return windowUnfocused ? STREAM_DELTA_FLUSH_UNFOCUSED_MS : STREAM_DELTA_FLUSH_MS
+  const reallyUnfocused =
+    windowUnfocused && typeof document !== 'undefined' && !document.hasFocus()
+
+  return reallyUnfocused ? STREAM_DELTA_FLUSH_UNFOCUSED_MS : STREAM_DELTA_FLUSH_MS
 }
 
 // Ceiling for the ADAPTIVE flush gap (see scheduleDeltaFlush). Under heavy
