@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 
@@ -88,17 +88,33 @@ describe('delegateTaskPayloads', () => {
 })
 
 describe('streamDeltaFlushFloorMs', () => {
-  it('slows to the background floor only while a real blur is in effect', () => {
-    // Fresh module state per import so the latch starts focused, the way a
-    // window does before any blur event.
-    return import('./utils').then(mod => {
-      expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
+  it('slows to the background floor only while a real blur is in effect', async () => {
+    // The module is statically imported by the rest of this file, so its blur
+    // latch is already instantiated and shared: drive it with events instead of
+    // assuming a fresh module, and pin hasFocus explicitly so the test cannot
+    // depend on jsdom's ambient focus state.
+    const mod = await import('./utils')
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
 
-      window.dispatchEvent(new Event('blur'))
-      expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_UNFOCUSED_MS)
+    expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
 
-      window.dispatchEvent(new Event('focus'))
-      expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
-    })
+    hasFocus.mockReturnValue(false)
+    window.dispatchEvent(new Event('blur'))
+    expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_UNFOCUSED_MS)
+
+    // A stuck latch must not survive proof of focus.
+    hasFocus.mockReturnValue(true)
+    expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
+
+    // And a blur on a genuinely focused document (spurious event) stays fast.
+    window.dispatchEvent(new Event('blur'))
+    expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
+
+    hasFocus.mockReturnValue(false)
+    expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_UNFOCUSED_MS)
+
+    window.dispatchEvent(new Event('focus'))
+    hasFocus.mockRestore()
+    expect(mod.streamDeltaFlushFloorMs()).toBe(mod.STREAM_DELTA_FLUSH_MS)
   })
 })

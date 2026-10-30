@@ -101,9 +101,9 @@
   }
 }
 
-/* Pause continuous animations only when the window is hidden/minimized, not
-   merely unfocused. main.tsx owns this attribute for the primary window;
-   wake/pet overlays retain their purpose-built visibility behavior. */
+/* Hard pause: hidden or minimized. Every continuous animation stops.
+   main.tsx owns this attribute; overlays that need a different policy simply
+   never install it. */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
@@ -131,6 +131,30 @@
   .aui-md
   [data-slot='code-card'][data-streaming='true'],
 :root[data-renderer-animations-paused]
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true']::after {
+  animation-play-state: paused !important;
+}
+
+/* Soft pause: the window is visible but the user's keyboard focus is elsewhere
+   (they clicked another app, or they are watching this window from a second
+   display). Only DECORATION sleeps here. Status cues — the spinner strip, the
+   streaming cursor, progress and timeline bars — keep moving, because a
+   spinner frozen mid-frame on a window someone is looking at reads as "hung".
+   The expensive pieces (the arc bands, the shimmer, the glows, the underline
+   sweep) are all in this list; they are also the ones that cost real CPU. */
+:root[data-renderer-animations-unfocused]
+  :is(.shimmer, .quest-glow, .quest-glow::after, .pet-egg, .pet-egg__glow, .pet-egg-shadow, .pet-wobble, .kanban-arc),
+:root[data-renderer-animations-unfocused] .arc-border::before,
+:root[data-renderer-animations-unfocused] .arc-border::after,
+:root[data-renderer-animations-unfocused] .row-pulse-underline::before,
+:root[data-renderer-animations-unfocused] .quest-glow::after,
+:root[data-renderer-animations-unfocused]
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true'],
+:root[data-renderer-animations-unfocused]
   [data-slot='aui_assistant-message-content']
   .aui-md
   [data-slot='code-card'][data-streaming='true']::after {
@@ -1342,8 +1366,20 @@
   bottom: 0;
   left: 0;
   width: 45%;
-  background: linear-gradient(90deg, transparent, var(--dt-midground) 50%, transparent);
-  filter: drop-shadow(0 0 0.1875rem var(--dt-midground));
+  /* The glow used to be a `filter: drop-shadow()` on this element. A filter on
+     an animated element makes Chromium re-run an offscreen pass with a Skia
+     blur every frame (RenderSurfaceReason::kFilter) — the one thing this block
+     exists to remove. The halo is baked into the gradient instead: a bright
+     core with two soft shoulders reads the same at 1px, and the strip stays a
+     plain composited texture. */
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--dt-midground) 45%, transparent) 30%,
+    var(--dt-midground) 50%,
+    color-mix(in srgb, var(--dt-midground) 45%, transparent) 70%,
+    transparent
+  );
   will-change: transform;
   animation: row-pulse-sweep 2.1s ease-in-out infinite;
 }
@@ -1353,8 +1389,14 @@
 }
 
 :root.dark .row-pulse-underline::before {
-  background: linear-gradient(90deg, transparent, var(--dt-foreground) 50%, transparent);
-  filter: drop-shadow(0 0 0.1875rem var(--dt-foreground));
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--dt-foreground) 45%, transparent) 30%,
+    var(--dt-foreground) 50%,
+    color-mix(in srgb, var(--dt-foreground) 45%, transparent) 70%,
+    transparent
+  );
 }
 
 @keyframes row-pulse-sweep {
