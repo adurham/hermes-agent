@@ -33,9 +33,19 @@ Tests (`tests/gateway/test_prompt_queued_transfer.py`): the shape walk now cover
 and tool refused — plus a new end-to-end
 `test_a_desktop_chats_own_queued_row_is_advertised_and_steerable`: the row a Desktop chat holds advertises
 `['steer', 'replace']`, a steer delivers that exact row's text into the running turn, and the row is never
-re-run on its own. Fail-before: the `('local', 'desktop')` case asserted `('local', [])`. Not proven live:
-the gateway has not been restarted onto this code, so the Steer affordance has not yet appeared on a live
-Desktop queued row.
+re-run on its own. Fail-before: the `('local', 'desktop')` case asserted `('local', [])`.
+
+Verified: the focused pair on **amd-workstation** (not the live tree — the checkout's own parent is the real home, so
+`scripts/run_tests.sh` on `~/.hermes/hermes-agent` kills every drain-based test with the home-IO guard) at commit
+`370e265b69`: `tests/gateway/test_prompt_queued_controls.py` + `test_prompt_queued_transfer.py` 28/28 pass, and the related
+set (`test_completion_midturn_handoff.py`, `agent/test_midturn_notice_row.py`,
+`hermes_state/test_queued_head_order_parity.py`) 18/18 pass. Live A/B on the real session rows — pre-fix module vs the
+shipped one, same authority, same queued row — for four of his own chats (`local-f1f52424…` 1Password,
+`local-11f3d55d…` Switch 2, `local-0323bc73…` Nest camera, `local-4efbd27a…` itself): pre-fix `[]`, shipped
+`['steer', 'replace']`.
+
+Not yet proven live: the running gateway (pid 63638) still reports `code_sha: c460bab7b9`, so the Steer affordance has not
+appeared on a live Desktop queued row yet — that needs the restart onto this commit.
 
 ### 2026-10-30 (gateway) — a background completion reaches the RUNNING turn instead of the next one
 
