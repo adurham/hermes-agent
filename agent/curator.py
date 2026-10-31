@@ -830,6 +830,12 @@ def _write_run_report(
         "pruned_names": [p["name"] for p in diff.pruned], "added": diff.added, "state_transitions": transitions, "cron_rewrites": cron_rewrites,
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
+        # Fork: per-attempt record of the review pass, including whether the configured fallback
+        # route was used or deliberately skipped (and why).
+        "llm_attempts": llm_meta.get("attempts") or [],
+        "fallback_attempted": llm_meta.get("fallback_attempted"),
+        "fallback_from": llm_meta.get("fallback_from"),
+        "fallback_skipped_reason": llm_meta.get("fallback_skipped_reason"),
         # Fork: refused skill_manage writes from the review pass (see _extract_blocked_writes).
         "blocked_writes": llm_meta.get("blocked_writes", []),
     }
@@ -897,6 +903,9 @@ def _render_report_markdown(p: dict[str, Any]) -> str:
         f"Model: `{p.get('model') or '(not resolved)'}` via `{p.get('provider') or '(not resolved)'}`  ·  Duration: {dur_label}  ·  "
         f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} ({counts.get('delta', 0):+d})\n",
         *([f"> ⚠ LLM pass error: `{error}`\n"] if error else []),
+        *([f"> ↪ fallback: `{p.get('fallback_from') or ''}`\n"] if p.get("fallback_attempted") else []),
+        *([f"> ↪ fallback skipped: `{p.get('fallback_skipped_reason')}`\n"]
+          if p.get("fallback_skipped_reason") else []),
         "## Auto-transitions (pure, no LLM)\n", f"- checked: {auto.get('checked', 0)}", f"- marked stale: {auto.get('marked_stale', 0)}",
         f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}", f"- reactivated: {auto.get('reactivated', 0)}", "",
         "## LLM consolidation pass\n",
@@ -1267,16 +1276,17 @@ def _extract_blocked_writes(
     return blocked
 
 
-def _resolve_review_provider() -> tuple:
+def _resolve_review_provider(route: Optional[_ReviewRuntimeBinding] = None) -> tuple:
     """``(runtime_provider, model_name, provider_name, request_overrides)`` resolved the way the CLI does: AIAgent() without
     explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
-    (HTTP 400 "No models provided"). Never raises."""
+    (HTTP 400 "No models provided"). *route* pins a caller-supplied binding (the fallback attempt); None resolves the
+    configured ``auxiliary.curator.*`` route. Never raises."""
     rp: dict[str, Any] = {}
     overrides, provider, model_name, binding = {}, None, "", None
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        binding = _resolve_review_runtime(load_config_readonly())
+        binding = route if route is not None else _resolve_review_runtime(load_config_readonly())
         model_name = binding.model
         rp = resolve_runtime_provider(
             requested=binding.provider, target_model=binding.model,
@@ -1292,16 +1302,22 @@ def _resolve_review_provider() -> tuple:
     return rp, model_name, provider, overrides
 
 
-def _run_llm_review(prompt: str) -> dict[str, Any]:
-    """Spawn an AIAgent fork on the review prompt. Returns ``final`` (untruncated response), ``summary`` (240-char cap),
-    ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises."""
+def _run_review_attempt(prompt: str, route: Optional[_ReviewRuntimeBinding] = None) -> dict[str, Any]:
+    """One AIAgent fork on the review prompt (primary when *route* is None). Returns ``final`` (untruncated response),
+    ``summary`` (240-char cap), ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated),
+    ``turn_exit_reason``, ``mutations`` (skill_manage calls) and ``error``. Never raises."""
     result_meta: dict[str, Any] = _llm_meta("")
+    _started = time.monotonic()
     try:
         from run_agent import AIAgent
     except Exception as e:
         result_meta["error"] = result_meta["summary"] = f"AIAgent import failed: {e}"
         return result_meta
-    rp, model_name, provider, request_overrides = _resolve_review_provider()
+    # Zero-arg call on the primary path: callers and tests monkeypatch ``_resolve_review_provider``
+    # with a no-argument lambda, so only a fallback attempt passes a route.
+    rp, model_name, provider, request_overrides = (
+        _resolve_review_provider(route) if route is not None else _resolve_review_provider()
+    )
     result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
     try:
@@ -1349,6 +1365,16 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
              contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
             conv_result = review_agent.run_conversation(user_message=prompt)
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
+        # A turn that ended with no model output is a FAILED pass, not a "no change" result. In that
+        # case ``final_response`` carries the user-facing explainer
+        # (``agent.turn_explainers.EMPTY_RESPONSE_EXPLANATION``), which must never be recorded as the
+        # review's own summary — that is what silently filed the 2026-10-21 / 2026-10-28 passes as
+        # successes. The classifier in ``_run_llm_review`` converts this into ``llm_error``.
+        _exit_reason = str(conv_result.get("turn_exit_reason") or "") if isinstance(conv_result, dict) else ""
+        result_meta["turn_exit_reason"] = _exit_reason
+        result_meta["api_calls"] = conv_result.get("api_calls") if isinstance(conv_result, dict) else None
+        if isinstance(conv_result, dict) and (conv_result.get("failed") or conv_result.get("error")):
+            result_meta["error"] = str(conv_result.get("error") or "turn failed")
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
 
@@ -1379,12 +1405,17 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
                     args_raw = args_raw[:400] + "…"
                 _calls.append({"name": name, "arguments": args_raw})
         result_meta["tool_calls"] = _calls
+        # Any skill_manage call is a mutation: reads go through skill_view, so a write-capable call
+        # disqualifies the fallback retry (a second pass must never re-run over a tree the first one
+        # already changed).
+        result_meta["mutations"] = sum(1 for c in _calls if c.get("name") == "skill_manage")
         result_meta["blocked_writes"] = _extract_blocked_writes(
             _session_msgs, _call_by_id
         )
     except Exception as e:
         result_meta["error"] = result_meta["summary"] = f"error: {e}"
     finally:
+        result_meta["duration_s"] = round(time.monotonic() - _started, 1)
         if review_agent is not None:
             # Capture the fork's accumulated cost BEFORE close() — record
             # it in the module ledger so the CLI exit path (or `hermes
@@ -1403,6 +1434,132 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
             with contextlib.suppress(Exception):
                 review_agent.close()
     return result_meta
+
+
+# --- Empty-pass handling and the single fallback attempt ---------------------
+#
+# The review fork builds its own AIAgent instead of going through the auxiliary call path, so
+# ``auxiliary.curator.fallback`` used to be dead config: a pass whose model returned nothing was
+# recorded as a completed review (the "⚠️ No reply…" explainer landed in llm_final, llm_error stayed
+# None) and no second route was ever tried. Two consecutive weekly runs were lost that way
+# (2026-10-21, 2026-10-28). The wrapper below makes the fallback real, under three rules:
+#   1. an empty/unusable turn is a FAILURE, never a summary;
+#   2. at most ONE fallback attempt, on a different route, and only when the first pass wrote
+#      nothing (a retry must never re-run over a half-curated tree);
+#   3. only when the run can still absorb a second pass within the weekly slot's budget.
+
+# ``final_response`` on the empty path is the user-facing explainer, not model output.
+_NO_REPLY_MARKERS = ("didn't produce a reply",)
+# Turn exit reasons that still count as a usable pass. Anything else (empty_response_exhausted,
+# context_compression_*, iteration/budget limits, …) is a failure.
+_CURATOR_OK_EXIT_REASONS = frozenset({"", "unknown", "completed", "normal", "stop"})
+# A weekly slot has no job-level timeout; a second 10-25 minute pass must not push a run past this.
+_CURATOR_REVIEW_BUDGET_SECONDS = 2700.0
+
+
+def _resolve_review_fallback_binding() -> Optional[_ReviewRuntimeBinding]:
+    """First usable ``auxiliary.curator`` fallback entry, or None. Never raises."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        task = _subdict(load_config_readonly() or {}, "auxiliary", "curator")
+    except Exception:
+        return None
+    entries: list[dict[str, Any]] = []
+    singular = task.get("fallback")
+    if isinstance(singular, dict):
+        entries.append(singular)
+    chain = task.get("fallback_chain")
+    if isinstance(chain, list):
+        entries.extend(entry for entry in chain if isinstance(entry, dict))
+    for entry in entries:
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if provider and provider != "auto" and model:
+            api_key, base_url = ((str(entry.get(k)).strip() or None) if entry.get(k) is not None else None
+                                 for k in ("api_key", "base_url"))
+            return _ReviewRuntimeBinding(provider, model, api_key, base_url,
+                                         _merge_request_overrides({}, entry.get("extra_body")))
+    return None
+
+
+def _review_pass_failure_reason(meta: dict[str, Any]) -> Optional[str]:
+    """None when the pass produced a usable review; otherwise a short failure reason."""
+    if meta.get("error"):
+        return str(meta["error"])[:200]
+    exit_reason = str(meta.get("turn_exit_reason") or "")
+    if exit_reason and exit_reason not in _CURATOR_OK_EXIT_REASONS:
+        return exit_reason
+    final = str(meta.get("final") or "")
+    if not final or any(marker in final for marker in _NO_REPLY_MARKERS):
+        return "empty_response"
+    return None
+
+
+def _review_attempt_record(meta: dict[str, Any]) -> dict[str, Any]:
+    """Per-attempt facts for the run report."""
+    return {
+        "provider": meta.get("provider") or "",
+        "model": meta.get("model") or "",
+        "turn_exit_reason": meta.get("turn_exit_reason") or "",
+        "api_calls": meta.get("api_calls"),
+        "mutations": int(meta.get("mutations") or 0),
+        "duration_s": meta.get("duration_s"),
+        "error": meta.get("error"),
+    }
+
+
+def _mark_review_failed(meta: dict[str, Any], reason: str) -> None:
+    """Record a failed pass: nothing in it may read as a completed review."""
+    meta["error"] = reason
+    meta["final"] = ""
+    meta["summary"] = f"review failed: {reason}"
+
+
+def _review_fallback_skip_reason(meta: dict[str, Any], fallback: Optional[_ReviewRuntimeBinding],
+                                 elapsed: float) -> Optional[str]:
+    """Why the fallback attempt must NOT run (None = run it)."""
+    if "mutations" not in meta:
+        return "mutations_unknown"
+    if int(meta.get("mutations") or 0) > 0:
+        return "mutations_present"
+    if fallback is None:
+        return "no_fallback_configured"
+    primary = (str(meta.get("provider") or "").strip().lower(), str(meta.get("model") or "").strip().lower())
+    if (fallback.provider.strip().lower(), fallback.model.strip().lower()) == primary:
+        return "fallback_same_as_primary"
+    if elapsed >= _CURATOR_REVIEW_BUDGET_SECONDS:
+        return "budget_exhausted"
+    return None
+
+
+def _run_llm_review(prompt: str) -> dict[str, Any]:
+    """Primary review attempt, plus at most ONE fallback attempt when the primary produced nothing.
+    Same shape as ``_run_review_attempt`` plus ``attempts`` / ``fallback_*`` fields, and a real
+    ``error`` when both routes failed. Never raises."""
+    started = time.monotonic()
+    primary = _run_review_attempt(prompt)
+    attempts = [_review_attempt_record(primary)]
+    reason = _review_pass_failure_reason(primary)
+    if reason is None:
+        primary["attempts"] = attempts
+        return primary
+    fallback = _resolve_review_fallback_binding()
+    skip = _review_fallback_skip_reason(primary, fallback, time.monotonic() - started)
+    if skip is not None:
+        primary["fallback_attempted"] = False
+        primary["fallback_skipped_reason"] = skip
+        primary["attempts"] = attempts
+        _mark_review_failed(primary, f"{reason} (fallback skipped: {skip})")
+        return primary
+    second = _run_review_attempt(prompt, route=fallback)
+    second["fallback_attempted"] = True
+    second["fallback_from"] = f"{primary.get('provider')}/{primary.get('model')}"
+    attempts.append(_review_attempt_record(second))
+    second["attempts"] = attempts
+    reason2 = _review_pass_failure_reason(second)
+    if reason2 is not None:
+        _mark_review_failed(second, f"{reason} (primary), {reason2} (fallback)")
+    return second
 
 
 # --- Public entrypoint for the session-start hook ---
