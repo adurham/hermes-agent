@@ -77,12 +77,23 @@
    sweep ends on — and the LABEL breathes instead. Same "this is live" read,
    driven by `opacity` on a promoted layer. Unlayered, so it beats
    `@utility shimmer` whatever the layer/specificity; only these properties are
-   overridden. */
+   overridden.
+
+   The breath is STEP-TIMED, not eased (see the timing function below). A
+   smooth `ease-in-out` opacity ramp is a continuous compositor animation: it
+   asks for a new frame every vsync for as long as any label is shimmering,
+   which is the WindowServer cost this file keeps re-paying. Held in 8 discrete
+   opacity levels per half-cycle the cycle only changes 16 times in 1.6s (~10
+   changes/s, i.e. ~10 frames/s instead of 120). Each step is 0.035 of alpha —
+   under what the eye resolves as a jump — so the breath reads the same at a
+   glance while ~92% of the frames disappear. */
 .shimmer {
   background-position: 0 0;
   will-change: opacity;
   animation-name: shimmer-breathe;
-  animation-timing-function: ease-in-out;
+  /* Applied per keyframe segment (1 → floor, floor → 1), so one cycle is
+     8 + 8 holds. Whole number, so the loop restarts exactly on a held state. */
+  animation-timing-function: steps(8);
   /* Set here rather than inherited from the package's per-track calc so the
      breath has a defined period even when `--shimmer-track-*` is unset (the
      sweep's own period was ~1.5-1.6s for the default speed, so the cadence is
@@ -1285,6 +1296,14 @@
         applies a rounded-rect clip to composited children at composite time;
         unlike `mask`, it does not need a render surface or a mask shader.
 
+   Step-timed as well: a composited `transform` animation still wakes the
+   compositor on every vsync, because it produces a new value per frame — the
+   30-44% of a core this block already chased once. Quantising the travel
+   (`steps(24)` on the band, below) holds each position instead of gliding
+   through the in-between ones, so the ring only asks for ~11 frames/s and still
+   visibly travels. Same treatment on the row underline, the two glows, the
+   shimmer and the spinner; see each block.
+
    What this costs visually, stated plainly: the band runs along the two long
    edges instead of diagonally across all four. On a sidebar row or a composer
    pill the left/right runs are a few px and the old 160deg band crossed them for
@@ -1381,7 +1400,15 @@
     transparent
   );
   will-change: transform;
-  animation: row-pulse-sweep 2.1s ease-in-out infinite;
+  /* Step-timed (was `ease-in-out`): 21 holds over the 2.1s cycle = 10 band
+     positions per second, each ~6.9% of the track apart. The band is a soft
+     gradient a few px wide, so 10 discrete positions read as the same sweep
+     while the compositor stops being asked for 120 frames/s; the eased
+     accelerate/decelerate is the one thing given up, and at this size it was
+     never legible. 21 whole steps also means the 10/s cadence is exact. The
+     first hold lands on the keyframes' fully-hidden start pose (~100ms), so the
+     sweep visibly restarts each cycle — which is how the pulse already read. */
+  animation: row-pulse-sweep 2.1s steps(21) infinite;
 }
 
 :root.dark .row-pulse-underline {
@@ -1466,7 +1493,10 @@
     0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
     0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
   will-change: opacity;
-  animation: quest-glow-halo var(--quest-glow-duration, 2.4s) ease-in-out infinite;
+  /* Step-timed (was `ease-in-out`): 8 holds per half-cycle → 16 opacity
+     changes per 2.4s (~6.7/s), each 0.047 of alpha on a blurred halo, so the
+     pulse still reads as a slow breath but only requests ~7 frames/s. */
+  animation: quest-glow-halo var(--quest-glow-duration, 2.4s) steps(8) infinite;
 }
 /* Landed `memory` tool row — gold → purple on the brain glyph + title.
    Pair with `text-transparent` so the scaffold label color can't win. */
@@ -1536,7 +1566,17 @@
     transparent 100%
   );
   will-change: transform;
-  animation: arc-border var(--arc-duration) linear infinite;
+  /* Step-timed (was `linear`). 24 holds over the 2.23s default cycle ≈ 10.8
+     band positions per second — the same cadence budget as the glyph spinner —
+     instead of a new composited frame every vsync. Each step moves the band
+     ~13% of its own (45%-of-host) width, i.e. ~6% of the host, which the soft
+     five-stop gradient above hides. `--arc-duration` still owns the cycle, so a
+     slower arc simply holds each position longer; the count stays 24. One of
+     those 24 holds lands on the keyframes' fully-hidden start pose (~93ms at the
+     default duration): linear passed through it in an instant, the stepped arc
+     rests on it, and what the eye reads either way is the band leaving one end
+     and re-entering the other. */
+  animation: arc-border var(--arc-duration) steps(24) infinite;
 }
 
 .arc-border::before {
@@ -2479,7 +2519,14 @@ body.guest-pointer-lock :is(webview, iframe) {
   pointer-events: none;
   box-shadow: inset 0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent);
   will-change: opacity;
-  animation: code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
+  /* Step-timed (was `ease-in-out`), still alternating. 10 holds per sweep →
+     ~5.5 opacity changes/s, 0.05 of alpha each: invisible banding on a 12%
+     inset ring, and the ring stops asking the compositor for a frame per
+     vsync for as long as the card streams. `jump-none` (not the default
+     jump-end) because this is a single from→to segment: it keeps BOTH ends of
+     the ramp — the ring still reaches its full 12% at the peak and 6% at the
+     trough, exactly the old ease-in-out extremes. */
+  animation: code-card-stream-glow 1.8s steps(10, jump-none) 180ms infinite alternate;
 }
 
 [data-slot='aui_assistant-message-content']

@@ -52,11 +52,14 @@ import { handleServerRequest as dispatchServerRequest } from './gateway-event/se
 import { extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { streamSessionPaneVisibility, subscribeStreamPaneVisibility } from './session-pane-visibility'
 import {
   completionErrorText,
   delegateTaskPayloads,
   MAX_STREAM_FLUSH_GAP_MS,
-  streamDeltaFlushFloorMs
+  streamDeltaFlushFloorForVisibility,
+  streamDeltaFlushFloorMs,
+  type StreamPaneVisibility
 } from './utils'
 
 interface MessageStreamOptions {
@@ -295,6 +298,10 @@ export function useMessageStream({
 
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
   const flushHandleRef = useRef<number | null>(null)
+  // Absolute time (performance.now clock) the armed timer is meant to fire at,
+  // so a newly queued session due SOONER can re-arm it instead of inheriting a
+  // parked session's later wake-up.
+  const flushDeadlineRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
   // flush floor in scheduleDeltaFlush so multi-stream load yields to input.
@@ -302,6 +309,11 @@ export function useMessageStream({
   // The pending commit-cost measurement rAF, so a newer flush (or unmount)
   // can cancel it instead of letting parked callbacks pile up while hidden.
   const measureRafRef = useRef<number | null>(null)
+  // When each session's queue was last drained. A session whose chat surface
+  // is off screen is only allowed to paint once per
+  // STREAM_DELTA_FLUSH_HIDDEN_PANE_MS, so the scheduler needs a per-session
+  // clock — the global `lastFlushAtRef` says when ANY session painted.
+  const lastSessionFlushAtRef = useRef<Map<string, number>>(new Map())
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
@@ -309,33 +321,68 @@ export function useMessageStream({
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
 
-  const flushQueuedDeltas = useCallback(
-    (sessionId?: string) => {
+  // Drain ONE session's queued bytes into the store. Split out of
+  // flushQueuedDeltas so the scheduler can paint only the sessions that are
+  // due and leave an off-screen one queued for its own later tick.
+  const drainSessionDeltas = useCallback(
+    (id: string) => {
       const queue = queuedDeltasRef.current
-      const ids = sessionId ? [sessionId] : [...queue.keys()]
+      const queued = queue.get(id)
 
-      for (const id of ids) {
-        const queued = queue.get(id)
-
-        if (!queued) {
-          continue
-        }
-
-        queue.delete(id)
-
-        const applyQueued = (parts: ChatMessagePart[]) =>
-          queued.reduce(
-            (next, delta) =>
-              delta.type === 'assistant'
-                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
-                : appendReasoningPart(next, delta.text, delta.occurredAt),
-            parts
-          )
-
-        mutateStream(id, applyQueued, () => applyQueued([]), {}, queued[0]?.occurredAt)
+      if (!queued) {
+        return
       }
+
+      queue.delete(id)
+      lastSessionFlushAtRef.current.set(id, performance.now())
+
+      const applyQueued = (parts: ChatMessagePart[]) =>
+        queued.reduce(
+          (next, delta) =>
+            delta.type === 'assistant'
+              ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
+              : appendReasoningPart(next, delta.text, delta.occurredAt),
+          parts
+        )
+
+      mutateStream(id, applyQueued, () => applyQueued([]), {}, queued[0]?.occurredAt)
     },
     [mutateStream]
+  )
+
+  // FORCED drain — every caller outside the scheduler (event seals, steers,
+  // focus/visibility handlers, unmount) means "these bytes must land NOW",
+  // so this path never applies the off-screen floor.
+  const flushQueuedDeltas = useCallback(
+    (sessionId?: string) => {
+      const ids = sessionId ? [sessionId] : [...queuedDeltasRef.current.keys()]
+
+      for (const id of ids) {
+        drainSessionDeltas(id)
+      }
+    },
+    [drainSessionDeltas]
+  )
+
+  /** Which pane — if any — is showing this session right now. */
+  const sessionPaneVisibility = useCallback(
+    (sessionId: string): StreamPaneVisibility =>
+      streamSessionPaneVisibility(sessionId, activeSessionIdRef.current),
+    [activeSessionIdRef]
+  )
+
+  /** The floor this session's queue must respect, given its pane's visibility. */
+  const sessionFlushFloor = useCallback(
+    (sessionId: string) => streamDeltaFlushFloorForVisibility(sessionPaneVisibility(sessionId)),
+    [sessionPaneVisibility]
+  )
+
+  /** May this session's queue paint at `now`? A visible session paints on every
+   *  tick the adaptive floor allows (unchanged behaviour); an off-screen one
+   *  waits out its own hidden-pane budget. */
+  const sessionFlushDue = useCallback(
+    (sessionId: string, now: number) => now - (lastSessionFlushAtRef.current.get(sessionId) ?? 0) >= sessionFlushFloor(sessionId),
+    [sessionFlushFloor]
   )
 
   // Turn-boundary orphan drop (#119543): discard queued bytes without
@@ -354,10 +401,6 @@ export function useMessageStream({
   }, [])
 
   const scheduleDeltaFlush = useCallback(() => {
-    if (flushHandleRef.current !== null) {
-      return
-    }
-
     if (typeof window === 'undefined') {
       flushQueuedDeltas()
 
@@ -383,24 +426,80 @@ export function useMessageStream({
     // instead of interactivity — capped so text never updates slower than 4/s.
     // The cost has to include the deferred view-sync frame where the commit
     // actually happens; see runFlush below.
-    const sinceLast = performance.now() - lastFlushAtRef.current
+    //
+    // PER SESSION: this is ONE scheduler for every session (the hook is mounted
+    // once, in wiring.tsx) with a queue per session id, so a tick used to paint
+    // every streaming session — including ones whose chat surface is an
+    // inactive keep-alive tab nobody is looking at. Those ride the
+    // STREAM_DELTA_FLUSH_HIDDEN_PANE_MS floor instead (see
+    // sessionFlushDue / drainSessionDeltas) and only the visible ones paint per
+    // tick.
+    const nextFlushDelay = (now: number): null | number => {
+      const queued = queuedDeltasRef.current
 
-    // A backgrounded-but-visible window is not throttled by Chromium, so the
-    // only thing keeping its flush rate honest is this floor. Text nobody is
-    // looking at does not need 30fps of commits (see STREAM_DELTA_FLUSH_UNFOCUSED_MS);
-    // the focus/visibility handlers flush the queue the moment it comes back.
-    const baseFloor = streamDeltaFlushFloorMs()
+      if (queued.size === 0) {
+        return null
+      }
 
-    const adaptiveFloor = Math.min(
-      Math.max(baseFloor, lastFlushCostRef.current * 3),
-      MAX_STREAM_FLUSH_GAP_MS
-    )
+      const sinceLast = now - lastFlushAtRef.current
+
+      // A backgrounded-but-visible window is not throttled by Chromium, so the
+      // only thing keeping its flush rate honest is this floor. Text nobody is
+      // looking at does not need 30fps of commits (see STREAM_DELTA_FLUSH_UNFOCUSED_MS);
+      // the focus/visibility handlers flush the queue the moment it comes back.
+      const baseFloor = streamDeltaFlushFloorMs()
+
+      const adaptiveFloor = Math.min(
+        Math.max(baseFloor, lastFlushCostRef.current * 3),
+        MAX_STREAM_FLUSH_GAP_MS
+      )
+
+      const delay = Math.max(0, adaptiveFloor - sinceLast)
+      let paintable = false
+      let soonest = Number.POSITIVE_INFINITY
+
+      for (const id of queued.keys()) {
+        const floor = sessionFlushFloor(id)
+        const elapsed = now - (lastSessionFlushAtRef.current.get(id) ?? 0)
+
+        if (elapsed >= floor) {
+          paintable = true
+
+          continue
+        }
+
+        // Still inside its own floor window (an off-screen session's 250ms
+        // budget is the interesting case): the next wake-up has to be when the
+        // SOONEST of those turns due. Rounded UP when armed so a tick landing a
+        // hair early does not re-arm as a 0ms no-op spin.
+        soonest = Math.min(soonest, floor - elapsed)
+      }
+
+      // Nothing may paint on this tick: wake exactly when the nearest parked
+      // session's budget expires instead of spinning at the visible floor.
+      return paintable ? delay : Math.max(delay, Math.ceil(soonest))
+    }
 
     const runFlush = () => {
       flushHandleRef.current = null
+      flushDeadlineRef.current = null
       const startedAt = performance.now()
       lastFlushAtRef.current = startedAt
-      flushQueuedDeltas()
+
+      // Paint every session that is due; leave an off-screen session's bytes
+      // queued (order preserved — queueDelta appends to the same tail array)
+      // for its own tick. A forced flush from an event handler still drains
+      // them immediately; this is only the scheduler's normal cadence.
+      let parked = 0
+
+      for (const id of [...queuedDeltasRef.current.keys()]) {
+        if (sessionFlushDue(id, startedAt)) {
+          drainSessionDeltas(id)
+        } else {
+          parked += 1
+        }
+      }
+
       // The store write above is only the cheap half of a flush. While a
       // session streams, syncSessionStateToView defers the $messages publish
       // (and with it the React commit + Streamdown re-parse the floor is meant
@@ -434,25 +533,57 @@ export function useMessageStream({
 
         lastFlushCostRef.current = writeCost + Math.max(0, performance.now() - frameStart)
       })
+
+      // Sessions still parked need their own wake-up: the timer that just
+      // fired would otherwise leave their bytes queued until the next delta.
+      if (parked > 0) {
+        armFlushTimer()
+      }
     }
 
-    // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
-    // renderer it considers hidden, and "hidden" is not something this code can
-    // verify: a minimized window, a fully off-screen one, or a renderer the
-    // compositor has otherwise parked can be throttled regardless of any turn
-    // in flight. In those states an rAF-gated flush never runs, so a
-    // finished answer sits in this queue until some later input or focus event
-    // happens to wake a frame — the reply looks stalled, then arrives all at
-    // once on refocus.
-    //
-    // A timer keeps the same coalescing cadence (that's what the floor above is
-    // for) while guaranteeing delivery without user interaction. Timers are
-    // clamped in background renderers rather than suspended, and the
-    // stream-aware unthrottle lifts even that clamp for the life of the turn;
-    // in the worst case (a delta arriving before the unthrottle lands) the
-    // clamp only stretches one flush to ~1s in a window nobody can see.
-    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, adaptiveFloor - sinceLast))
-  }, [flushQueuedDeltas])
+    const armFlushTimer = () => {
+      const now = performance.now()
+      const delay = nextFlushDelay(now)
+
+      if (delay === null) {
+        return
+      }
+
+      // A timer is already armed for the earliest moment the queue knew about.
+      // A LATER deadline is not worth re-arming for; an EARLIER one is: a
+      // visible chat's first delta must not inherit the 250ms wake-up that a
+      // parked session's queue armed a moment before it.
+      if (flushHandleRef.current !== null) {
+        const armedFor = flushDeadlineRef.current ?? Number.POSITIVE_INFINITY
+
+        if (armedFor <= now + delay) {
+          return
+        }
+
+        window.clearTimeout(flushHandleRef.current)
+      }
+
+      // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
+      // renderer it considers hidden, and "hidden" is not something this code can
+      // verify: a minimized window, a fully off-screen one, or a renderer the
+      // compositor has otherwise parked can be throttled regardless of any turn
+      // in flight. In those states an rAF-gated flush never runs, so a
+      // finished answer sits in this queue until some later input or focus event
+      // happens to wake a frame — the reply looks stalled, then arrives all at
+      // once on refocus.
+      //
+      // A timer keeps the same coalescing cadence (that's what the floor above is
+      // for) while guaranteeing delivery without user interaction. Timers are
+      // clamped in background renderers rather than suspended, and the
+      // stream-aware unthrottle lifts even that clamp for the life of the turn;
+      // in the worst case (a delta arriving before the unthrottle lands) the
+      // clamp only stretches one flush to ~1s in a window nobody can see.
+      flushDeadlineRef.current = now + delay
+      flushHandleRef.current = window.setTimeout(runFlush, delay)
+    }
+
+    armFlushTimer()
+  }, [drainSessionDeltas, flushQueuedDeltas, sessionFlushDue, sessionFlushFloor])
 
   const queueDelta = useCallback(
     (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
@@ -482,6 +613,7 @@ export function useMessageStream({
       }
 
       flushHandleRef.current = null
+      flushDeadlineRef.current = null
 
       if (measureRafRef.current !== null && typeof window !== 'undefined') {
         window.cancelAnimationFrame(measureRafRef.current)
@@ -524,6 +656,60 @@ export function useMessageStream({
       window.removeEventListener('focus', flushPendingDeltas)
     }
   }, [flushQueuedDeltas])
+
+  // A session whose chat surface comes back on screen — its tab activated, its
+  // zone un-minimized, a tile re-docked or revealed — must not sit out the rest
+  // of its off-screen budget: the user is looking at that bubble NOW. Pane
+  // visibility is derived store state rather than an event, so watch the stores
+  // that feed it (the tree, the dismissed/chrome-hidden sets, the tile
+  // bindings) and drain whatever just STOPPED being hidden.
+  //
+  // The transition matters: these stores also change on every drag frame and
+  // every tile-title patch, and a blind "drain everything visible" would hand
+  // a hidden session a forced flush at drag cadence — the opposite of the
+  // throttling this exists for.
+  const lastPaneVisibilityRef = useRef<Map<string, StreamPaneVisibility>>(new Map())
+
+  useEffect(
+    () =>
+      subscribeStreamPaneVisibility(() => {
+        const queue = queuedDeltasRef.current
+
+        if (queue.size === 0) {
+          return
+        }
+
+        let painted = false
+
+        for (const id of [...queue.keys()]) {
+          const visibility = sessionPaneVisibility(id)
+          const previous = lastPaneVisibilityRef.current.get(id)
+          lastPaneVisibilityRef.current.set(id, visibility)
+
+          // First observation counts as a reveal: we have no earlier state to
+          // compare against, and painting a visible queue is always correct.
+          const revealed = visibility !== 'hidden' && (previous === undefined || previous === 'hidden')
+
+          if (!revealed) {
+            continue
+          }
+
+          if (flushHandleRef.current !== null) {
+            window.clearTimeout(flushHandleRef.current)
+            flushHandleRef.current = null
+          }
+
+          drainSessionDeltas(id)
+          painted = true
+        }
+
+        if (painted) {
+          // Re-arm for whatever is still parked, at its own remaining budget.
+          scheduleDeltaFlush()
+        }
+      }),
+    [drainSessionDeltas, scheduleDeltaFlush, sessionPaneVisibility]
+  )
 
   const appendAssistantDelta = useCallback(
     (sessionId: string, delta: string, occurredAt?: number) => {
