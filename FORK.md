@@ -17,22 +17,22 @@ kept every hidden renderer at normal scheduling priority. With several sessions 
 turn is always in flight, so the app was never throttled — exactly the ~20%-CPU-while-minimized state
 that the static `backgroundThrottling: false` flag used to cause before the dial replaced it.
 
-**Fix.** The dial is per window and visibility-scoped: a window that is minimized or hidden keeps
-Chromium's throttling **even mid-turn** — the deltas are already applied in the store, so the first
-paint after `show` renders the whole transcript — while a window that is on screen still paints at
-full cadence. `show`/`hide`/`minimize`/`restore` re-apply it in both directions, and
-`disable-renderer-backgrounding` is gone so a hidden renderer is also scheduled on efficiency cores.
-Nothing changes for the visible case, and everything still re-throttles 5 s after the last turn
-settles.
+**Fix (final).** The whole controller is deleted. The dial was replaced by Chromium's own
+default throttling: a window that is on screen always paints at full cadence (that is what "on
+screen" means to Chromium), and a window that is minimized, hidden, occluded by another app, or
+on another Space is throttled as the OS occlusion tracking reports it. Stream deltas accumulate in
+the renderer's store either way, so the first paint after the window is shown renders the whole
+transcript. `disable-renderer-backgrounding` is gone with it, so a hidden renderer is also
+scheduled on efficiency cores. Net: minus ~230 lines (controller + tests), and the occluded case
+that no geometry probe could see (a window behind another app reports `isVisible() === true`) is
+covered because Chromium's own visibility tracking is no longer overridden.
 
-**Verification.** `electron/stream-throttle.test.ts` covers minimized→shown and hidden→shown in both
-directions, a window registered while hidden, and the trailing re-throttle. Live wattage numbers wait
-on a rebuild, because the running app predates the change.
-
-**Still open.** A window that is merely *occluded* (another app in front, not minimized) still
-reports `isVisible() === true` in Electron, so it keeps painting; only Chromium's own occlusion
-tracking knows better, and `setBackgroundThrottling(false)` overrides it. The fix for that is a
-renderer→main visibility report, not another geometry guess.
+**Verification.** The intermediate dial (visibility-scoped `setBackgroundThrottling`) was
+unit-tested (13/13, amd-workstation) and shipped; the deletion run re-verified the surrounding
+surfaces — `session-windows`, `preview-guest-throttle`, `powersave` — on amd-workstation, and the
+rendered main bundle is rebuilt from main. The follow-up live check is the one Fable (reference
+model review) asked for: if the pack draw stays flat with the window parked behind another app,
+the occlusion path is working.
 
 
 ### 2026-10-30 (gateway) — a Desktop chat's queued row could be deleted, never sent
