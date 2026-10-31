@@ -329,7 +329,7 @@ export function useModelControls({
       cacheSelection(selection.provider, selection.model)
 
       // Which surface picked what — the one record a silent no-op leaves behind.
-      console.info('[model-pick]', {
+      console.error('[model-pick]', {
         before: `${before.provider}:${before.model}`,
         session: liveSessionId,
         surface: touchesPrimary ? 'primary' : 'tile',
@@ -389,12 +389,13 @@ export function useModelControls({
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
         if (!result?.deferred) {
-          console.info('[model-pick] applied')
+          console.error('[model-pick] applied')
 
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })
         } else {
+          console.error('[model-pick] deferred by gateway, queued for next turn start')
           notify({
             id: `model-pick-deferred-${liveSessionId}`,
             kind: 'info',
@@ -406,7 +407,7 @@ export function useModelControls({
       try {
         const result = await requestSwitch()
 
-        console.info('[model-pick] answer', result)
+        console.error('[model-pick] answer', result)
 
         if (result?.confirm_required) {
           // A newer pick already owns the pill; asking to confirm this one
@@ -416,7 +417,7 @@ export function useModelControls({
           if (!restored) {
             // Nothing was asked and nothing was repainted: the pick is gone
             // without a word, which reads as a dead menu. Say so instead.
-            console.warn('[model-pick] guarded target superseded before its dialog could ask')
+            console.error('[model-pick] guarded target superseded before its dialog could ask')
 
             return false
           }
@@ -478,7 +479,7 @@ export function useModelControls({
 
         return true
       } catch (err) {
-        console.warn('[model-pick] failed', err)
+        console.error('[model-pick] failed', err)
 
         // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
         // deferring it. Don't punish the user for a backend they haven't
