@@ -40,7 +40,11 @@ function parkPresetWrite(key: string, retry: () => Promise<void>): void {
   parkedWatcherInstalled = true
   $sessionStates.listen(states => {
     for (const [parkedKey, attempt] of [...parkedPresetWrites]) {
-      if (!states[sessionIdOf(parkedKey)]?.busy) {
+      // Only a session we can SEE going idle releases the write: an unknown state (a tab that is
+      // not open here) must not fire the retry on every unrelated state change.
+      const state = states[sessionIdOf(parkedKey)]
+
+      if (state && !state.busy) {
         parkedPresetWrites.delete(parkedKey)
         void attempt()
       }
