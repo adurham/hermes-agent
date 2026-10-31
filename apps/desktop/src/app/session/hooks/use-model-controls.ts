@@ -329,12 +329,12 @@ export function useModelControls({
       cacheSelection(selection.provider, selection.model)
 
       // Which surface picked what — the one record a silent no-op leaves behind.
-      console.error('[model-pick]', {
+      console.error(`[model-pick] ${JSON.stringify({
         before: `${before.provider}:${before.model}`,
         session: liveSessionId,
         surface: touchesPrimary ? 'primary' : 'tile',
         target: `${selection.provider}:${selection.model}`
-      })
+      })}`)
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
@@ -407,7 +407,7 @@ export function useModelControls({
       try {
         const result = await requestSwitch()
 
-        console.error('[model-pick] answer', result)
+        console.error(`[model-pick] answer ${JSON.stringify(result)}`)
 
         if (result?.confirm_required) {
           // A newer pick already owns the pill; asking to confirm this one
