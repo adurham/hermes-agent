@@ -4,6 +4,39 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (curator) — an empty model reply was recorded as a completed review, and the fallback was dead config
+
+**Symptom.** Two consecutive weekly curator passes (2026-10-21, 2026-10-28) on the Claude-subscription
+route produced **zero** curation (108 → 108 and 131 → 131 skills). `run.json` showed
+`llm_error: null` and `llm_final: "⚠️ No reply: claude-sonnet-5-5 didn't produce a reply this time…"`,
+i.e. the run was filed as a success whose "summary" was the user-facing explainer text. The configured
+`auxiliary.curator.fallback` (ollama-cloud/deepseek-v4.1-flash) never ran — the same job on that route
+archived 20 skills in one pass.
+
+**Cause.** Two independent defects stacked:
+1. `_run_llm_review` trusted `conv_result["final_response"]` unconditionally. On the empty path the
+   conversation loop returns `turn_exit_reason="empty_response_exhausted"` and fills `final_response`
+   with `turn_explainers.EMPTY_RESPONSE_EXPLANATION`; the curator stored that string as its own summary.
+2. The review fork builds its own `AIAgent` from `_resolve_review_runtime()` instead of going through
+   the auxiliary call path, so `_try_configured_fallback_chain` never ran: `auxiliary.<task>.fallback`
+   was decorative for `curator` alone.
+
+**Fix.** `_run_review_attempt()` (the old body) now records `turn_exit_reason`, `api_calls`,
+`mutations` (count of `skill_manage` calls) and `duration_s`. A new `_run_llm_review()` wrapper
+classifies the pass (`_review_pass_failure_reason`: error / non-OK exit reason / empty or explainer
+final), and on failure makes **one** fallback attempt (`_resolve_review_fallback_binding` reads
+`fallback` or the first `fallback_chain` entry) — skipped when the first pass wrote anything
+(`mutations_present`), when the mutation state is unknown, when the fallback route equals the primary,
+or when the run is already past `_CURATOR_REVIEW_BUDGET_SECONDS` (2700 s). A failed pass now sets
+`llm_error`, blanks `llm_final`, and the report renders `⚠ LLM pass error` plus `↪ fallback:` /
+`↪ fallback skipped:` lines; `run.json` gains `llm_attempts`, `fallback_attempted`, `fallback_from`,
+`fallback_skipped_reason`.
+
+**Verification.** `tests/agent/test_curator_fallback.py` (8 cases: empty→fallback, writes block the
+retry, unknown mutation state, both routes empty, normal completion, budget exhausted, no fallback
+configured, same-route fallback), run on amd-workstation together with the existing curator suites and
+the console-cancel fork test — 76 passed.
+
 ### 2026-10-30 (desktop) — a busy app pinned the compositor with its window minimized
 
 **Symptom (owner, on battery).** Six live Desktop sessions, pack drawing **44 W** with the battery
