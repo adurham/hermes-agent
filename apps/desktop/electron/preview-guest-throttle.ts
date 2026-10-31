@@ -10,9 +10,10 @@ export interface PreviewGuestAttachPrefs {
  * `drive_preview` aims the pointer only after one animation frame inside the
  * guest. Background throttling can suspend that frame and stall input before
  * dispatch. Keep preview guests unthrottled so background actions can proceed.
- * Chat renderers retain their stream-throttle settings, but Electron draws
- * frames for the entire containing window while any displayed guest disables
- * throttling; an open preview therefore also has an idle rendering cost.
+ * Chat renderers keep Chromium's default throttling contract (on-screen
+ * windows always paint), but Electron draws frames for the entire containing
+ * window while any displayed guest disables throttling; an open preview
+ * therefore also has an idle rendering cost.
  */
 export function applyPreviewGuestAttachPrefs(
   webPreferences: PreviewGuestAttachPrefs,
