@@ -18,6 +18,36 @@ const STORAGE_KEY = 'hermes.desktop.model-presets'
 const pendingWrites = new Map<string, Promise<unknown>>()
 const confirmedValues = new Map<string, string>()
 
+/** Preset writes refused only because the session was mid-turn. The gateway parks a model pick for
+ *  exactly that reason, so the effort/fast that belongs to the pick waits with it and is re-sent on
+ *  the session's next idle edge — never surfaced as an error the user can do nothing about. */
+const parkedPresetWrites = new Map<string, () => Promise<void>>()
+let parkedWatcherInstalled = false
+
+function isBusyRefusal(err: unknown): boolean {
+  return /session_busy|session busy/i.test(err instanceof Error ? err.message : String(err))
+}
+
+const sessionIdOf = (parkedKey: string) => parkedKey.slice(0, parkedKey.lastIndexOf('::'))
+
+function parkPresetWrite(key: string, retry: () => Promise<void>): void {
+  parkedPresetWrites.set(key, retry)
+
+  if (parkedWatcherInstalled) {
+    return
+  }
+
+  parkedWatcherInstalled = true
+  $sessionStates.listen(states => {
+    for (const [parkedKey, attempt] of [...parkedPresetWrites]) {
+      if (!states[sessionIdOf(parkedKey)]?.busy) {
+        parkedPresetWrites.delete(parkedKey)
+        void attempt()
+      }
+    }
+  })
+}
+
 /** Per-model reasoning/fast preset, remembered globally across sessions and
  *  re-applied to the session whenever that model is selected. Unset dimensions
  *  fall back to the Hermes default (medium effort, no fast). */
@@ -181,6 +211,34 @@ export async function applyModelPreset(
 
         await write
       } catch (err) {
+        if (isBusyRefusal(err)) {
+          // A pick on this session was parked for the next turn for the same reason: hold this
+          // dimension with it instead of rolling the composer back under an error toast.
+          const parkedKey = `${ctx.sessionId}::${dimension}`
+
+          const attempt = async (): Promise<void> => {
+            try {
+              await ctx.request('config.set', {
+                key: dimension === 'effort' ? 'reasoning' : 'fast',
+                session_id: ctx.sessionId,
+                value: dimension === 'speed' && value === 'priority' ? 'fast' : value
+              })
+              confirmedValues.set(key, value)
+            } catch (retryErr) {
+              if (isBusyRefusal(retryErr)) {
+                parkPresetWrite(parkedKey, attempt)
+              } else {
+                notifyError(retryErr, ctx.failMessage)
+              }
+            }
+          }
+
+          console.error('[model-preset] parked until the turn ends', { dimension, sessionId: ctx.sessionId })
+          parkPresetWrite(parkedKey, attempt)
+
+          return
+        }
+
         const confirmedValue = confirmedValues.get(writeKey(dimension)) ?? ''
 
         const confirmed: ModelPreset =
@@ -215,6 +273,12 @@ export async function applyModelPreset(
           }
         }
 
+        console.error('[model-preset] write failed', {
+          dimension,
+          key: dimension === 'effort' ? 'reasoning' : 'fast',
+          sessionId: ctx.sessionId,
+          message: err instanceof Error ? err.message : String(err)
+        })
         notifyError(err, ctx.failMessage)
       } finally {
         // Rollback must read the last confirmed value before the final writer
