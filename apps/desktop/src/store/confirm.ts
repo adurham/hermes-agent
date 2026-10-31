@@ -27,6 +27,7 @@ let nextRequestId = 0
 export function confirm(request: ConfirmRequest): Promise<boolean> {
   // An action already in progress must not lose its owner or completion UI.
   if ($confirmRequest.get()?.phase) {
+    console.error(`[confirm] refused new request: a prior confirm is ${$confirmRequest.get()?.phase}, stuck confirmation would otherwise silently false-return`)
     return Promise.resolve(false)
   }
 
