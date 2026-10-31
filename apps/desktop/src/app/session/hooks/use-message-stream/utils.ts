@@ -155,6 +155,35 @@ export function streamDeltaFlushFloorMs(): number {
 // still visibly updates at least ~4x per second no matter the load.
 export const MAX_STREAM_FLUSH_GAP_MS = 250
 
+// Floor for a session whose chat surface is NOT on screen — an inactive
+// keep-alive tab in a zone, a minimized zone, a collapsed floating pane, or a
+// tile sitting behind another tab. Those surfaces stay MOUNTED on purpose
+// (`visibility: hidden`, see pane-shell/pane-visibility.ts) so scroll state
+// survives a tab round-trip, which means they still take every flush: a store
+// write, a React commit, and a Streamdown re-parse of the growing last block.
+// None of that is readable at 30fps, so an off-screen session rides the same
+// ~4/s cadence as the adaptive cap instead — the reveal, focus and
+// visibilitychange handlers flush its queue the moment it is looked at again.
+// Deliberately the SAME number as the adaptive cap: "text nobody can see" is
+// never faster than "text the user can see under maximum load".
+export const STREAM_DELTA_FLUSH_HIDDEN_PANE_MS = MAX_STREAM_FLUSH_GAP_MS
+
+/** Whether the pane holding a session is on screen. `unknown` = no layout-tree
+ *  pane renders this session at all (secondary windows, plain routes, a
+ *  session that is only streaming into its cache), which must keep the
+ *  window-based floor: a surface we cannot locate must never be slowed. */
+export type StreamPaneVisibility = 'hidden' | 'unknown' | 'visible'
+
+/** Which floor applies to ONE session, given its pane's visibility.
+ *  The visible/unfocused floor is a lower bound, never a substitute: a hidden
+ *  pane of an unfocused window still flushes at the parked cadence. */
+export function streamDeltaFlushFloorForVisibility(
+  visibility: StreamPaneVisibility,
+  windowFloorMs: number = streamDeltaFlushFloorMs()
+): number {
+  return visibility === 'hidden' ? Math.max(windowFloorMs, STREAM_DELTA_FLUSH_HIDDEN_PANE_MS) : windowFloorMs
+}
+
 // How long an optimistically armed turn (busy/awaitingResponse set at submit /
 // restore / edit, before the backend confirms it live) may hold off a
 // session.info running=false heartbeat. Within this window a running=false is

@@ -87,6 +87,39 @@ describe('delegateTaskPayloads', () => {
   })
 })
 
+describe('streamDeltaFlushFloorForVisibility', () => {
+  it('leaves a visible session on the window floor and parks an off-screen one', async () => {
+    const mod = await import('./utils')
+
+    // Visible: whatever the window floor is (33 focused, 120 unfocused) — the
+    // visible chat's cadence is NOT touched by this fix.
+    expect(mod.streamDeltaFlushFloorForVisibility('visible')).toBe(mod.streamDeltaFlushFloorMs())
+    expect(mod.streamDeltaFlushFloorForVisibility('visible', mod.STREAM_DELTA_FLUSH_MS)).toBe(
+      mod.STREAM_DELTA_FLUSH_MS
+    )
+
+    // Off screen: the parked floor, never the 33ms one.
+    expect(mod.streamDeltaFlushFloorForVisibility('hidden', mod.STREAM_DELTA_FLUSH_MS)).toBe(
+      mod.STREAM_DELTA_FLUSH_HIDDEN_PANE_MS
+    )
+    expect(mod.STREAM_DELTA_FLUSH_HIDDEN_PANE_MS).toBe(mod.MAX_STREAM_FLUSH_GAP_MS)
+    expect(mod.streamDeltaFlushFloorForVisibility('hidden', mod.STREAM_DELTA_FLUSH_MS)).toBeGreaterThan(
+      mod.STREAM_DELTA_FLUSH_MS
+    )
+
+    // An unfocused window's 120ms floor is a LOWER bound for a hidden pane, not
+    // a substitute: two independent reasons to be slow do not add up to fast.
+    expect(mod.streamDeltaFlushFloorForVisibility('hidden', mod.STREAM_DELTA_FLUSH_UNFOCUSED_MS)).toBe(
+      mod.MAX_STREAM_FLUSH_GAP_MS
+    )
+
+    // No pane claims the session: keep the window floor rather than guess.
+    expect(mod.streamDeltaFlushFloorForVisibility('unknown', mod.STREAM_DELTA_FLUSH_MS)).toBe(
+      mod.STREAM_DELTA_FLUSH_MS
+    )
+  })
+})
+
 describe('streamDeltaFlushFloorMs', () => {
   it('slows to the background floor only while a real blur is in effect', async () => {
     // The module is statically imported by the rest of this file, so its blur

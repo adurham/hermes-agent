@@ -54,9 +54,20 @@
   user-select: none;
 }
 
+/* Already step-timed, and this is where the "a dozen changes a second" budget
+   comes from: `steps(frames)` samples the travel at exactly one glyph per
+   interval, so the strip changes at 1/interval (braille: 80ms → 12.5/s; breathe:
+   100ms → 10/s) instead of asking the compositor for a new frame every vsync on
+   a 120Hz panel. The `max()` floor generalises that: no variant may resolve to a
+   shorter cycle than `frames x 80ms`, so a future spinner shipping a 50-70ms
+   interval cannot quietly reintroduce a 17-20/s repaint. It is a no-op for every
+   variant in use today (both are already at or above 80ms per frame), and it
+   never changes the glyph order — each frame still holds for one whole step. */
 .glyph-spinner__strip {
   display: block;
-  animation: glyph-spinner-advance var(--glyph-spinner-duration, 800ms) steps(var(--glyph-spinner-frames, 10)) infinite;
+  animation: glyph-spinner-advance
+    max(var(--glyph-spinner-duration, 800ms), calc(var(--glyph-spinner-frames, 10) * 80ms))
+    steps(var(--glyph-spinner-frames, 10)) infinite;
 }
 
 /* Promote to a compositor layer — without it, trace instrumentation recorded a
