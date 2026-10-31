@@ -438,10 +438,9 @@ export function useMessageStream({
 
     // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
     // renderer it considers hidden, and "hidden" is not something this code can
-    // verify: while a turn is in flight the main process unthrottles every chat
-    // window (stream-throttle.ts), but that doesn't guarantee frames for a
-    // minimized window, a fully off-screen one, or a renderer the compositor
-    // has otherwise parked. In those states an rAF-gated flush never runs, so a
+    // verify: a minimized window, a fully off-screen one, or a renderer the
+    // compositor has otherwise parked can be throttled regardless of any turn
+    // in flight. In those states an rAF-gated flush never runs, so a
     // finished answer sits in this queue until some later input or focus event
     // happens to wake a frame — the reply looks stalled, then arrives all at
     // once on refocus.

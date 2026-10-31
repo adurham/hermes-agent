@@ -570,7 +570,6 @@ import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
-import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
@@ -1213,18 +1212,13 @@ ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 // `document.visibilityState` to 'visible' forever — which silently turned all
 // the renderer's visibility-gated backstop polls and clock ticks into
 // always-on timers. A completely idle, minimized Hermes burned ~20% CPU
-// around the clock. Throttling is now a runtime dial scoped to streaming and
-// to whether the window is actually on screen: see createStreamThrottle() —
-// a visible window is unthrottled while any turn is in flight, and a
-// minimized / hidden / other-Space window keeps Chromium's throttling even
-// mid-turn, because nobody is looking at the frames it would paint.
-//
-// `disable-renderer-backgrounding` is gone with them. It kept hidden windows'
-// renderers at normal scheduling priority, so macOS left them on P-cores and
-// they kept painting the compositor for a window the user cannot see. The
-// only thing it bought was a marginally faster catch-up when a minimized
-// window was restored, which the store makes redundant: the deltas are
-// already applied, and the first paint after `show` renders the transcript.
+// around the clock. All of that machinery is gone; Chromium's default
+// background throttling is the contract — a window that is on screen runs at
+// full cadence (that is what "on screen" means to Chromium), and a window
+// that is minimized, hidden, occluded by another app, or on another Space is
+// throttled, exactly as the OS occlusion tracking reports it. Stream deltas
+// accumulate in the renderer's store either way, so the first paint after the
+// window is shown renders the whole transcript.
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
@@ -12391,7 +12385,6 @@ function spawnSecondaryWindow({
 
   bindWindowChromeEvents(win, sendWindowStateChanged)
 
-  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
   // The preload asks for its skin before it can publish its own active route.
@@ -12486,7 +12479,6 @@ function spawnBrowserWindow(tabId) {
 
   bindWindowChromeEvents(win, sendWindowStateChanged)
 
-  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'browser-window', rememberLog)
 
@@ -12557,10 +12549,10 @@ function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocu
 }
 
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
-// options (shared chatWindowWebPreferences + streamThrottle registration so a
-// streamed answer never stalls in the background) but is a peer, not the
-// primary: it never overwrites mainWindow or re-homes the source. Its renderer
-// joins the requested pooled backend through its own connection/profile route.
+// options (shared chatWindowWebPreferences so throttling follows the same
+// Chromium-default contract) but is a peer, not the primary: it never
+// overwrites mainWindow or re-homes the source. Its renderer joins the
+// requested pooled backend through its own connection/profile route.
 function createInstanceWindow(
   options?: DesktopProfileRoute,
   source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
@@ -12604,7 +12596,6 @@ function createInstanceWindow(
 
   bindWindowChromeEvents(win, sendWindowStateChanged)
 
-  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
@@ -13264,9 +13255,8 @@ function spawnHudWindow(sessionId, profile) {
   // sticky; releasing it assigns the HUD to KDE's then-current desktop.
 
   // Streaming into a window that is ALWAYS blurred (the user is in another
-  // app) is the entire feature, so it gets the same stream-aware unthrottling
-  // every chat window does.
-  streamThrottle.register(win)
+  // app) is the entire feature; an on-screen overlay is not throttled by
+  // Chromium, and an occluded one has nothing to paint.
   hudWindows.add(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
@@ -13679,11 +13669,11 @@ function createWindow() {
     // `backgroundColor` and follows the OS appearance) can't flash a light
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
-    // Shared with the secondary session windows (chatWindowWebPreferences);
-    // stream-aware throttling is applied per-window via streamThrottle so a
-    // live answer keeps painting while the window is blurred or minimized,
-    // without pinning visibilityState to 'visible' at idle. See
-    // session-windows.ts and stream-throttle.ts.
+    // Shared with the secondary session windows (chatWindowWebPreferences).
+    // Throttling is Chromium's own: an on-screen window paints at full
+    // cadence, and a minimized / hidden / occluded window is throttled —
+    // deltas accumulate in the store and the first paint on show renders
+    // the whole transcript. See session-windows.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -13899,7 +13889,6 @@ function createWindow() {
     }
   })
 
-  streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
@@ -16705,24 +16694,13 @@ function hasOtherChatWindows(window: BrowserWindow): boolean {
   return [...chatWindows].some(candidate => candidate !== window && !candidate.isDestroyed())
 }
 
-// The same merged picture drives background throttling: chat windows run
-// unthrottled while any turn is in flight (streaming must paint while hidden)
-// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
-const streamThrottle = createStreamThrottle(undefined, undefined, {
-  // #94865 is specific to native Wayland fullscreen surfaces. Reuse the same
-  // Ozone resolver as the rest of Desktop so XWayland/macOS/Windows retain the
-  // normal idle throttling contract.
-  keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
-})
-
 function isAnyTurnInFlight() {
   return mergeActiveWork(activeWorkByWebContents.values()).count > 0
 }
 
-function updateStreamThrottleFromActiveWork() {
+function applyKeepAwakeFromActiveWork() {
   const working = isAnyTurnInFlight()
 
-  streamThrottle.update(working)
   // The 'while-working' keep-awake mode rides the same merged signal: no
   // listener or timer of its own (see the keep-awake block below).
   applyKeepAwake(working)
@@ -16738,7 +16716,7 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
-      updateStreamThrottleFromActiveWork()
+      applyKeepAwakeFromActiveWork()
     }
 
     event.sender.once('destroyed', forget)
@@ -16751,7 +16729,7 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
-  updateStreamThrottleFromActiveWork()
+  applyKeepAwakeFromActiveWork()
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {

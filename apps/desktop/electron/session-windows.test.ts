@@ -235,13 +235,14 @@ test('registry trims the session id before keying', () => {
   assert.equal(registry.has('s1'), true)
 })
 
-test('chatWindowWebPreferences leaves background throttling to the runtime stream dial', () => {
+test('chatWindowWebPreferences leaves background throttling to Chromium defaults', () => {
   // Regression (both directions): a static `backgroundThrottling: false` here
   // pinned document.visibilityState to 'visible' forever, turning every
   // visibility-gated poll into an always-on timer (~20% CPU at idle,
-  // minimized). Streaming's "paint while blurred" need is served by
-  // stream-throttle.ts flipping setBackgroundThrottling at turn boundaries —
-  // so the static flag must stay absent.
+  // minimized). Streaming's "paint while on screen" need is served by
+  // Chromium's own throttling — a visible window always paints, a hidden or
+  // occluded one is throttled and catches up from the store — so the static
+  // flag must stay absent.
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
   assert.equal('backgroundThrottling' in prefs, false)
