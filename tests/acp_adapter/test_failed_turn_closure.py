@@ -18,6 +18,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -31,6 +32,8 @@ class _LoopbackProvider:
     def __init__(self) -> None:
         self.script: list[dict] = []
         self.requests: list[dict] = []
+        # Seconds to hold the NEXT request open (a slow model); reset after it is used.
+        self.delay_next: float = 0.0
         provider = self
 
         class _Handler(BaseHTTPRequestHandler):
@@ -40,7 +43,11 @@ class _LoopbackProvider:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 provider.requests.append(body)
-                spec = provider.script.pop(0)
+                spec = provider.script.pop(0) if provider.script else {"finish_reason": "stop", "content": ""}
+                delay, provider.delay_next = provider.delay_next, 0.0
+                if delay:
+                    # A slow model: lets a test land the owner's Stop while the request is in flight.
+                    time.sleep(float(delay))
                 delta = {"role": "assistant", "content": spec["content"]}
                 usage = {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
                 if body.get("stream"):
@@ -319,6 +326,44 @@ def test_interrupted_turn_boundary_says_stopped_not_not_processed(tmp_path, monk
     })
     assert written[-1]["content"] == INTERRUPTED_TURN_NOTICE
     db.close()
+
+
+def test_live_cancelled_turn_persists_the_stop_copy(acp):
+    """End-to-end through a real ``AIAgent`` and a real provider request: the owner cancels while the
+    model is still generating. The durable tail must be the stop boundary worded from the cause the
+    loop recorded — never "your request was not processed", which is what the Desktop played back as
+    the assistant refusing the work."""
+    provider, prompt, conversation_rows, db, sid, _conn, server = acp
+
+    provider.script = []
+    provider.delay_next = 2.0  # the turn's own request stays open while we Stop it
+    turn = threading.Thread(target=prompt, args=("why are you chasing this thread",), daemon=True)
+    turn.start()
+
+    def _is_the_turn(body):
+        return any(
+            m.get("role") == "user" and "why are you chasing this thread" in str(m.get("content"))
+            for m in body.get("messages") or ()
+        )
+
+    deadline = time.time() + 10
+    while not any(_is_the_turn(b) for b in provider.requests) and time.time() < deadline:
+        time.sleep(0.02)
+    assert any(_is_the_turn(b) for b in provider.requests), "the model request never reached the provider"
+
+    asyncio.run(server.cancel(sid))  # the owner's Stop, mid-request
+    turn.join(20)
+    assert not turn.is_alive(), "the cancelled turn never returned"
+
+    rows = conversation_rows()
+    assert [r[0] for r in rows] == ["user", "assistant"], rows
+    assert rows[-1][1] == (
+        "You stopped this turn before the model finished its reply, so there is no answer to it. "
+        "Send the message again to get one."
+    )
+    stored = db.get_messages(sid)
+    boundary = [m for m in stored if m["role"] == "assistant"][-1]
+    assert boundary["display_kind"] == "failed_turn"
 
 
 def test_prompt_after_cancel_keeps_the_unanswered_request(acp):
