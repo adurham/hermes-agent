@@ -22,28 +22,40 @@ strings, both failure-shaped. #134889 GW-21 already knew the closer writes "Send
 interrupt and only *replaced* it on the gateway restart/shutdown settlement — a plain Stop kept it.
 
 **Fix.** `agent/turn_failure_copy.py` owns the choice now: `failed_turn_notice(turn_messages,
-interrupted=…, turn_exit_reason=…)` returns stop copy for an interrupted result — "You stopped this
-turn … there is no answer to it", the tool-effect hedge when the turn's rows show a tool ran, and
-`This turn was stopped by <issuer>` when the exit reason carries a system producer
-(`interrupted_by_system(<issuer>)` / `interrupted_during_api_call(<issuer>)`; the parser is
-`interrupt_issuer_from_exit_reason`). A failure keeps both existing strings. Both writers use it:
-the core closer and the gateway's `_hmwa_failed_turn_notice`, which previously duplicated the
-predicate. `display_kind` stays `failed_turn` — renderers must keep treating the row as a Hermes
-boundary, never model text, and the restart/shutdown settlement still replaces it by tail identity
+interrupted=…, turn_exit_reason=…, interrupt_reason=…)` returns stop copy for an interrupted
+result, worded from POSITIVE evidence. `agent/turn_finalizer.py` now records
+`result["interrupt_reason"]` (the `agent._tool_interrupt_reason` the interrupt control surface
+already stamps: `explicit stop requested`, `user sent a new message`, or a watchdog's `tool_reason`)
+right beside `interrupt_message`, because an absent issuer is NOT evidence of a human — every system
+producer that calls `interrupt()` without a `tool_reason` (`tui_gateway/session_auto_continue.py`,
+voice callbacks) looks exactly like the Stop button from the exit reason alone. The mapping:
+`explicit stop requested` → "You stopped this turn …"; a superseding message → "This turn was
+stopped by your next message …" with **no** resend advice (that message is already the live
+request); a system issuer (`interrupted_by_system(<issuer>)` / `interrupted_during_api_call(<issuer>)`,
+parsed by `interrupt_issuer_from_exit_reason`) → "This turn was stopped by <issuer> …"; anything else
+→ the neutral "This turn was stopped …". The tool-effect hedge survives whenever the turn's rows
+show a tool ran, and a failure keeps both existing strings. Both writers share it: the core closer and
+`gateway/run_turn_persistence.py::_hmwa_failed_turn_notice`, whose duplicated tool-row predicate is
+gone. `display_kind` stays `failed_turn` — renderers must keep treating the row as a Hermes boundary,
+never model text (`apps/desktop/src/lib/chat-messages/hydration.ts` already lists it in
+`NOTICE_DISPLAY_KINDS`, so it renders as a system notice, not an assistant bubble; the words were
+what read as a refusal), and the restart/shutdown settlement still replaces it by tail identity
 (`gateway/session_results.py::close_discarded_turn` keys on kind + row id > transcript mark).
 
 **Tests.** `tests/acp_adapter/test_failed_turn_closure.py::test_interrupted_turn_boundary_says_stopped_not_not_processed`
-drives the real closer against a real `SessionDB`: human Stop → "You stopped this turn…", watchdog
-issuer named, a stop after a tool row keeps the hedge, no exit reason → neutral wording, non-interrupt
-failure unchanged. `tests/gateway/test_restart_interrupt_notice.py` now asserts the core closer wrote
-the stop copy before settlement replaces it.
+drives the real closer against a real `SessionDB`: the owner's Stop → "You stopped this turn…", a
+superseding message → the no-resend wording, a watchdog issuer named, a stop after a tool row keeps
+the hedge, no cause → neutral wording, non-interrupt failure unchanged.
+`tests/agent/test_turn_finalizer_interrupt_alternation.py::test_interrupted_turn_records_who_stopped_it`
+pins the recorded cause (and its absence on a clean turn).
+`tests/gateway/test_restart_interrupt_notice.py` now asserts the core closer wrote the stop copy
+before settlement replaces it.
 
 **Verified** on **amd-workstation** (Linux; `~/prverify/stop-copy`, tree synced by git bundle, pytest
-under the existing `~/suite-v0.22.5/.venv` with `PYTHONPATH` at the checkout): the new test plus the
-failed-turn/settlement/interrupt set 127/127, and `test_tui_gateway_server.py -k
-"failed_turn or untyped or boundary or interrupt"` 16/16. Fail-before on the pre-fix checkout
-(`~/prverify/queue-steer`): `failed_turn_notice` returns the reported string verbatim and the stop
-constant does not exist.
+under the existing `~/suite-v0.22.5/.venv` with `PYTHONPATH` at the checkout): the failed-turn /
+settlement / interrupt set 128/128, and the finalizer + `test_tui_gateway_server.py` selection 64/64.
+Fail-before on the pre-fix checkout (`~/prverify/queue-steer`): `failed_turn_notice` returns the
+reported string verbatim and the stop constants do not exist.
 
 ### 2026-11-01 (gateway + CLI client) — the Steer button was missing again, on exactly the rows the goal lanes queue
 
