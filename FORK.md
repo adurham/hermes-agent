@@ -49,6 +49,16 @@ its own; a local automation row advertises `['steer']` alone and reaches the age
 (`push_notice`, ticket = its admission), never as a steer; content-bearing and malformed shapes still get
 no verb; a one-shot whose receipt is terminal `steered` exits 130 with the stderr line instead of waiting.
 
+**Verified** on **amd-workstation** (Linux; `~/prverify/queue-steer`, tree synced by git bundle — that box has
+no GitHub egress, and `scripts/run_tests.sh` cannot build a fresh env there, so pytest runs under the
+existing `~/suite-v0.22.5/.venv` with `PYTHONPATH` at the checkout): `test_prompt_queued_transfer.py` +
+`test_prompt_queued_controls.py` + `test_gateway_chat_view_replay_gap.py` 40/40, and the related set
+(`test_completion_midturn_handoff.py`, `agent/test_midturn_notice_row.py`,
+`hermes_state/test_queued_head_order_parity.py`, `hermes_cli/test_gateway_agent_replay_gap.py`) 27/27.
+Fail-before on the pre-fix modules (370e265b69's copies, byte-identical to the parent of this work): the
+three new tests fail — the two row shapes paint no verb at all, and the steered one-shot never sees its row
+settle (its only exit is the finite view's `session_replay_gap` failure, not a named delivery).
+
 **Live A/B** (the real module against the live state DB, read-only): pre-fix `[]`/`[]`, shipped
 `['steer']`/`['steer']` for those two rows.
 
