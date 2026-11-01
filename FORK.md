@@ -42,20 +42,24 @@ never model text (`apps/desktop/src/lib/chat-messages/hydration.ts` already list
 what read as a refusal), and the restart/shutdown settlement still replaces it by tail identity
 (`gateway/session_results.py::close_discarded_turn` keys on kind + row id > transcript mark).
 
-**Tests.** `tests/acp_adapter/test_failed_turn_closure.py::test_interrupted_turn_boundary_says_stopped_not_not_processed`
-drives the real closer against a real `SessionDB`: the owner's Stop → "You stopped this turn…", a
-superseding message → the no-resend wording, a watchdog issuer named, a stop after a tool row keeps
-the hedge, no cause → neutral wording, non-interrupt failure unchanged.
-`tests/agent/test_turn_finalizer_interrupt_alternation.py::test_interrupted_turn_records_who_stopped_it`
+**Tests.** `tests/acp_adapter/test_failed_turn_closure.py::test_live_cancelled_turn_persists_the_stop_copy`
+is the end-to-end proof: a real `AIAgent` against a slow loopback provider, the owner's `cancel()`
+mid-request, then the durable rows must read `user` → the stop boundary (real `finalize_turn` recorded
+cause, real closer). Its sibling
+`test_interrupted_turn_boundary_says_stopped_not_not_processed` isolates the copy rules: the owner's
+Stop → "You stopped this turn…", a superseding message → the no-resend wording, a watchdog issuer
+named, a stop after a tool row keeps the hedge, no cause → neutral wording, non-interrupt failure
+unchanged. `tests/agent/test_turn_finalizer_interrupt_alternation.py::test_interrupted_turn_records_who_stopped_it`
 pins the recorded cause (and its absence on a clean turn).
 `tests/gateway/test_restart_interrupt_notice.py` now asserts the core closer wrote the stop copy
 before settlement replaces it.
 
 **Verified** on **amd-workstation** (Linux; `~/prverify/stop-copy`, tree synced by git bundle, pytest
-under the existing `~/suite-v0.22.5/.venv` with `PYTHONPATH` at the checkout): the failed-turn /
-settlement / interrupt set 128/128, and the finalizer + `test_tui_gateway_server.py` selection 64/64.
-Fail-before on the pre-fix checkout (`~/prverify/queue-steer`): `failed_turn_notice` returns the
-reported string verbatim and the stop constants do not exist.
+under the existing `~/suite-v0.22.5/.venv` with `PYTHONPATH` at the checkout): the end-to-end test 5/5
+consecutive runs, the failed-turn / settlement / interrupt set 129/129, and the finalizer +
+`test_tui_gateway_server.py` selection 64/64. Fail-before on the pre-fix checkout
+(`~/prverify/queue-steer`): `failed_turn_notice` returns the reported string verbatim and the stop
+constants do not exist.
 
 ### 2026-11-01 (gateway + CLI client) — the Steer button was missing again, on exactly the rows the goal lanes queue
 
