@@ -22,9 +22,20 @@ from hermes_state_runtime import (
 
 logger = logging.getLogger(__name__)
 
-# A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
-# native envelopes and automation rows are whole turns: neither verb may drop what they carry.
-_TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+# What a steer hands the running turn: the row's TEXT and the way it is presented. Nothing else.
+_CARRIED_TEXT = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+# Run-mode flags are not content: they say how the row was going to run as ITS OWN turn (single-query
+# clarify, auto-approve). A steer never starts that turn — it hands the text to the turn already
+# running, which keeps its own mode — so a row carrying them is steerable. It is never REPLACEABLE: the
+# edited copy is re-admitted without them, silently changing what the row was going to be, and the
+# producer that asked for that mode gets neither.
+_RUN_MODE = frozenset({'finite', 'unattended'})
+# A local automation row carries its route's identity instead of a presentation. Its text is still a
+# whole instruction, and the fork already has the primitive that hands one to a running turn mid-flight
+# (push_notice, the completion handoff), so it is steerable — as a NOTICE, never as a user row. Editing
+# it is refused: a human-authored copy must not inherit the route's identity, and dropping it would
+# orphan the continuation the route is waiting on.
+_LOCAL_AUTOMATION = frozenset({'local_automation_v1'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
 # The label is read off the row by ``_launch_labels``: an owner-local row is STORED ``local`` with the
@@ -63,16 +74,48 @@ def _interactive(authority, session_id):
     return bool(_launch_labels(sources[session_id]) & _INTERACTIVE_SOURCES)
 
 
+def _automation_descriptor(payload):
+    """The ``local_automation_v1`` block when it is the shape a transfer can hand over: its identity,
+    owner and route are what the notice carries and what the route's own restore validates. Anything
+    else is not this fork's local automation row, and gets no verb."""
+    descriptor = payload.get('local_automation_v1')
+    if not isinstance(descriptor, dict):
+        return None
+    if not all(isinstance(descriptor.get(key), str) and descriptor[key] for key in ('identity', 'owner', 'route')):
+        return None
+    return descriptor
+
+
+def _notice_display_metadata(descriptor):
+    """The card fields a notice hands the running turn (``display_text``/``notification_category``),
+    the same pair ``push_notice``'s completion callers pass."""
+    return {key: descriptor[key] for key in ('display_text', 'notification_category')
+            if isinstance(descriptor.get(key), str)} or None
+
+
 def queued_controls(authority, row):
     """The queued-row verbs this owner serves for ``row``: a client shows only these (an older owner
-    lists none, so its clients show none)."""
+    lists none, so its clients show none).
+
+    The row's shape decides, not the producer: input text (anything a steer can carry whole) gets both
+    verbs; a row whose only extras are run-mode flags or a local automation descriptor gets ``steer``
+    alone, because steering hands its TEXT to the running turn and never re-runs or re-admits the row.
+    A row carrying content a steer cannot carry (attachments, a native envelope, a hidden note) gets
+    none."""
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+    if (row.get('status') != 'queued' or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
             or not _interactive(authority, row['target_session_id'])):
         return []
-    return ['steer', 'replace']
+    extra = set(payload) - _CARRIED_TEXT
+    if not extra:
+        return ['steer', 'replace']
+    if extra <= _RUN_MODE and all(type(payload[key]) is bool for key in extra):
+        return ['steer']
+    if extra == _LOCAL_AUTOMATION and _automation_descriptor(payload) is not None:
+        return ['steer']
+    return []
 
 
 def pending_rows(authority, ref):
@@ -145,9 +188,20 @@ def _receiving_agent(authority, session_id, generation):
     return agent
 
 
-def _deliver(authority, session_id, generation, agent, admission_id, text):
-    """Hand the committed text to the claim's agent; the caller holds the stream lock. False once the
-    claim stopped executing (its settlement then decides the row) or its agent refused the text."""
+def _deliver(authority, session_id, generation, agent, admission_id, row):
+    """Hand the committed row to the claim's agent; the caller holds the stream lock. False once the
+    claim stopped executing (its settlement then decides the row) or its agent refused the text.
+
+    The shape picks the channel: input text rides ``steer`` (a user row); a local automation row's text
+    is a MACHINE notice, delivered through ``push_notice`` with the card its descriptor names, so the
+    running turn reads a goal continuation or a route wake as the route's own note instead of as
+    something the user typed."""
+    descriptor = _automation_descriptor(row['payload'])
+    if descriptor is not None:
+        return _deliver_notice(authority, session_id, generation, agent, admission_id, row['payload']['text'],
+                               descriptor.get('display_kind') or 'internal_notification',
+                               _notice_display_metadata(descriptor))
+    text = row['payload']['text']
     entry = authority.steer_transfers.get(session_id)
     if (entry is None or entry[0] != generation or admission_id not in entry[1]
             or _receiving_agent(authority, session_id, generation) is not agent):
@@ -243,7 +297,7 @@ async def steer_queued(connection, ref, params):
             with authority.sessions[ref.session_id].event_stream.lock:
                 agent = _receiving_agent(authority, ref.session_id, row['generation'])
                 if agent is not None:
-                    _deliver(authority, ref.session_id, row['generation'], agent, admission_id, row['payload']['text'])
+                    _deliver(authority, ref.session_id, row['generation'], agent, admission_id, row)
         return asdict(receipt)  # an exact retry replays the committed transfer
     if receipt.status != 'queued':
         raise RuntimeStoreError('admission_started')
@@ -252,7 +306,7 @@ async def steer_queued(connection, ref, params):
     handle = authority._handle(ref)
     if handle.execution_state != 'running':
         raise RuntimeStoreError('session_idle')
-    generation, text, live = handle.execution_generation, row['payload']['text'], authority.sessions[ref.session_id]
+    generation, live = handle.execution_generation, authority.sessions[ref.session_id]
     session_id = ref.session_id
     with live.event_stream.lock:
         agent = _receiving_agent(authority, session_id, generation)
@@ -274,7 +328,7 @@ async def steer_queued(connection, ref, params):
         raise
     if fresh:
         with live.event_stream.lock:
-            delivered = _deliver(authority, session_id, generation, agent, admission_id, text)
+            delivered = _deliver(authority, session_id, generation, agent, admission_id, row)
         if not delivered:
             # The claim ended first: the text reached nobody, so the admission is queued again.
             await tracked_write(authority, partial(revert_steer_input, authority.db, epoch=authority.epoch,

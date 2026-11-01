@@ -16,10 +16,13 @@ def pending_status(pending, admission):
 
 
 def settled(receipt):
-    """True: terminal with its reply (cancelled/failed need none); False: still running; None: unreadable."""
+    """True: terminal with its reply (cancelled/failed/interrupted/steered need none — a steered row's
+    text went into the turn that was already running, so no completion of its own will ever arrive);
+    False: still running; None: unreadable."""
     if receipt.get("status") != "terminal":
         return False
-    return True if receipt.get("outcome") in {"cancelled", "interrupted", "failed"} or "result" in receipt else None
+    return True if receipt.get("outcome") in {"cancelled", "interrupted", "failed", "steered"} \
+        or "result" in receipt else None
 
 
 def owed_reply(shown, final):

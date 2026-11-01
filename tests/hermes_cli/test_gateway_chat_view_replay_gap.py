@@ -135,3 +135,20 @@ async def test_ack_during_the_reattach_settles_against_its_snapshot(capsys):
         renderer.cancel()
         await asyncio.gather(renderer, return_exceptions=True)
     assert capsys.readouterr().out == "Hello\n"
+
+
+@pytest.mark.asyncio
+async def test_a_steered_oneshot_ends_instead_of_waiting_for_a_completion_of_its_own(capsys):
+    """Another client's Steer handed this row's text to the turn already running: the receipt is terminal
+    ``steered`` and no completion for this admission will ever arrive. A one-shot must settle there — a
+    named exit (130), never a silent empty success and never a wait on a turn that cannot report it."""
+    async def answer(method, params):
+        if method == "prompt.submit":
+            return {"admission_id": "a", "status": "queued"}
+        if method == "session.resume":
+            return {"pending": [], "prompts": []}
+        return {"admission_id": "a", "status": "terminal", "outcome": "steered"}
+
+    _view, code = await gapped(answer, lambda view: view.run("q", oneshot=True))
+    assert code == 130
+    assert "delivered into the running turn" in capsys.readouterr().err

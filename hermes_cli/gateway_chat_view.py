@@ -531,6 +531,14 @@ class GatewayChatView:
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
                 text = terminal.get("text") or terminal.get("content") or ""
+                if outcome == "steered":
+                    # Its text was handed to the turn that was already running (another client's Steer),
+                    # so this invocation has no reply of its own and no completion will arrive for it.
+                    # Delivered is not failed: name what happened and exit as a turn a human intervened
+                    # in (130), so a wrapper neither parses an empty answer nor re-submits the text.
+                    print("hermes: this prompt was delivered into the running turn (steered); "
+                          "no separate reply follows.", file=sys.stderr, flush=True)
+                    return 130
                 # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
                 # 'completed' with ``completed: False`` in its committed result. Judge both with the
                 # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.

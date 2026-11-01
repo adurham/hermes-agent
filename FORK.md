@@ -4,6 +4,57 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-11-01 (gateway + CLI client) — the Steer button was missing again, on exactly the rows the goal lanes queue
+
+**Symptom.** The owner: "the force a queued message to interrupt icon/button is missing again". The
+2026-10-30 entry fixed `_interactive` for owner-local Desktop chats; this is the other half of that panel.
+Measured on the live state DB at 10:58, the two rows his PS5 kernel chat held were both refused, for two
+reasons that have nothing to do with the session label:
+
+- `5b6a8592` — his own instruction, submitted by a headless `hermes -z … --resume <chat>` client,
+  payload `{"finite":true,"text":…,"unattended":true}`. Every payload key outside `_TEXT_ONLY` was read
+  as "this row is a whole turn", so a run-mode flag alone hid the verb.
+- `c5ead558` — the goal loop's continuation, payload `{"local_automation_v1":…,"text":…}`. Refused as an
+  automation row.
+
+In the panel both rows painted no verb at all (no Steer, no Edit, Discard only) — a queued message that
+could be deleted but never sent, the same complaint through a different gate.
+
+**Cause.** One key set decided both verbs, so it treated the row's *run mode* and its *producer identity*
+as unsteerable content. Neither is: a steer hands the running turn the row's TEXT and never starts the
+row's own turn, so `finite`/`unattended` cannot be lost by it (the running turn keeps its own mode), and a
+local automation row already has a delivery channel of its own — `push_notice`, the mid-turn completion
+handoff from the 2026-10-30 work — so a goal continuation can land as a machine card instead of being
+rendered as something the user typed. What a steer genuinely cannot carry is content: attachments, native
+envelopes, hidden notes. Those still get no verb.
+
+**Fix (`gateway/session_queued_controls.py`).** `queued_controls` now answers per row shape:
+presentation-only → `['steer','replace']`; run-mode flags (bool-valued only) → `['steer']`; a well-formed
+`local_automation_v1` descriptor (identity/owner/route) → `['steer']`; anything carrying content → `[]`.
+Edit is deliberately withheld from the last two: a re-admitted copy would drop the mode its producer
+asked for, or inherit (or steal) the route's identity. `_deliver` picks the channel from the shape —
+`agent.steer` for input text, `push_notice` with the descriptor's `display_kind` (default
+`internal_notification`) for an automation row — so the transcript stays truthful by construction.
+
+**Producer side.** A `-z` client waiting on its own admission had no terminal state for `steered`: its row
+would have been delivered and the process left waiting for a completion the owner never publishes.
+`hermes_cli/gateway_replay_gap.py::settled` now names `steered` as terminal, and `GatewayChatView`'s
+one-shot branch ends there: exit 130 plus `hermes: this prompt was delivered into the running turn
+(steered); no separate reply follows.` on stderr — a named outcome, not an empty success a wrapper would
+re-submit.
+
+**Tests** (`tests/gateway/test_prompt_queued_transfer.py`, `tests/hermes_cli/test_gateway_chat_view_replay_gap.py`):
+a run-mode row advertises `['steer']` alone, steers as a user message, settles `steered` and never runs on
+its own; a local automation row advertises `['steer']` alone and reaches the agent as a notice
+(`push_notice`, ticket = its admission), never as a steer; content-bearing and malformed shapes still get
+no verb; a one-shot whose receipt is terminal `steered` exits 130 with the stderr line instead of waiting.
+
+**Live A/B** (the real module against the live state DB, read-only): pre-fix `[]`/`[]`, shipped
+`['steer']`/`['steer']` for those two rows.
+
+**Deploy.** The owner half lands on the next gateway restart; the client half needs a rebuilt CLI (only
+future `-z` invocations are affected).
+
 ### 2026-10-30 (curator) — an empty model reply was recorded as a completed review, and the fallback was dead config
 
 **Symptom.** Two consecutive weekly curator passes (2026-10-21, 2026-10-28) on the Claude-subscription
