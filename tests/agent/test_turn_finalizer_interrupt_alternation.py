@@ -45,6 +45,7 @@ class _StubAgent:
         self.platform = "cli"
         self._interrupt_requested = False
         self._interrupt_message = None
+        self._tool_interrupt_reason: str | None = None
         self._tool_guardrail_halt_decision = None
         self._response_was_previewed = False
         self._skill_nudge_interval = 0
@@ -201,6 +202,22 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     assert result["interrupted"] is True
     assert result["completed"] is False
     assert result["failed"] is False
+
+
+def test_interrupted_turn_records_who_stopped_it():
+    """The result carries the recorded interrupt cause (``agent._tool_interrupt_reason``), so the
+    transcript boundary can say "You stopped this turn" / "stopped by your next message" from
+    positive evidence instead of inferring a human from an absent system issuer."""
+    agent = _StubAgent()
+    agent._tool_interrupt_reason = "explicit stop requested"
+    result = _finalize(
+        agent, [{"role": "user", "content": "hi"}], interrupted=True, final_response="partial reply",
+    )
+    assert result["interrupt_reason"] == "explicit stop requested"
+    # Not interrupted: no cause is invented.
+    assert "interrupt_reason" not in _finalize(
+        _StubAgent(), [{"role": "user", "content": "hi"}], interrupted=False, final_response="ok",
+    )
 
 
 def _pending_tool_result_tail():

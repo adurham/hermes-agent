@@ -43,6 +43,19 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# A turn an interrupt cut short is NOT a failed request: it was accepted, the model may have been
+# answering it, and a tool may have run. "Your request was not processed" reads as the assistant
+# refusing the work (the owner reported exactly that: "it is refusing to answer me"), and it is
+# false — the stop came after acceptance. Same boundary role, honest cause: the owner's Stop says
+# so, a system watchdog is named, and a result with no exit reason keeps this neutral wording.
+INTERRUPTED_TURN_NOTICE = (
+    "This turn was stopped before the model finished its reply, so there is no answer to it. "
+    "Send the message again to get one."
+)
+INTERRUPTED_TURN_PARTIAL_NOTICE = (
+    "This turn was stopped before the model finished its reply. Some actions may already have "
+    "run; verify their effects before resending."
+)
 # A turn no person sent (a cron run, a process completion, a webhook delivery) lost across a gateway
 # restart, or fenced inside the running owner (a lost managed worker): it settles interrupted and is
 # never re-run, so nobody is asked to resend it (#134889 GW-10). Neutral: not every path restarted.
@@ -68,14 +81,75 @@ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     return None
 
 
-def failed_turn_notice(turn_messages: Any) -> str:
-    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+def turn_ran_tools(turn_messages: Any) -> bool:
+    """True when this turn's rows show a tool result or an assistant tool call (side effects possible)."""
     for row in turn_messages or ():
         if isinstance(row, dict) and (
             row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
         ):
-            return PARTIAL_FAILED_TURN_NOTICE
-    return FAILED_TURN_NOTICE
+            return True
+    return False
+
+
+def interrupt_issuer_from_exit_reason(turn_exit_reason: Any) -> Optional[str]:
+    """The system producer named in ``interrupted_by_system(<issuer>)`` or
+    ``interrupted_during_api_call(<issuer>)``, else None — a human stop carries no issuer
+    (``interrupted_by_user`` / bare ``interrupted_during_api_call``), and neither does a result
+    whose loop exit minted no reason at all."""
+    reason = str(turn_exit_reason or "")
+    for prefix in ("interrupted_by_system(", "interrupted_during_api_call("):
+        if reason.startswith(prefix) and reason.endswith(")"):
+            return reason[len(prefix):-1].strip() or None
+    return None
+
+
+def interrupted_turn_notice(
+    turn_messages: Any, *, turn_exit_reason: Any = None, interrupt_reason: Any = None,
+) -> str:
+    """Boundary copy for a turn an interrupt (a Stop, a superseding message, a watchdog) ended.
+
+    Names the stop and never the failure: the request WAS processed up to the moment the loop was
+    told to stop. Who ended it comes from positive evidence only — the recorded interrupt cause
+    (``result["interrupt_reason"]``, ``agent._tool_interrupt_reason``) and, failing that, an issuer
+    carried by the exit reason (``interrupted_by_system(<issuer>)`` /
+    ``interrupted_during_api_call(<issuer>)``). An absent issuer is NOT evidence of a human: every
+    system producer that calls ``interrupt()`` without a ``tool_reason`` looks the same, so those
+    stay neutral instead of blaming the owner or advising a resend they may not need."""
+    issuer = interrupt_issuer_from_exit_reason(turn_exit_reason)
+    cause = str(interrupt_reason or "").strip()
+    # The cause strings are owned by agent/interrupt_control.py (lazy: keep this copy module free
+    # of the interrupt runtime's import graph).
+    from agent.interrupt_control import STOP_INTERRUPT_REASON, SUPERSEDE_INTERRUPT_REASON
+    if issuer:
+        lead, resend = f"This turn was stopped by {str(issuer).replace('_', ' ')}", True
+    elif cause == STOP_INTERRUPT_REASON:
+        lead, resend = "You stopped this turn", True
+    elif cause == SUPERSEDE_INTERRUPT_REASON:
+        # Their next message is already the live request: resending it would duplicate the work.
+        lead, resend = "This turn was stopped by your next message", False
+    else:
+        lead, resend = "This turn was stopped", True
+    if turn_ran_tools(turn_messages):
+        return (f"{lead} before the model finished its reply. Some actions may already have run; "
+                f"verify their effects{' before resending' if resend else ''}.")
+    if resend:
+        return (f"{lead} before the model finished its reply, so there is no answer to it. "
+                "Send the message again to get one.")
+    return f"{lead} before the model finished its reply, so this request has no answer."
+
+
+def failed_turn_notice(
+    turn_messages: Any, *, interrupted: bool = False, turn_exit_reason: Any = None,
+    interrupt_reason: Any = None,
+) -> str:
+    """Boundary copy for a turn that ended without an assistant row: never claim "not processed"
+    when a tool may have run, and never call an interrupt a failure (``interrupted``: the loop exited
+    on a stop; ``turn_exit_reason`` / ``interrupt_reason`` name who asked for it)."""
+    if interrupted:
+        return interrupted_turn_notice(
+            turn_messages, turn_exit_reason=turn_exit_reason, interrupt_reason=interrupt_reason,
+        )
+    return PARTIAL_FAILED_TURN_NOTICE if turn_ran_tools(turn_messages) else FAILED_TURN_NOTICE
 
 
 def provider_label_for(provider: Any) -> str:

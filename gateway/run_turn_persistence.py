@@ -13,7 +13,7 @@ import threading
 import time
 from agent.i18n import t
 from agent.turn_failure_copy import (
-    FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, OPEN_TURN_TAIL_ROLES, PARTIAL_FAILED_TURN_NOTICE,
+    FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, PARTIAL_FAILED_TURN_NOTICE,
 )
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
@@ -257,20 +257,25 @@ class GatewayTurnPersistenceMixin:
         return f"{response}\n\n{notice}" if response else notice
 
     def _hmwa_failed_turn_notice(self, agent_result):
-        """Choose retry guidance without assuming completed tool effects can be repeated safely."""
+        """Choose the boundary copy without assuming completed tool effects can be repeated safely.
+
+        One owner for the tables (``agent/turn_failure_copy.py``), so this writer and the core closer
+        (``agent/conversation_loop.py::_close_durable_failed_turn``) agree on what an interrupt is:
+        a stop, not a failed request — "your request was not processed" must never be what a user
+        reads after pressing Stop."""
+        from agent.turn_failure_copy import failed_turn_notice
         from gateway.media_repair import _current_turn_messages
         # Compression during the failed turn can move the slice boundary; the shared helper falls
         # back to the last user row so tool evidence is not silently dropped.
         turn_messages = _current_turn_messages(
             agent_result.get("messages", []) or [], agent_result.get("history_offset", 0),
         )
-        if any(
-            message.get("role") == "tool"
-            or (message.get("role") == "assistant" and message.get("tool_calls"))
-            for message in turn_messages
-        ):
-            return PARTIAL_FAILED_TURN_NOTICE
-        return FAILED_TURN_NOTICE
+        return failed_turn_notice(
+            turn_messages,
+            interrupted=bool(agent_result.get("interrupted")),
+            turn_exit_reason=agent_result.get("turn_exit_reason"),
+            interrupt_reason=agent_result.get("interrupt_reason"),
+        )
 
     async def _hmwa_close_failed_turn(self, session_id, notice):
         """Append the gateway-owned assistant boundary iff the durable tail is open (a user row, or the

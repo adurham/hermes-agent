@@ -44,7 +44,9 @@ from agent.turn_scripted_prelude import Prelude, play_prelude
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
-from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy
+from agent.turn_failure_copy import (
+    FAILED_TURN_DISPLAY_KIND, OPEN_TURN_TAIL_ROLES, failed_turn_notice, site_copy,
+)
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -2152,6 +2154,10 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
     compensates with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop and ACP hosts hand
     ``result["messages"]`` straight back as history, so the seam is here.
 
+    An interrupt is closed with the SAME boundary role but its own copy: the turn was accepted and
+    may have run tools, so "your request was not processed" is both false and reads as the assistant
+    refusing the request (``interrupted_turn_notice``; a watchdog's issuer rides the exit reason).
+
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
     #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
@@ -2177,7 +2183,14 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         start = result.get("current_turn_user_idx")
         turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
         boundary = {
-            "role": "assistant", "content": failed_turn_notice(turn_messages), "display_kind": FAILED_TURN_DISPLAY_KIND,
+            "role": "assistant",
+            "content": failed_turn_notice(
+                turn_messages,
+                interrupted=bool(result.get("interrupted")),
+                turn_exit_reason=result.get("turn_exit_reason"),
+                interrupt_reason=result.get("interrupt_reason"),
+            ),
+            "display_kind": FAILED_TURN_DISPLAY_KIND,
         }
         if failure := _failed_turn_display_metadata(agent, result):
             boundary["display_metadata"] = failure
