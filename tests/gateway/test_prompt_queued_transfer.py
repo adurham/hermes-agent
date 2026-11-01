@@ -621,6 +621,7 @@ async def test_a_local_automation_row_is_steered_as_a_notice_not_a_user_row(tmp_
     text is pushed as a notice — the running turn must not read a goal continuation as something the user
     typed, and the row still settles ``steered`` rather than running twice."""
     from dataclasses import asdict
+    from hermes_state_runtime import admit_session_input
     db, authority = _authority(tmp_path, monkeypatch)
     interactive(db, source='local', created='desktop')
     turn = Turn(monkeypatch)
@@ -629,20 +630,25 @@ async def test_a_local_automation_row_is_steered_as_a_notice_not_a_user_row(tmp_
     with db:
         await _submit(authority, 'running')
         await asyncio.wait_for(turn.claimed.wait(), 30)
-        queued = await _submit_payload(authority, 'continuation', {
-            'text': '[Continuing toward your standing goal]', 'local_automation_v1': descriptor})
+        # The write local automation actually performs (``admit_automation`` -> ``admit_session_input``);
+        # ``submit`` refuses this payload by design, since only a route may write one.
+        admitted = await asyncio.to_thread(
+            admit_session_input, db, epoch=authority.epoch, principal_id='automation:agent:main:local:dm:s',
+            session_id='s', request_id='goal-1',
+            payload={'text': '[Continuing toward your standing goal]', 'local_automation_v1': descriptor})
+        admission_id = admitted['admission_id']
         advertised = {row['admission_id']: asdict(authority._pending_receipt(row))['controls']
                       for row in authority._pending_rows(REF)}
-        assert advertised[queued.admission_id] == ['steer'], advertised
-        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert advertised[admission_id] == ['steer'], advertised
+        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=admission_id)
         assert 'error' not in reply, reply
         assert turn.agent.steers == [], 'an automation row is never injected as a user message'
         assert turn.agent.notices == [('[Continuing toward your standing goal]', 'internal_notification', None,
-                                       queued.admission_id)]
+                                       admission_id)]
         turn.release.set()
         await _drained(authority)
     assert turn.ran == ['running'], 'a steered continuation never runs as its own turn'
-    assert _ledger(db) == [('running', 'terminal', 'completed'), ('continuation', 'terminal', 'steered')]
+    assert _ledger(db) == [('running', 'terminal', 'completed'), ('goal-1', 'terminal', 'steered')]
 
 
 def test_queued_controls_refuses_content_a_steer_cannot_carry(tmp_path, monkeypatch):
