@@ -762,6 +762,12 @@ def finalize_turn(
     agent._final_content_replaced = False
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
+    if interrupted:
+        # WHO ended the turn ("explicit stop requested", "user sent a new message", a watchdog's
+        # tool_reason). The transcript boundary picks its copy from this recorded cause instead of
+        # inferring a human from an absent issuer — every system producer that calls
+        # ``interrupt()`` without a ``tool_reason`` otherwise reads as the owner's own Stop.
+        result["interrupt_reason"] = getattr(agent, "_tool_interrupt_reason", None)
     agent.clear_interrupt()
     agent._stream_callback = None  # don't leak into future calls
 

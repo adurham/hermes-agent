@@ -22,6 +22,11 @@ _REASON_HARD_STOP = "explicit stop requested"
 _REASON_NEW_MESSAGE = "user sent a new message"
 _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
+# Public names for the two causes a transcript boundary words differently: a recorded turn
+# result's ``interrupt_reason`` carries these exact strings (``agent/turn_finalizer.py``), and
+# ``agent/turn_failure_copy.py`` must not spell them itself.
+STOP_INTERRUPT_REASON = _REASON_HARD_STOP
+SUPERSEDE_INTERRUPT_REASON = _REASON_NEW_MESSAGE
 # ``tool_reason`` the gateway's restart/shutdown stop passes (gateway.run._INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN).
 _REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 

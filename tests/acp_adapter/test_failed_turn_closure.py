@@ -234,6 +234,93 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     db.close()
 
 
+def test_interrupted_turn_boundary_says_stopped_not_not_processed(tmp_path, monkeypatch):
+    """A Stop (or a watchdog) ends the durable tail, but it is NOT a failed request: the request was
+    accepted and the model may have been answering it. Closing it with the failed copy read as the
+    assistant refusing the work ("it is refusing to answer me"); the interrupt copy names the stop,
+    keeps the tool-effect hedge, and names a system producer that asked for it (#fork stop copy)."""
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _close_durable_failed_turn
+    from agent.turn_failure_copy import (
+        FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, INTERRUPTED_TURN_NOTICE,
+    )
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    sid = "s1"
+    db.create_session(session_id=sid, source="tui", model="m")
+    db.append_message(sid, "user", "why are you chasing this thread")
+
+    written: list[dict] = []
+
+    def flush(messages):
+        last = messages[-1]
+        db.append_message(sid, last["role"], last["content"], display_kind=last.get("display_kind"))
+        written.append(dict(last))
+
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush)
+    messages = [{"role": "user", "content": "why are you chasing this thread"}]
+    _close_durable_failed_turn(agent, {
+        "completed": False, "interrupted": True, "failed": False,
+        "turn_exit_reason": "interrupted_during_api_call",
+        "interrupt_reason": "explicit stop requested", "messages": messages,
+    })
+    boundary = written[-1]
+    assert boundary["content"] == (
+        "You stopped this turn before the model finished its reply, so there is no answer to it. "
+        "Send the message again to get one."
+    )
+    assert FAILED_TURN_NOTICE not in boundary["content"]
+    assert boundary["display_kind"] == FAILED_TURN_DISPLAY_KIND  # still a boundary, never a reply
+
+    # A new prompt that preempted the turn must NOT be answered with "send it again": that message is
+    # already the live request, and resending it would run the work twice.
+    db.append_message(sid, "user", "and why the other thread")
+    _close_durable_failed_turn(agent, {
+        "completed": False, "interrupted": True, "failed": False,
+        "turn_exit_reason": "interrupted_by_user",
+        "interrupt_reason": "user sent a new message",
+        "interrupt_message": "and why the other thread",
+        "messages": [{"role": "user", "content": "and why the other thread"}],
+    })
+    assert written[-1]["content"] == (
+        "This turn was stopped by your next message before the model finished its reply, "
+        "so this request has no answer."
+    )
+
+    # A stop that lands after a tool already ran keeps the hedge, and names the producer that asked
+    # for it so a watchdog stop cannot be read as the owner's own Stop.
+    call = {"id": "t1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+    trailing = [
+        {"role": "user", "content": "run the probe"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+    ]
+    db.append_message(sid, "user", "run the probe")
+    db.append_message(sid, "assistant", None, tool_calls=[call])
+    db.append_message(sid, "tool", "ok", tool_call_id="t1")
+    _close_durable_failed_turn(agent, {
+        "completed": False, "interrupted": True, "failed": False,
+        "turn_exit_reason": "interrupted_by_system(turn_timeout)", "messages": trailing,
+        "current_turn_user_idx": 0,
+    })
+    assert written[-1]["content"] == (
+        "This turn was stopped by turn timeout before the model finished its reply. "
+        "Some actions may already have run; verify their effects before resending."
+    )
+
+    # A result that minted no exit reason gets the neutral wording, never a guess about who stopped.
+    db.append_message(sid, "user", "neutral case")
+    _close_durable_failed_turn(agent, {
+        "completed": False, "interrupted": True, "failed": False,
+        "messages": [{"role": "user", "content": "neutral case"}],
+    })
+    assert written[-1]["content"] == INTERRUPTED_TURN_NOTICE
+    db.close()
+
+
 def test_prompt_after_cancel_keeps_the_unanswered_request(acp):
     """An unanswered request survives the next ACP prompt and its replay prefix."""
     provider, prompt, _rows, _db, sid, _conn, server = acp
