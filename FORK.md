@@ -119,6 +119,15 @@ settle (its only exit is the finite view's `session_replay_gap` failure, not a n
 **Live A/B** (the real module against the live state DB, read-only): pre-fix `[]`/`[]`, shipped
 `['steer']`/`['steer']` for those two rows.
 
+**Proven live on the running gateway** (restarted onto `a061348884`, whose tree contains this work): a probe
+client on the supported path (`hermes_cli.gateway_client.connect_gateway`) created a scratch `gui` session,
+kept a turn busy, queued one `finite` prompt behind it, and read the row the owner publishes — the exact
+list `apps/desktop` paints its per-row buttons from — as `controls: ["steer"]`; `prompt.steer_queued`
+answered `started` and the row settled `terminal/steered`, so that message reached the live turn and never
+ran as its own. The scratch session was deleted afterwards. (The automation half is covered by the
+integration tests and the live DB A/B: `prompt.submit` refuses a `local_automation_v1` payload by design, so
+no wire client can manufacture that row.)
+
 **Deploy.** The owner half lands on the next gateway restart; the client half needs a rebuilt CLI (only
 future `-z` invocations are affected).
 
