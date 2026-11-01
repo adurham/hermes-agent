@@ -16,7 +16,7 @@ from hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, get_session_admission,
     recover_session_inputs,
 )
-from tests.gateway.test_prompt_queued_controls import Turn, _call, _completions, _connection, _ledger, interactive
+from tests.gateway.test_prompt_queued_controls import Agent, Turn, _call, _completions, _connection, _ledger, interactive
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 from tests.waiting import async_wait_until, wait_until
 
@@ -566,3 +566,95 @@ async def test_a_desktop_chats_own_queued_row_is_advertised_and_steerable(tmp_pa
         turn.release.set()
         await _drained(authority)
     assert turn.ran == ['running'], 'a steered row is never re-run on its own'
+
+
+class NoticeAgent(Agent):
+    """The steer seam plus the fork's notice channel (``push_notice``): a machine row is delivered as its
+    own card instead of as a user message."""
+
+    def __init__(self):
+        super().__init__()
+        self.notices = []
+
+    def push_notice(self, text, *, display_kind, display_metadata=None, ticket=None):
+        self.notices.append((text, display_kind, display_metadata, ticket))
+        return True
+
+
+def _submit_payload(authority, request_id, payload):
+    from gateway.session_contract import Submission
+    return authority.submit(ACTOR, Submission(request_id=request_id, ref=REF, payload=payload, intent='queue'))
+
+
+@pytest.mark.asyncio
+async def test_a_run_mode_row_is_steerable_but_never_replaceable(tmp_path, monkeypatch):
+    """The live shape of a ``hermes -z`` prompt queued behind a running turn: plain text plus the run mode
+    it would have run with (``finite``/``unattended``). Those keys describe the turn that row would have
+    been, not content a steer must carry — the Desktop's Steer hands its TEXT to the turn already running,
+    which keeps its own mode — so the row is offered ``steer`` alone. Edit stays off: the re-admitted copy
+    would drop the mode its producer asked for."""
+    from dataclasses import asdict
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source='oneshot', created='desktop')  # the owner's lane: a headless submit into a Desktop chat
+    turn = Turn(monkeypatch)
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(turn.claimed.wait(), 30)
+        queued = await _submit_payload(authority, 'headless', {
+            'text': 'fire 327_loader_surface now', 'finite': True, 'unattended': True})
+        advertised = {row['admission_id']: asdict(authority._pending_receipt(row))['controls']
+                      for row in authority._pending_rows(REF)}
+        assert advertised[queued.admission_id] == ['steer'], advertised
+        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert 'error' not in reply, reply
+        assert turn.agent.steers == ['fire 327_loader_surface now'], 'the run-mode row stays a user message'
+        turn.release.set()
+        await _drained(authority)
+    assert turn.ran == ['running'], 'a steered run-mode row never runs as its own turn'
+    assert _ledger(db) == [('running', 'terminal', 'completed'), ('headless', 'terminal', 'steered')]
+
+
+@pytest.mark.asyncio
+async def test_a_local_automation_row_is_steered_as_a_notice_not_a_user_row(tmp_path, monkeypatch):
+    """A goal continuation waiting behind a long turn is a machine row: its descriptor is the route's
+    identity, so it is offered ``steer`` alone (an edited copy would inherit or lose that identity) and its
+    text is pushed as a notice — the running turn must not read a goal continuation as something the user
+    typed, and the row still settles ``steered`` rather than running twice."""
+    from dataclasses import asdict
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source='local', created='desktop')
+    turn = Turn(monkeypatch)
+    turn.agent = NoticeAgent()
+    descriptor = {'identity': 'goal-1', 'owner': 's', 'route': 'agent:main:local:dm:s'}
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(turn.claimed.wait(), 30)
+        queued = await _submit_payload(authority, 'continuation', {
+            'text': '[Continuing toward your standing goal]', 'local_automation_v1': descriptor})
+        advertised = {row['admission_id']: asdict(authority._pending_receipt(row))['controls']
+                      for row in authority._pending_rows(REF)}
+        assert advertised[queued.admission_id] == ['steer'], advertised
+        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert 'error' not in reply, reply
+        assert turn.agent.steers == [], 'an automation row is never injected as a user message'
+        assert turn.agent.notices == [('[Continuing toward your standing goal]', 'internal_notification', None,
+                                       queued.admission_id)]
+        turn.release.set()
+        await _drained(authority)
+    assert turn.ran == ['running'], 'a steered continuation never runs as its own turn'
+    assert _ledger(db) == [('running', 'terminal', 'completed'), ('continuation', 'terminal', 'steered')]
+
+
+def test_queued_controls_refuses_content_a_steer_cannot_carry(tmp_path, monkeypatch):
+    """The gate is about content, not producers: an attachment or a malformed automation descriptor still
+    gets no verb, and a message with no text (a bare attachment turn) never does."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source='local', created='desktop')
+    with db:
+        for payload in ({'text': 'see attached', 'attachments_v1': {'media': []}},
+                        {'text': 'x', 'local_automation_v1': {'identity': 'goal-1'}},
+                        {'text': 'x', 'finite': 'yes'},
+                        {'attachments_v1': {'media': []}},
+                        {'text': '   '}):
+            row = {'status': 'queued', 'target_session_id': 's', 'payload': payload}
+            assert session_queued_controls.queued_controls(authority, row) == [], payload
