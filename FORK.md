@@ -48,9 +48,10 @@ back."
   and a 401/403 scope refusal with a long cooldown (the endpoint throttles hard). Live probe of that
   endpoint with the plugin's own token: 429 during the rate-limit window, then
   `403 permission_error: OAuth token does not meet scope requirement user:profile` — a
-  `claude setup-token` credential is inference-only. So for THIS account no Claude gauge can be read
-  yet; the statusbar hides the plan item rather than lying, and the hook is the seam a
-  profile-scoped credential (an interactive `claude auth login`) would feed.
+  `claude setup-token` credential is inference-only, so that endpoint alone could not paint this
+  account's plan. **Superseded same day (see the update at the end of this entry):** the same 5h/weekly
+  figures ride every inference reply as `anthropic-ratelimit-unified-*` headers, readable with the setup
+  token; the plugin's relay now captures them, so the gauge shows this account's real Claude numbers.
 
 **Tests.** `tests/gateway/test_local_viewer_usage.py`: `test_a_manual_switch_shows_the_new_providers_own_windows`
 (the reported scenario: spent Nous plan, Claude gauge, no route), `test_a_fallback_keeps_the_primaries_allowance_and_names_it`
@@ -64,6 +65,19 @@ session's own plan after a manual switch". Plugin: `tests/test_usage.py` (window
 `tsc -p . --noEmit`, and eslint on the changed desktop files; plugin `tests/test_usage.py` 4/4. Fail-before
 proved on a clean `HEAD` worktree: 4 of the gateway tests fail there (including the manual-switch case),
 pass on the fix.
+
+**Update (same day, later) — the gauge now shows the real Claude numbers, not a hidden item.** The
+`/api/oauth/usage` 403 above is a property of *that endpoint*, not of the credential: every inference
+reply carries `anthropic-ratelimit-unified-5h-utilization/-5h-reset/-7d-utilization/-7d-reset` plus the
+overage state, and those are readable with the setup token. The plugin's relay (`admission.py`) now
+captures them per reply into `$HERMES_HOME/cache/claude-subscription-directsdk/unified-limits.json`, and
+its `fetch_account_usage` serves a `native_rate_limit_headers` snapshot from that capture before trying
+the endpoint (plugin FORK.md, entry 2026-11-04 (b)). Live-verified through the real relay against
+`api.anthropic.com`: 5h 65% / 7d 18%; the hook returned those two account windows, and
+`_account_window_gauge` picked `{'id': 'session', 'used_bp': 6500, 'provider':
+'claude-subscription-directsdk-experimental'}` — `Claude Subscription · Current session 65%`. So the
+end-to-end answer to the reported notice is this pair: the gateway/desktop half (below) follows the chat's
+own route, and the plugin half supplies that route's own allowance.
 
 ### 2026-11-03 (upstream sync) — v0.22.6 and v0.22.7 merged
 
