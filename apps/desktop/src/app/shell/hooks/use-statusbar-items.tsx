@@ -51,7 +51,7 @@ import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/f
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { $gateway } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
-import { $planGauges, planScopeFor } from '@/store/plan-gauge'
+import { $planGauges, planGaugeFor, planScopeFor } from '@/store/plan-gauge'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
@@ -235,6 +235,11 @@ export function useStatusbarItems({
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
   const focusedStateCwd = useStoreSelector($focusedSessionState, state => state?.cwd?.trim() || '')
+  // The route the focused chat is actually on, as its composer/session reports it. The plan
+  // allowance must follow THIS, not whichever account in the scope reported a gauge first: a chat
+  // switched from Nous to Claude has both accounts' observations in the store, and the bar used to
+  // paint the spent Nous plan on it (`plan-gauge.ts` scope slots predate the switch).
+  const focusedProvider = useStoreSelector($focusedSessionState, state => state?.provider?.trim() || '')
 
   // Runtime slices carry the stored id they were bound for. During a primary
   // tab switch the runtime id can lag a frame behind the new selection — the
@@ -365,19 +370,24 @@ export function useStatusbarItems({
   // The plan allowance is the ACCOUNT's, not the focused session's: every session reports its own
   // snapshot of the same allowance, each taken at a different moment, so reading the focused
   // session's gauge painted a different number on every tab of one account — and nothing at all on
-  // a tab whose session had not run yet. `$planGauges` holds the one shared observation per
-  // backend source; every tab reads the same slot.
-  const planScope = planScopeFor(activeSessionId)
-  const planGauge = useStoreSelector($planGauges, gauges => gauges[planScope]?.gauge ?? null)
-  const planUsed = planGauge ? Math.min(1, Math.max(0, planGauge.used_bp / 10_000)) : 0
-  // Which plan the number belongs to ("Nous Portal"): the gauge names its owner, so a session
-  // running some other provider still reads the allowance it is actually drawing on.
-  const planProvider = planGauge?.provider ? providerDisplayName(planGauge.provider) : ''
+  // a tab whose session had not run yet. `$planGauges` holds one shared observation per
+  // (backend source, plan owner); every tab of one account reads the same slot.
+  //
   // A provider fallback carries the turn on another provider while the chat keeps its own route
   // (`usage.route`, present only while that is true). Naming it is the difference between "the
   // allowance is fine" and "the allowance is spent, answers are coming from somewhere else":
   // without it the composer shows the backup as if the operator had picked it.
   const fallbackRoute = currentUsage.route?.fallback_active ? currentUsage.route : undefined
+  const planScope = planScopeFor(activeSessionId)
+  // Whose allowance: the chat's own route. A fallback names its primary; otherwise it is the
+  // provider the focused session is on — a manual switch is not a fallback, so the previous
+  // provider's plan must not linger on the bar.
+  const planOwner = fallbackRoute?.primary_provider || focusedProvider
+  const planGauge = useStoreSelector($planGauges, gauges => planGaugeFor(gauges, planScope, planOwner))
+  const planUsed = planGauge ? Math.min(1, Math.max(0, planGauge.used_bp / 10_000)) : 0
+  // Which plan the number belongs to ("Nous Portal"): the gauge names its owner, so a session
+  // running some other provider still reads the allowance it is actually drawing on.
+  const planProvider = planGauge?.provider ? providerDisplayName(planGauge.provider) : ''
 
   const fallbackFrom = fallbackRoute?.primary_provider
     ? providerDisplayName(fallbackRoute.primary_provider)

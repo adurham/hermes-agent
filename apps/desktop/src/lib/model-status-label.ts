@@ -38,6 +38,11 @@ export function currentPickerSelection(
 export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   anthropic: 'Anthropic Account',
   'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
+  // The subscription provider's plan owner label. Its usage windows come from the same Anthropic
+  // account its own Claude Code login belongs to, so the statusbar names the plan the session draws on.
+  'claude-subscription': 'Claude Subscription',
+  'claude-subscription-directsdk': 'Claude Subscription',
+  'claude-subscription-directsdk-experimental': 'Claude Subscription',
   'minimax-oauth': 'MiniMax',
   nous: 'Nous Portal',
   'ollama-cloud': 'Ollama Cloud',

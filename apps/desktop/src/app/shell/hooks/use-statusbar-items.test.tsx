@@ -501,6 +501,41 @@ describe('statusbar plan usage — one allowance for every tab', () => {
 
     expect(planUsageItem()?.label).toBe('Today 68%')
   })
+
+  it("shows the focused session's own plan after a manual switch, never the spent Nous one", () => {
+    // The reported bug: the plan hit 100% on Nous, the operator switched the chat to Claude by
+    // hand. Both accounts have observations in this scope; the item must follow the chat's route
+    // (Claude) and must not resurrect the Nous number because it is higher or arrived first.
+    const nous = { id: 'week', label: 'This week', provider: 'nous', resets_at_ms: 4_000_000_000_000, used_bp: 10_000 }
+
+    const claude = {
+      id: 'week',
+      label: 'Current week',
+      provider: 'claude-subscription-directsdk-experimental',
+      resets_at_ms: 4_000_000_000_000,
+      used_bp: 4_200
+    }
+
+    setActiveSessionId('runtime-a')
+    $sessionStates.set({
+      'runtime-old': {
+        ...createClientSessionState(),
+        provider: 'nous',
+        usage: { calls: 1, input: 1, output: 1, total: 1, plan_gauge: nous }
+      },
+      'runtime-a': {
+        ...createClientSessionState(),
+        provider: 'claude-subscription-directsdk-experimental',
+        usage: { calls: 2, input: 1, output: 1, total: 2, plan_gauge: claude }
+      }
+    } as never)
+
+    const item = planUsageItem()
+
+    expect(item?.hidden).toBeFalsy()
+    expect(item?.label).toBe('Claude Subscription · Week 42%')
+    expect(item?.title).toContain('42% of your plan')
+  })
 })
 
 // A provider fallback carries the turn on another provider while the chat keeps its own route.

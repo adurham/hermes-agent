@@ -186,6 +186,7 @@ def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
 
     day = WindowGauge(id='day', scope='all', label='today', used_bp=4_200, resets_at_ms=4_000_000_000_000)
     agent = _agent()
+    agent.provider = 'nous'  # the plan's owner; a gauge observed on another route is not this session's
     agent._credits_state = CreditsState(denominator_kind='usage_window', gauges=(day,))
     published = []
     publish_usage(_turn(Platform.LOCAL, published, agent), agent)
@@ -284,14 +285,14 @@ def test_a_fallback_off_a_spent_nous_plan_still_shows_the_allowance(monkeypatch)
     assert plan_gauge(agent) == {'id': 'day', 'label': 'today', 'used_bp': 10_000,
                                  'resets_at_ms': resets_at_ms, 'provider': 'nous'}
 
-    # ...and the same session after a restart bound the fallback into it: the flag is gone, the plan
-    # is still spent, the agent still answers elsewhere. The number must not vanish with the flag.
+    # ...and after a restart the bound route is the backup itself (`_primary_runtime` moves with
+    # it), so Nous is out of the mix until the operator switches back: a spent plan is not evidence
+    # of a fallback, and a gauge for a plan this session no longer draws on would be a lie.
     agent._fallback_activated = False
     agent._primary_runtime = {'provider': 'ollama-cloud', 'model': 'deepseek-v4.1-flash'}
-    assert plan_gauge(agent) == {'id': 'day', 'label': 'today', 'used_bp': 10_000,
-                                 'resets_at_ms': resets_at_ms, 'provider': 'nous'}
+    assert plan_gauge(agent) is None
 
-    # On the plan itself: no chip of somebody else's allowance.
+    # On the plan itself a plan header is still the gauge.
     agent.provider = 'nous'
     assert plan_gauge(agent) is None
 
@@ -314,6 +315,88 @@ def test_an_unspent_plan_on_another_provider_is_not_a_warning(monkeypatch):
     agent._fallback_activated = False
 
     assert plan_gauge(agent) is None
+
+
+def test_a_manual_switch_shows_the_new_providers_own_windows(monkeypatch):
+    """The reported bug: a session started on Nous, the plan hit 100%, and the operator switched it
+    to Claude by hand. ``switch_model`` moves ``_primary_runtime`` with the pick and clears the
+    fallback flag, so nothing was left behind — the bar must show Claude's own windows (and name no
+    swap), not the spent plan the session no longer draws on."""
+    import time
+    from datetime import UTC, datetime
+
+    from agent import account_usage_cache
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+    from hermes_cli import nous_account
+
+    from gateway.session_usage import plan_gauge, plan_route, usage_stats
+
+    resets = datetime.fromtimestamp(int(time.time()) + 3 * 86_400, tz=UTC)
+    snapshot = AccountUsageSnapshot(
+        provider='claude-subscription-directsdk-experimental', source='oauth_usage_api',
+        fetched_at=datetime.now(UTC),
+        windows=(AccountUsageWindow('Current session', 12.0, resets),
+                 AccountUsageWindow('Current week', 42.0, resets),
+                 AccountUsageWindow('Opus week', 91.0, resets, scope='model')))
+    monkeypatch.setattr(account_usage_cache, 'cached_account_usage',
+                        lambda provider, **_kw: snapshot if provider == 'claude-subscription-directsdk-experimental' else None)
+    monkeypatch.setattr(account_usage_cache, 'snapshot_is_stale', lambda _snapshot: False)
+    monkeypatch.setattr(nous_account, 'cached_nous_portal_account_info',
+                        lambda **_kw: SimpleNamespace(usage_window={'gauges': [
+                            {'id': 'week', 'scope': 'all', 'label': 'this week', 'used_bp': 10_000,
+                             'resets_at_ms': int((time.time() + 86_400) * 1000)}]}))
+    agent = _agent()
+    agent.provider = 'claude-subscription-directsdk-experimental'
+    agent.model = 'claude-opus-5-5'
+    agent._credits_state = None
+    agent._fallback_activated = False
+    agent._primary_runtime = {'provider': 'claude-subscription-directsdk-experimental',
+                              'model': 'claude-opus-5-5'}
+
+    gauge = plan_gauge(agent)
+
+    # The fullest ACCOUNT-scoped window; the model-scoped Opus week (91%) cannot block the account.
+    assert gauge == {'id': 'week', 'label': 'Current week', 'used_bp': 4_200,
+                     'resets_at_ms': int(resets.timestamp() * 1000),
+                     'provider': 'claude-subscription-directsdk-experimental'}
+    assert plan_route(agent) is None
+    stats = usage_stats(agent)
+    assert stats['plan_gauge'] == gauge
+    assert 'route' not in stats  # a deliberate pick is not a fallback
+
+
+def test_a_fallback_keeps_the_primaries_allowance_and_names_it(monkeypatch):
+    """A real fallback (the live flag) is the one case the bar explains as a swap: the allowance
+    belongs to the chat's own route, even when that route is not Nous."""
+    import time
+    from datetime import UTC, datetime
+
+    from agent import account_usage_cache
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    from gateway.session_usage import plan_gauge, plan_route
+
+    resets = datetime.fromtimestamp(int(time.time()) + 3 * 3_600, tz=UTC)
+    snapshot = AccountUsageSnapshot(
+        provider='claude-subscription-directsdk-experimental', source='oauth_usage_api',
+        fetched_at=datetime.now(UTC),
+        windows=(AccountUsageWindow('Current session', 100.0, resets),))
+    monkeypatch.setattr(account_usage_cache, 'cached_account_usage',
+                        lambda provider, **_kw: snapshot if provider == 'claude-subscription-directsdk-experimental' else None)
+    monkeypatch.setattr(account_usage_cache, 'snapshot_is_stale', lambda _snapshot: False)
+    agent = _agent()
+    agent.provider = 'ollama-cloud'
+    agent.model = 'deepseek-v4.1-flash'
+    agent._credits_state = None
+    agent._fallback_activated = True
+    agent._primary_runtime = {'provider': 'claude-subscription-directsdk-experimental',
+                              'model': 'claude-opus-5-5'}
+
+    gauge = plan_gauge(agent)
+    assert gauge is not None and gauge['provider'] == 'claude-subscription-directsdk-experimental'
+    assert plan_route(agent) == {
+        'model': 'deepseek-v4.1-flash', 'provider': 'ollama-cloud', 'fallback_active': True,
+        'primary_model': 'claude-opus-5-5', 'primary_provider': 'claude-subscription-directsdk-experimental'}
 
 
 def test_usage_stats_names_the_route_a_fallback_carries(monkeypatch):
@@ -346,11 +429,12 @@ def test_usage_stats_names_the_route_a_fallback_carries(monkeypatch):
         'primary_model': 'deepseek/deepseek-v4.1-flash', 'primary_provider': 'nous'}
     CANONICAL_METHODS['session.stats'].result.model_validate(stats)
 
-    # A fallback bound into the session (post-restart): the snapshot names the backup, so the plan's
-    # owner is the primary the bar reports.
+    # A fallback bound into the session (post-restart) has no live flag and its snapshot names the
+    # backup: there is no departure left to report. The bar shows that route's own allowance (or
+    # nothing) instead of claiming a swap away from Nous.
     agent._fallback_activated = False
     agent._primary_runtime = {'provider': 'ollama-cloud', 'model': 'deepseek-v4.1-flash'}
-    assert usage_stats(agent)['route']['primary_provider'] == 'nous'
+    assert 'route' not in usage_stats(agent)
 
     # On its own route: no swap to name, and the frozen field list stays exactly as it was.
     agent.provider = 'nous'
