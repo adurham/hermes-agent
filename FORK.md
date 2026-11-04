@@ -77,7 +77,10 @@ the endpoint (plugin FORK.md, entry 2026-11-04 (b)). Live-verified through the r
 `_account_window_gauge` picked `{'id': 'session', 'used_bp': 6500, 'provider':
 'claude-subscription-directsdk-experimental'}` — `Claude Subscription · Current session 65%`. So the
 end-to-end answer to the reported notice is this pair: the gateway/desktop half (below) follows the chat's
-own route, and the plugin half supplies that route's own allowance.
+own route, and the plugin half supplies that route's own allowance. **Live after the owner's `hermes
+update` (gateway restarted 15:08, code_sha `fedd8a7`):** `model.options` on the running gateway returned
+that provider's row with `windows: Current session 65% (reset 22:00 UTC), Current week 18%` — the plugin
+hook is live inside the gateway process, not just in a probe.
 
 ### 2026-11-03 (upstream sync) — v0.22.6 and v0.22.7 merged
 
