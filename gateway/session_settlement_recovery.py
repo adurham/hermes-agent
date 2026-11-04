@@ -78,6 +78,10 @@ def completion_payload(row, settled, response, captured):
             complete['response_previewed'] = True
         if captured_result.get('response_transformed'):
             complete['response_transformed'] = True
+        # The stream carried the raw reply and the turn counts as delivered (``response`` is
+        # None): this frame is the only carrier of the rewrite the session stored.
+        if not response and (final := captured_result.get('final_response')):
+            complete['text'] = complete['content'] = final
         # The reply replaced the final message's streamed content (turn-contract close): the
         # viewer settles its streamed draft bubble onto this text, never paints both.
         if captured_result.get('final_content_replaced'):
@@ -150,7 +154,7 @@ def owner_stop_notice(captured, outcome, row=None):
 
 def gateway_refusal_boundary(captured, outcome):
     """``(notice, display_metadata)`` for a failed turn the gateway itself refused with a renderable
-    descriptor (``session_cron.execute``: the only producer of ``result.error_surface``), else None."""
+    descriptor (``result.error_surface``: ``session_cron.execute``, ``session_policy.refused_turn_result``), else None."""
     value = (captured or {}).get('result') or {}
     surface, error = value.get('error_surface'), value.get('error')
     if outcome != 'failed' or not isinstance(surface, dict) or not isinstance(error, str) or not error:

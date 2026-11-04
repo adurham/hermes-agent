@@ -20,15 +20,18 @@ import {
   pruneSidebarLaneSessionOrderIds,
   setSidebarLaneSessionOrderIds,
   setSidebarWorkspaceOrderIds,
-  setWorkspaceNodeOpen
+  setWorkspaceNodeOpen,
+  worktreeDismissalId
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import type { AgentProfileRoute } from '@/store/profile'
 import { removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 import { mergeReorderedSubset, orderByIds } from '../order'
 import { reorderAutoScroll, SortableGroup, useSortableBindings } from '../reorderable-list'
 
+import { ownedNewSessionHandlers, projectOwnerRoute } from './gateway-project-rows'
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
@@ -69,7 +72,8 @@ export function EnteredProjectContent({
     draggable?: boolean,
     sortData?: Record<string, unknown>
   ) => React.ReactNode
-  onNewSession?: (path: null | string) => void
+  /** `owner` is set for a project another gateway owns: the session starts there. */
+  onNewSession?: (path: null | string, owner?: AgentProfileRoute) => void
   onNewSessionSplit?: NewSessionSplitHandler
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
@@ -88,6 +92,7 @@ export function EnteredProjectContent({
   }
 
   const single = project.repos.length === 1
+  const owned = ownedNewSessionHandlers(project, onNewSession, onNewSessionSplit)
 
   return (
     <>
@@ -97,8 +102,9 @@ export function EnteredProjectContent({
           dndSensors={dndSensors}
           key={repo.id}
           liveSessions={liveSessions}
-          onNewSession={onNewSession}
-          onNewSessionSplit={onNewSessionSplit}
+          onNewSession={owned.onNewSession}
+          onNewSessionSplit={owned.onNewSessionSplit}
+          owner={projectOwnerRoute(project)}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -139,6 +145,7 @@ function RepoFlatSection({
   onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
+  owner,
   removedSessionIds,
   workingSessionIdSet,
   dndSensors
@@ -154,6 +161,8 @@ function RepoFlatSection({
   onNewSessionSplit?: NewSessionSplitHandler
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
+  /** Another gateway's project: its worktrees are removed and switched on that gateway. */
+  owner?: AgentProfileRoute
   removedSessionIds?: ReadonlySet<string>
   workingSessionIdSet?: Set<string>
   dndSensors?: ReturnType<typeof useSensors>
@@ -200,11 +209,13 @@ function RepoFlatSection({
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
   // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
+  const laneKey = (group: SidebarSessionGroup) => worktreeDismissalId(group.id, owner)
+
   const defaultOrdered = overlaidGroups.filter(
     group =>
       group.isMain ||
-      !dismissedWorktrees.includes(group.id) ||
-      (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
+      !dismissedWorktrees.includes(laneKey(group)) ||
+      (removedWorktrees.includes(laneKey(group)) && group.path && discoveredWorktreePaths.has(group.path))
   )
 
 
@@ -244,8 +255,8 @@ function RepoFlatSection({
     }
 
     try {
-      await removeWorktreePath(repo.path, group.path, { force })
-      dismissWorktree(group.id, { removed: true })
+      await removeWorktreePath(repo.path, group.path, { force }, owner)
+      dismissWorktree(laneKey(group), { removed: true })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
       // rather than dead-ending on an error toast.
@@ -336,6 +347,7 @@ function RepoFlatSection({
       onNewSession: group.isKanban ? undefined : onNewSession,
       onNewSessionSplit: group.isKanban ? undefined : onNewSessionSplit,
       onRemove: group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group),
+      owner,
       renderRows,
       sessionsReorderable: true,
       workingSessionIdSet
@@ -388,7 +400,7 @@ function RepoFlatSection({
       open={Boolean(target)}
       secondaryAction={{
         label: s.projects.removeFromSidebar,
-        onClick: () => target && dismissWorktree(target.id)
+        onClick: () => target && dismissWorktree(laneKey(target))
       }}
       title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
     />
