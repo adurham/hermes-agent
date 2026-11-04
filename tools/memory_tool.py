@@ -1196,8 +1196,9 @@ MEMORY_SCHEMA = {
 _MEMORY_LEGACY_PROPS = dict(MEMORY_SCHEMA["parameters"]["properties"])
 _ops_item = _MEMORY_LEGACY_PROPS["operations"]["items"]
 _ops_item["properties"]["action"]["enum"] = list(_MEMORY_LEGACY_PROPS["action"]["enum"])
-for _extra_key in ("tier", "query", "fact_id", "entity", "entities", "keywords", "min_trust",
-                   "limit", "category", "tags", "trust_delta", "supersedes"):
+for _extra_key in ("tier", "query", "top_k", "fact_id", "entity", "entities", "keywords",
+                   "min_trust", "limit", "category", "tags", "trust_delta", "supersedes",
+                   "helpful"):
     _extra_prop = _MEMORY_LEGACY_PROPS.get(_extra_key)
     if _extra_prop is not None:
         _ops_item["properties"].setdefault(_extra_key, _extra_prop)
