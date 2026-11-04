@@ -102,14 +102,15 @@ export function applySessionInfoStatePatch(
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
-// (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
-// token got its own React commit + Streamdown markdown re-parse, scaling
-// linearly with the growing last-block length. Bumping to 33ms lets ~2 tokens
-// batch into one commit at 60 tok/sec without introducing visible lag on the
-// streaming text (still 30 fps of visible text growth). Big perceived
-// smoothness win on long messages with big trailing paragraphs; see
-// `scripts/profile-typing-lag.md` for the measurement work behind this.
-export const STREAM_DELTA_FLUSH_MS = 33
+// Streamed text is committed at 10 Hz rather than 30 Hz. The old 33ms floor let
+// ~2 tokens batch per commit at 60 tok/sec, but every commit is a React
+// re-render plus a Streamdown re-parse of the growing last block, and each one
+// also wakes WindowServer to composite the tile — which is what actually costs
+// watts on a laptop. Nobody reads text faster than ~10 Hz, and measured on an
+// M4 Max the streaming path (renderer + WindowServer) was ~1.5-2 W with five
+// sessions live. 100ms cuts the commit count ~3x for no perceptible change.
+// See `scripts/profile-typing-lag.md` for the earlier 33ms measurement work.
+export const STREAM_DELTA_FLUSH_MS = 100
 
 // Floor used while the window is VISIBLE but unfocused. Nothing on screen is
 // being read at that moment, and every flush is a React commit plus a
@@ -119,7 +120,7 @@ export const STREAM_DELTA_FLUSH_MS = 33
 // so returning to the window never reveals a stalled reply. Chromium only
 // throttles an occluded page, so without this a backgrounded-but-visible window
 // keeps paying the display-cadence price for text nobody is watching.
-export const STREAM_DELTA_FLUSH_UNFOCUSED_MS = 120
+export const STREAM_DELTA_FLUSH_UNFOCUSED_MS = 200
 
 // Which floor applies right now. A real blur/focus latch alone is not enough —
 // a missed `focus` event (system dialog, IME handoff, focus-follows-mouse WM)
