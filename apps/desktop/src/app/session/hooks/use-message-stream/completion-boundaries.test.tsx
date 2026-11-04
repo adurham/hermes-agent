@@ -18,6 +18,7 @@ import { usePromptActions } from '../use-prompt-actions'
 import { reconcileDurableHistory } from '../use-session-actions/utils'
 import { useSessionStateCache } from '../use-session-state-cache'
 
+import { STREAM_DELTA_FLUSH_MS } from './utils'
 import { useMessageStream } from './index'
 
 const SID = 'completion-runtime'
@@ -259,7 +260,9 @@ const timeline = (messages: ChatMessage[]) => messages.map(message => [message.r
 
 const flush = () =>
   act(async () => {
-    await vi.advanceTimersByTimeAsync(50)
+    // Out-wait the stream flush floor, whatever it is set to: 50ms was under
+    // the old 33ms cadence and silently stopped flushing when it moved to 100ms.
+    await vi.advanceTimersByTimeAsync(STREAM_DELTA_FLUSH_MS + 50)
   })
 
 beforeEach(() => {
