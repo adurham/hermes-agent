@@ -4,6 +4,62 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-11-04 (desktop status bar + gateway usage) — a manually switched chat kept showing Nous's spent plan
+
+**Symptom.** The owner, after starting a chat on Nous, hitting the plan's 100% week, and switching the
+conversation to Claude by hand: the bottom-right notice read `⚠ Nous Portal · Week 100% →
+claude-subscription-directsdk-experimental`. He put it plainly: "that notice ... isn't correct for that
+session ... I manually switched the conversation over from Nous/Ollama to Claude so it should be showing my
+claude usage for that session, Nous is no longer in the mix for that session until I manually switch it
+back."
+
+**Cause — two independent halves.**
+1. `gateway/session_usage.py::plan_gauge` treated a *spent* plan as proof of a fallback:
+   `_fallback_bound(agent) or payload['used_bp'] >= 10000` returned the Nous Portal gauge whenever the
+   answering provider was not Nous. `plan_route` then fabricated a route with
+   `primary_provider=GAUGE_PROVIDER` whenever `_primary_runtime` named the answering provider — which is
+   exactly what a deliberate `switch_model` leaves behind (`_finish_switch` clears `_fallback_activated`;
+   `switch_model` rebuilds `_primary_runtime` from the new route). A manual pick and a live fallback were
+   indistinguishable, so every manual switch away from a spent plan was painted as "Nous → X".
+2. The desktop store held ONE gauge per backend source (`$planGauges[scope]`), and `supersedes` only
+   raises a percentage within a window — the 100% Nous observation beat Claude's 42% forever, and the
+   statusbar read the slot by scope alone (not by provider). Even a correct gateway payload could not
+   displace it.
+
+**Fix.**
+- `_gauge_owner(agent)` = the chat's own route: `_primary_runtime.provider` only while a fallback is
+  genuinely active, else the answering provider. `plan_gauge` now returns the owner's own allowance —
+  Nous from `x-nous-credits-*`/Portal, any other provider from its account-usage windows
+  (`_account_window_gauge`, below) — and returns None when the owner publishes none. `plan_route` is
+  present only for a live fallback whose primary differs; the fabricated "from Nous" branch is gone.
+- `_account_window_gauge(provider)` reads `agent.account_usage_cache` (filled by the model picker,
+  `/usage`, and a throttled background refresh this tick starts), filters to account-scoped windows,
+  skips rolled-over resets, and picks the full (latest-resetting) else fullest window — the same
+  binding rule as `usage_gauges.binding_gauge`. Model-scoped windows (Anthropic's Opus/Sonnet weeks)
+  are excluded: they cannot block the account. Never fetches inline — this runs on every usage tick.
+- Desktop: `$planGauges` is keyed by `(source, provider)` (`planGaugeSlot`), `planGaugeFor` selects by
+  the focused session's provider (or the fallback's primary), and `useStatusbarItems` passes that owner.
+  `forgetPlanGauge` drops every provider slot of a source. `PROVIDER_DISPLAY_NAMES` gained the
+  `claude-subscription*` labels so the gauge reads "Claude Subscription · Week N%".
+- Plugin (`~/.hermes/plugins/claude-subscription-directsdk-experimental`, separate fork with its own
+  FORK.md entry): `ClaudeOAuthDirectSDKProfile.fetch_account_usage` now reads
+  `CLAUDE_SUBSCRIPTION_DIRECTSDK_OAUTH_TOKEN` — deliberately NOT the pooled `CLAUDE_CODE_OAUTH_TOKEN`,
+  which may be a different account — and returns the 5h/weekly windows, honouring a 429 `retry-after`
+  with a module-wide cooldown (the endpoint throttles hard; a 2-minute refresh cadence would 429).
+
+**Tests.** `tests/gateway/test_local_viewer_usage.py`: `test_a_manual_switch_shows_the_new_providers_own_windows`
+(the reported scenario: spent Nous plan, Claude gauge, no route), `test_a_fallback_keeps_the_primaries_allowance_and_names_it`
+(a real fallback names the primary), plus the updated restart-bound assertions (a bound backup is the
+chat's route; a spent plan is not evidence of a swap). Desktop: `plan-gauge.test.ts` (two owners in one
+scope, provider selection, legacy/unknown-provider fallbacks) and the statusbar test "shows the focused
+session's own plan after a manual switch". Plugin: `tests/test_usage.py` (window parsing, 429 cooldown,
+no token → no request).
+
+**Verified.** `pytest tests/gateway/test_local_viewer_usage.py` 19/19; `vitest run --project ui`,
+`tsc -p . --noEmit`, and eslint on the changed desktop files; plugin `tests/test_usage.py` 3/3. Fail-before
+proved on a clean `HEAD` worktree: 4 of the gateway tests fail there (including the manual-switch case),
+pass on the fix.
+
 ### 2026-11-03 (upstream sync) — v0.22.6 and v0.22.7 merged
 
 **Range.** `v0.22.5..v0.22.7` (v0.22.6 = `f0d94882e89`, v0.22.7 = `b200f5bc60e`): 3,475 first-parent
