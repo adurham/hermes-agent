@@ -444,10 +444,8 @@ class TestBuildCallKwargsMaxTokens:
 
 
 class TestNousTagsScoping:
-    def test_tags_injected_when_provider_is_nous(self, monkeypatch):
+    def test_tags_injected_when_provider_is_nous(self):
         import agent.auxiliary_client as aux
-
-        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
 
         kwargs = aux._build_call_kwargs(
             provider="nous",
@@ -457,16 +455,18 @@ class TestNousTagsScoping:
 
         assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
 
-    def test_tags_not_injected_for_gemini_when_main_is_nous(self, monkeypatch):
+    def test_tags_not_injected_for_non_nous_provider_when_main_is_nous(self):
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
-
-        kwargs = aux._build_call_kwargs(
-            provider="gemini",
-            model="gemini-2.5-flash",
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with aux.scoped_runtime_main({
+            "provider": "nous", "model": "Hermes-4",
+            "base_url": "https://inference-api.nousresearch.com/v1", "api_key": "nous-key",
+        }):
+            kwargs = aux._build_call_kwargs(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
         assert "extra_body" not in kwargs
 
@@ -3804,25 +3804,22 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
             {"role": "user", "content": "continue"},
         ]
 
-    def test_drops_message_id_for_github_copilot_host(self):
-        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
-        adapter.create(messages=self._replay_messages())
-        message_item = next(
-            item for item in captured["input"] if item.get("type") == "message"
-        )
+    def test_drops_message_id_for_connection_scoped_id_host(self):
+        from providers.base import ProviderProfile
+        acme = ProviderProfile(name="acme-replay", hostnames=("api.acme-replay.test",), responses_replay_item_ids=False)
+        adapter, captured = self._build_adapter(base_url="https://api.acme-replay.test")
+        with patch("providers.profile_for_host", side_effect=lambda url, **_kw: acme if "acme-replay" in str(url) else None):
+            adapter.create(messages=self._replay_messages())
+        message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert "id" not in message_item
         assert message_item["phase"] == "final_answer"
         assert message_item["status"] == "in_progress"
         assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
 
     def test_keeps_message_id_for_codex_backend_host(self):
-        adapter, captured = self._build_adapter(
-            base_url="https://chatgpt.com/backend-api/codex"
-        )
+        adapter, captured = self._build_adapter(base_url="https://chatgpt.com/backend-api/codex")
         adapter.create(messages=self._replay_messages())
-        message_item = next(
-            item for item in captured["input"] if item.get("type") == "message"
-        )
+        message_item = next(item for item in captured["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
 
@@ -5093,15 +5090,14 @@ class TestCustomEndpointApiKeyInheritance:
 
 
     def test_runtime_override_key_is_used(self, monkeypatch):
-        """When the context-local runtime override is set (by set_runtime_main),
-        it takes precedence over config.yaml for the custom endpoint key.
+        """A key bound by set_runtime_main takes precedence over config.yaml
+        for the custom endpoint key.
 
-        Uses the public set_runtime_main()/clear_runtime_main() API rather
-        than patching module globals directly — as of the 2026-07-21 sync,
-        the override lives in a ``contextvars.ContextVar``
+        Uses the public set_runtime_main()/clear_runtime_main() (or the
+        ``scoped_runtime_main`` context manager) API rather than patching
+        module globals: the override lives in a ``contextvars.ContextVar``
         (``ac._RUNTIME_MAIN_CONTEXT``), not bare module attributes, so
-        ``patch.object(ac, "_RUNTIME_MAIN_API_KEY", ...)`` no longer has any
-        effect.
+        ``patch.object(ac, "_RUNTIME_MAIN_API_KEY", ...)`` has no effect.
         """
         import agent.auxiliary_client as ac
 
@@ -5113,22 +5109,15 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        ac.set_runtime_main(
-            "custom", "test-model",
-            base_url="https://gw.example.com/v1",
-            api_key="«redacted:sk-…»",
-        )
-        try:
-            with patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
-                 patch.object(ac, "_create_openai_client", side_effect=_capture_create):
-                _client, _model = resolve_provider_client(
-                    "custom",
-                    model="test-model",
-                    explicit_base_url="https://gw.example.com/v1",
-                    explicit_api_key=None,
-                )
-        finally:
-            ac.clear_runtime_main()
+        with ac.scoped_runtime_main({"base_url": "https://gw.example.com/v1", "api_key": "sk-runtime-key"}), \
+             patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
+             patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+            _client, _model = resolve_provider_client(
+                "custom",
+                model="test-model",
+                explicit_base_url="https://gw.example.com/v1",
+                explicit_api_key=None,
+            )
 
         assert captured.get("api_key") == "«redacted:sk-…»"
 

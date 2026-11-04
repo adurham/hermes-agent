@@ -210,6 +210,9 @@ def connect_exhausted_notice(error: BaseException, *, attempts: int, base_url: A
     \"could not open a stream\" — that wording made a mid-response death (exo guard-kill, 2026-10-14,
     69 KB already streamed) read as a connect/size problem."""
     from urllib.parse import urlparse
+    from agent.stream_max_lifetime import StreamLifetimeExceeded
+    if isinstance(error, StreamLifetimeExceeded):  # the stream DID open; the opt-in cap cut every attempt
+        return f"❌ {error} ({attempts} attempt{'s' if attempts != 1 else ''})"
     request = _failed_request(error)
     host = urlparse(str(getattr(request, "url", None) or base_url or "")).hostname or "the endpoint"
     _chunks = _streamed = 0

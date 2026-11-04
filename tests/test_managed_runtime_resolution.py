@@ -65,6 +65,7 @@ _EXEMPT_DIRS = (
     # a downloaded CPython + its site-packages. Third-party code, not
     # Hermes-owned source — same class as .venv below, and it is gitignored.
     ".hermes-runtime",
+    ".build",
     ".cache",
     ".git",
     ".venv",

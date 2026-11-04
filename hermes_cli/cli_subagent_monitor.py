@@ -4,6 +4,7 @@ prompts) and scoped controls; no agent-loop state is changed. Process rows come 
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 try:  # FORK: VS-16-safe display width — a raw get_cwidth undercounts emoji base + U+FE0F
@@ -48,6 +49,8 @@ _MAX_RENDER_DEPTH = 4
 from agent.i18n import t
 from hermes_cli import cli_process_dock as procs
 from hermes_cli import cli_session_dock as session_rows
+
+logger = logging.getLogger(__name__)
 
 
 def _clip(value, width):
@@ -335,8 +338,13 @@ class SubagentMonitor:
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        changed = self.refresh()
-        if self._poll_tail() or changed:
+        try:
+            changed = self.refresh()
+            changed = self._poll_tail() or changed
+        except Exception:  # health: allow BLE001 -- the spinner thread runs this tick; one raise would end that thread for the session
+            logger.debug("subagent monitor tick failed", exc_info=True)
+            return
+        if changed:
             if self.app is not None:
                 self.invalidate()
             else:

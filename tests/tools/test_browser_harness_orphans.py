@@ -272,7 +272,6 @@ def _drive_exec(monkeypatch, scripts, session: str, cdp: str = "http://127.0.0.1
     monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, str(scripts["cli"])])
     monkeypatch.setenv("BROWSER_CDP_URL", cdp)
     monkeypatch.setattr(bu, "_read_browser_cfg", lambda: {"backend": "browser-use"})
-    monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
     return json.loads(bu.browser_exec("print('payload')", session=session))
 
 
@@ -432,7 +431,7 @@ def test_an_unknown_or_corrupt_record_is_left_alone(runtime):
 def _no_janitor_thread(monkeypatch):
     """browser_exec arms the janitor thread; the tests drive its tick by hand instead."""
     started = []
-    monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: started.append(1))
+    monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: started.append(1))
     return started
 
 
@@ -444,7 +443,7 @@ def _served_env(runtime: Path, scripts) -> dict:
 def test_an_idle_daemon_is_stopped_by_the_janitor_while_its_owner_lives(runtime, harness_scripts,
                                                                          monkeypatch, _no_janitor_thread):
     """The owner (this process) stays alive; the daemon it drove must not outlive the idle timeout."""
-    from tools import browser_tool_lifecycle as lifecycle
+    from tools import browser_session_lifecycle as lifecycle
     scripts = harness_scripts
     monkeypatch.setattr(bu, "_driven_daemons", {})
     monkeypatch.setattr(bu, "_base_subprocess_env", lambda: _served_env(runtime, scripts))
@@ -453,12 +452,12 @@ def test_an_idle_daemon_is_stopped_by_the_janitor_while_its_owner_lives(runtime,
         assert _drive_exec(monkeypatch, scripts, session="idle")["success"]
         assert _no_janitor_thread, "browser_exec never armed the janitor that stops its idle daemon"
 
-        lifecycle._cleanup_inactive_browser_sessions()  # a janitor tick right after the call: still warm
+        lifecycle.cleanup_inactive_sessions()  # a janitor tick right after the call: still warm
         assert daemon.poll() is None, "a daemon that was just used was stopped"
 
         later = time.monotonic() + 24 * 3600  # the gateway lives on; nobody browses for a day
         monkeypatch.setattr(bu, "_monotonic", lambda: later)
-        lifecycle._cleanup_inactive_browser_sessions()
+        lifecycle.cleanup_inactive_sessions()
 
         daemon.wait(timeout=10)
         assert not sock.exists() and not pid_file.exists(), "the stopped daemon's endpoint was left behind"
@@ -507,18 +506,18 @@ def test_an_idle_stop_never_kills_a_daemon_another_live_process_still_owns(runti
 def test_a_clean_exit_stops_driven_daemons_even_with_no_browser_session(monkeypatch):
     """atexit used to stop harness daemons only inside ``if _active_sessions:``. A CDP-override or BU-cloud
     exec never creates a session there, so a clean ``hermes`` exit left every daemon it drove running."""
-    from tools import browser_tool, browser_tool_lifecycle as lifecycle
+    from tools import browser_tool, browser_session_lifecycle as lifecycle
     identity = ("", "", "", "", "exit-me")
     stopped = []
     monkeypatch.setattr(bu, "_driven_daemons", {identity: "home"})
     monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: stopped.extend(daemons))
     monkeypatch.setattr(browser_tool, "_cleanup_done", False)
     monkeypatch.setattr(browser_tool, "_active_sessions", {})
-    monkeypatch.setattr(lifecycle, "_reap_orphaned_browser_sessions", lambda: None)
+    monkeypatch.setattr(lifecycle, "reap_orphaned_browser_sessions", lambda: None)
     monkeypatch.setattr(lifecycle, "_stop_all_lightpanda", lambda: None)
     monkeypatch.setattr(lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
 
-    lifecycle._emergency_cleanup_all_sessions()
+    lifecycle.emergency_cleanup_all_sessions()
 
     assert stopped == [identity], "a clean exit left a driven harness daemon running"
 
@@ -537,7 +536,7 @@ def test_a_daemon_whose_chrome_is_still_live_is_never_idle_stopped(runtime, harn
                                                                      _no_janitor_thread):
     """An agent pausing for a long model turn is not done browsing: while the daemon's Chrome still listens,
     no amount of idle time stops it."""
-    from tools import browser_tool_lifecycle as lifecycle
+    from tools import browser_session_lifecycle as lifecycle
     scripts = harness_scripts
     monkeypatch.setattr(bu, "_driven_daemons", {})
     monkeypatch.setattr(bu, "_daemon_cdp", {})
@@ -552,7 +551,7 @@ def test_a_daemon_whose_chrome_is_still_live_is_never_idle_stopped(runtime, harn
         assert cdp in bu._daemon_cdp.values(), "the daemon's Chrome endpoint was not tracked"
         later = time.monotonic() + 6 * 3600  # far past idle_s, still under the 12 h live-Chrome ceiling
         monkeypatch.setattr(bu, "_monotonic", lambda: later)
-        lifecycle._cleanup_inactive_browser_sessions()
+        lifecycle.cleanup_inactive_sessions()
         assert daemon.poll() is None, "a daemon whose Chrome is still live was stopped for being idle"
         assert sock.exists() and bu._driven_daemons, "a live-Chrome daemon stopped being tracked"
     finally:
@@ -566,7 +565,7 @@ def test_a_daemon_whose_chrome_died_is_stopped_once_past_idle(runtime, harness_s
                                                                _no_janitor_thread):
     """The measured leak: the daemon outlives its Chrome (CDP port dead). Past ``idle_s`` it is stopped;
     before ``idle_s`` it is not (no churn around a Chrome restart)."""
-    from tools import browser_tool_lifecycle as lifecycle
+    from tools import browser_session_lifecycle as lifecycle
     scripts = harness_scripts
     monkeypatch.setattr(bu, "_driven_daemons", {})
     monkeypatch.setattr(bu, "_daemon_cdp", {})
@@ -576,12 +575,12 @@ def test_a_daemon_whose_chrome_died_is_stopped_once_past_idle(runtime, harness_s
     try:
         assert _drive_exec(monkeypatch, scripts, session="orphaned-chrome", cdp=cdp)["success"]
         assert bu._cdp_endpoint_alive(cdp) is False
-        lifecycle._cleanup_inactive_browser_sessions()
+        lifecycle.cleanup_inactive_sessions()
         assert daemon.poll() is None, "stopped before idle_s: a Chrome restart would churn the daemon"
 
         later = time.monotonic() + 24 * 3600
         monkeypatch.setattr(bu, "_monotonic", lambda: later)
-        lifecycle._cleanup_inactive_browser_sessions()
+        lifecycle.cleanup_inactive_sessions()
         daemon.wait(timeout=10)
         assert not sock.exists() and not pid_file.exists()
         assert not bu._driven_daemons and not bu._daemon_cdp
@@ -794,7 +793,7 @@ def test_exit_leaves_a_daemon_another_live_owner_still_claims(runtime, monkeypat
     """A clean exit of THIS process must not take down a daemon a live peer (same dirs + BU_NAME) drives:
     only our claim goes."""
     from hermes_constants import hermes_home_key
-    from tools import browser_tool, browser_tool_lifecycle as lifecycle
+    from tools import browser_tool, browser_session_lifecycle as lifecycle
     identity = tuple(_identity(runtime, "shared-exit", runtime))
     monkeypatch.setattr(bu, "_driven_daemons", {identity: hermes_home_key()})
     mine = _record_path(identity)
@@ -803,7 +802,7 @@ def test_exit_leaves_a_daemon_another_live_owner_still_claims(runtime, monkeypat
     monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: stopped.extend(daemons))
     monkeypatch.setattr(browser_tool, "_cleanup_done", False)
     monkeypatch.setattr(browser_tool, "_active_sessions", {})
-    monkeypatch.setattr(lifecycle, "_reap_orphaned_browser_sessions", lambda: None)
+    monkeypatch.setattr(lifecycle, "reap_orphaned_browser_sessions", lambda: None)
     monkeypatch.setattr(lifecycle, "_stop_all_lightpanda", lambda: None)
     monkeypatch.setattr(lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -811,7 +810,7 @@ def test_exit_leaves_a_daemon_another_live_owner_still_claims(runtime, monkeypat
         _write_record(_record_path(identity, other.pid), identity, runtime, other.pid,
                       bu._process_start_time(other.pid))
 
-        lifecycle._emergency_cleanup_all_sessions()
+        lifecycle.emergency_cleanup_all_sessions()
 
         assert stopped == [], "exit stopped a daemon a live peer still drives"
         assert not mine.exists(), "this process's claim outlived its exit"

@@ -26,8 +26,8 @@ def check_close_terminal_requirements() -> bool:
 CLOSE_TERMINAL_SCHEMA = {
     "name": "close_terminal",
     "description": (
-        "Hide a background process's terminal tab (process keeps running) in "
-        "the Hermes desktop GUI (the tabs mirroring terminal(background=true) runs). "
+        "Hide a background process's desktop terminal tab; the process keeps running. "
+        "Tabs mirror terminal(background=true) runs. "
         "This does NOT kill the process — it only drops the tab/view; the output "
         "keeps buffering and the user can reopen it from the status stack. Use it "
         "to tidy up when a background process's live terminal is no longer worth "

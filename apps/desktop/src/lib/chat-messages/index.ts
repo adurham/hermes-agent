@@ -22,11 +22,13 @@ export {
 export type { UnspokenTurnSpeech } from './parts'
 export {
   branchGroupForUser,
+  isLocalSystemNotice,
   preserveLocalAssistantErrors,
   preserveLocalSystemNotices,
   spliceOlderPreservedRows
 } from './reconciliation'
 export {
+  concatPartsByToolCall,
   hasUnresolvedToolCall,
   QUESTION_CARD_TOOLS,
   restorePendingBlockingToolCall,
