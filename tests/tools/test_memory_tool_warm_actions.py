@@ -506,13 +506,21 @@ _WARM_ONLY_ACTIONS = ("recall", "recall_related", "feedback", "promote", "demote
                       "pin", "unpin", "pinned", "replace")
 
 
+
+def _op_item(params: dict) -> dict:
+    """The advertised per-operation surface: the schema carries ONE shape
+    (`target` + `operations[]`), so actions/fields live on the item, not top-level."""
+    return params["properties"]["operations"]["items"]["properties"]
+
 def test_advertises_the_full_warm_surface_without_a_provider(seams):
     seams["registered"] = False
-    props = _build_memory_schema_overrides()["parameters"]["properties"]
-    assert props["action"]["enum"] == MEMORY_SCHEMA["parameters"]["properties"]["action"]["enum"]
-    assert props["tier"]["enum"] == ["hot", "warm"]
+    params = _build_memory_schema_overrides()["parameters"]
+    props = params["properties"]
+    item = _op_item(params)
+    assert item["action"]["enum"] == _op_item(MEMORY_SCHEMA["parameters"])["action"]["enum"]
+    assert item["tier"]["enum"] == ["hot", "warm"]
     for name in _WARM_ONLY_PARAMS:
-        assert name in props
+        assert name in item
     assert "memory(action='recall'" in _build_memory_schema_overrides()["description"]
 
 
@@ -520,9 +528,10 @@ def test_provider_withdraws_every_warm_action_from_the_advertised_schema(seams):
     seams["registered"] = True
     overrides = _build_memory_schema_overrides()
     props = overrides["parameters"]["properties"]
+    item = _op_item(overrides["parameters"])
 
-    assert props["action"]["enum"] == list(_HOT_ONLY_ACTIONS)
-    assert props["tier"]["enum"] == ["hot"]
+    assert item["action"]["enum"] == list(_HOT_ONLY_ACTIONS)
+    assert item["tier"]["enum"] == ["hot"]
     for name in _WARM_ONLY_PARAMS:
         assert name not in props, f"withdrawn warm parameter {name!r} still advertised"
 
@@ -535,7 +544,7 @@ def test_provider_withdraws_every_warm_action_from_the_advertised_schema(seams):
 def test_withdrawal_never_advertises_a_gated_action(seams):
     """Mechanical invariant: no advertised action is one the mutual-exclusion gate refuses."""
     seams["registered"] = True
-    advertised = set(_build_memory_schema_overrides()["parameters"]["properties"]["action"]["enum"])
+    advertised = set(_op_item(_build_memory_schema_overrides()["parameters"])["action"]["enum"])
     assert advertised == set(_HOT_ONLY_ACTIONS)
     assert advertised.isdisjoint(_WARM_ONLY_ACTIONS)
 
