@@ -91,14 +91,14 @@ describe('streamDeltaFlushFloorForVisibility', () => {
   it('leaves a visible session on the window floor and parks an off-screen one', async () => {
     const mod = await import('./utils')
 
-    // Visible: whatever the window floor is (33 focused, 120 unfocused) — the
+    // Visible: whatever the window floor is (100 focused, 200 unfocused) — the
     // visible chat's cadence is NOT touched by this fix.
     expect(mod.streamDeltaFlushFloorForVisibility('visible')).toBe(mod.streamDeltaFlushFloorMs())
     expect(mod.streamDeltaFlushFloorForVisibility('visible', mod.STREAM_DELTA_FLUSH_MS)).toBe(
       mod.STREAM_DELTA_FLUSH_MS
     )
 
-    // Off screen: the parked floor, never the 33ms one.
+    // Off screen: the parked floor, never the visible-pane one.
     expect(mod.streamDeltaFlushFloorForVisibility('hidden', mod.STREAM_DELTA_FLUSH_MS)).toBe(
       mod.STREAM_DELTA_FLUSH_HIDDEN_PANE_MS
     )
@@ -107,7 +107,7 @@ describe('streamDeltaFlushFloorForVisibility', () => {
       mod.STREAM_DELTA_FLUSH_MS
     )
 
-    // An unfocused window's 120ms floor is a LOWER bound for a hidden pane, not
+    // An unfocused window's 200ms floor is a LOWER bound for a hidden pane, not
     // a substitute: two independent reasons to be slow do not add up to fast.
     expect(mod.streamDeltaFlushFloorForVisibility('hidden', mod.STREAM_DELTA_FLUSH_UNFOCUSED_MS)).toBe(
       mod.MAX_STREAM_FLUSH_GAP_MS
