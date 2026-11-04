@@ -1,5 +1,5 @@
 {
-  "description": "Generate high-quality images from text prompts, or edit / transform an existing image by passing image_url. Returns the result in the `image` field — a URL or an absolute file path; reference it in your response using the current platform's file-delivery convention.",
+  "description": "Generate or edit images (with reference images) using the configured model. Pass image_url to edit / transform an existing image. Use this rather than calling image APIs or scripts directly. Returns the result in the `image` field — a URL or an absolute file path; reference it in your response using the current platform's file-delivery convention.",
   "name": "image_generate",
   "parameters": {
     "properties": {

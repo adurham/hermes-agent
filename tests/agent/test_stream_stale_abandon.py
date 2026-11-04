@@ -79,7 +79,11 @@ def wedged(monkeypatch):
         release.wait(timeout=30.0)
         yield SimpleNamespace(type="message_stop")
 
+    # FORK: agent/anthropic_adapter.py prefers ``client.beta.messages.stream`` (typed beta kwargs,
+    # SDK 0.100+); a bare MagicMock auto-vivifies that attribute as an EMPTY stream. Bind both
+    # namespaces so the branch production actually calls is the one this test drives.
     agent._anthropic_client.messages.stream.side_effect = _stream_of(_events)
+    agent._anthropic_client.beta.messages.stream.side_effect = _stream_of(_events)
     yield agent
     release.set()  # let the abandoned daemon worker finish
 
@@ -122,7 +126,11 @@ def test_worker_that_unwinds_after_a_kill_still_retries(monkeypatch, caplog):
         raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
         yield  # pragma: no cover - generator marker
 
+    # FORK: agent/anthropic_adapter.py prefers ``client.beta.messages.stream`` (typed beta kwargs,
+    # SDK 0.100+); a bare MagicMock auto-vivifies that attribute as an EMPTY stream. Bind both
+    # namespaces so the branch production actually calls is the one this test drives.
     agent._anthropic_client.messages.stream.side_effect = _stream_of(_events)
+    agent._anthropic_client.beta.messages.stream.side_effect = _stream_of(_events)
     with caplog.at_level("WARNING"):
         caller, outcome = _call_in_thread(agent)
         caller.join(timeout=15.0)
@@ -165,7 +173,11 @@ def test_abandon_after_invisible_deltas_retries_instead_of_an_empty_stub(monkeyp
         release.wait(timeout=30.0)
         yield SimpleNamespace(type="message_stop")
 
+    # FORK: agent/anthropic_adapter.py prefers ``client.beta.messages.stream`` (typed beta kwargs,
+    # SDK 0.100+); a bare MagicMock auto-vivifies that attribute as an EMPTY stream. Bind both
+    # namespaces so the branch production actually calls is the one this test drives.
     agent._anthropic_client.messages.stream.side_effect = _stream_of(_events)
+    agent._anthropic_client.beta.messages.stream.side_effect = _stream_of(_events)
     try:
         caller, outcome = _call_in_thread(agent)
         caller.join(timeout=10.0)
@@ -250,7 +262,11 @@ def test_abandon_after_visible_text_returns_a_stub_classified_as_the_abandon(mon
         release.wait(timeout=30.0)
         yield SimpleNamespace(type="message_stop")
 
+    # FORK: agent/anthropic_adapter.py prefers ``client.beta.messages.stream`` (typed beta kwargs,
+    # SDK 0.100+); a bare MagicMock auto-vivifies that attribute as an EMPTY stream. Bind both
+    # namespaces so the branch production actually calls is the one this test drives.
     agent._anthropic_client.messages.stream.side_effect = _stream_of(_events)
+    agent._anthropic_client.beta.messages.stream.side_effect = _stream_of(_events)
     try:
         caller, outcome = _call_in_thread(agent)
         caller.join(timeout=10.0)

@@ -85,7 +85,9 @@ def attempt_progress_chars(agent: Any) -> int:
     failure -- "any token received" would have let that crash loop ride every ladder cycle.
     """
     streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    chars = len(streamed.strip())
+    # Stub agents (tests, host seams) may answer any missing attribute with a callable; only a
+    # string can be text progress.
+    chars = len(streamed.strip()) if isinstance(streamed, str) else 0
     if chars == 0 and getattr(agent, "_last_api_first_chunk_at", None) is not None:
         return 1
     return chars
@@ -214,7 +216,7 @@ def ladder_eligible(agent: Any, classified: Any) -> bool:
     if auto_recovery_cycles(agent) <= 0 or classified.reason not in _LADDER_REASONS:
         return False
     streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    return not agent._has_content_after_think_block(streamed)
+    return not (isinstance(streamed, str) and agent._has_content_after_think_block(streamed))
 
 
 def ladder_notice(agent: Any, *, wait_s: float, cycle: int, total: int) -> str:

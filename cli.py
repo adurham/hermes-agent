@@ -3152,7 +3152,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     ["osascript", "-e", _applescript],
                     stdout=_subprocess.DEVNULL,
                     stderr=_subprocess.DEVNULL,
-                    start_new_session=True,
+                    start_new_session=True,  # detached-spawn: ok — short-lived macOS notifier, reaped by a daemon thread
                 )
                 # Reap the child off the prompt path: a dropped Popen handle is never
                 # waited on, leaving one <defunct> osascript per prompt for the CLI's life.
