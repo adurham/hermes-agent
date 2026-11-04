@@ -272,8 +272,12 @@ def test_grace_window_retires_a_live_owners_never_claimed_dead_completion(tmp_pa
     assert "deleg_fresh: terminal state" not in caplog.text
     offered_ids = sorted(e["delegation_id"] for e in _drain(q))
     assert "deleg_stale" not in offered_ids
-    # Startup re-offers the live, still-deliverable ones; the sweep leaves a live owner's rows alone.
-    assert offered_ids == (["deleg_claimed", "deleg_fresh"] if entry == "startup" else [])
+    # Startup re-offers the live, still-deliverable ones. The SWEEP does too when their one
+    # in-memory copy is gone (no row in target_queue or the producers' completion_queue) —
+    # upstream #144563's lost-copy rule, which replaced the fork's "live owner is never
+    # re-offered" sweep. A copy that IS queued still suppresses the re-offer: see
+    # test_live_owner_dead_completion_keeps_its_replay_and_is_delivered.
+    assert offered_ids == ["deleg_claimed", "deleg_fresh"]
     assert offered == len(offered_ids)
 
 

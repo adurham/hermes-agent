@@ -160,15 +160,29 @@ async def test_the_completion_admission_path_hands_the_row_over(tmp_path, monkey
         return True
     monkeypatch.setattr(session_queued_controls, 'hand_notice_to_running_claim', spy)
 
+    entry = SimpleNamespace(session_key='proc_1', session_id='proc_1', origin=None)
+    store = SimpleNamespace(lookup_by_session_key=lambda _key: entry)
+    runner = SimpleNamespace(_completion_delivery_identity=lambda evt: ('completion', 'proc_1', 1.0),
+                             session_store=store)
+
     class FakeAuthority:
+        """Upstream v0.22.7 route_entry resolves through ``authority.runner.session_store``:
+        the fake must carry the runner (and the route's entry) or the admission path cannot
+        find the session it is handing the row to."""
+
         def __init__(self):
             self.admitted = []
+            self.runner = runner
+            self.sessions = {}
+            self.db = _db
+
+        def logical_owner(self, session_id):
+            return session_id
 
         async def admit_automation(self, adapter, event, identity, replaces=None):
             self.admitted.append(identity)
             return SimpleNamespace(admission_id='adm-1', ref=REF)
     fake = FakeAuthority()
-    runner = SimpleNamespace(_completion_delivery_identity=lambda evt: ('completion', 'proc_1', 1.0))
     event = SimpleNamespace(text=NOTICE, metadata={'display_kind': 'process_complete',
                                                    'display_text': DISPLAY['display_text']})
 

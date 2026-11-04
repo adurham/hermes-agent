@@ -179,6 +179,9 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
         # Upstream #41225: terminal_tool_background._spawn forwards the
         # background-only persist_on_release flag (default False) to spawn_local.
         "persist_on_release": False,
+        # Upstream v0.22.7: background children restore the login PATH
+        # (restore_login_path defaults on; see terminal_tool_background._spawn).
+        "restore_login_path": True,
     }]
 
 

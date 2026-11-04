@@ -286,8 +286,8 @@ SEND_AGENT_MESSAGE_SCHEMA: dict[str, Any] = {
 SEND_TO_PARENT_SCHEMA: dict[str, Any] = {
     "name": TOOL_NAME_SEND_TO_PARENT,
     "description": (
-        "Send a short progress or coordination message to the parent that "
-        "delegated this task to you. There is no recipient to choose — your "
+        "Send a progress or coordination message to your parent. "
+        "There is no recipient to choose — your "
         "parent is the only valid target. Success means QUEUED, not read. "
         "Use this for something your parent needs mid-task; anything that can "
         "wait belongs in your final summary instead."

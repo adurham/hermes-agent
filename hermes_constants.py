@@ -837,6 +837,9 @@ SCRATCH_MAX_IDLE_HOURS = 24
 _SCRATCH_PRUNE_STAMP = ".last_prune"
 _SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
 _scratch_prune_last_attempt = 0.0
+# FORK: per-scratch-dir throttle — a routed caller's home must prune on its own clock.
+_scratch_prune_by_dir: dict[str, float] = {}
+_scratch_pruned_once = False  # hard per-process latch (import-time boot hooks, tests)
 
 # AF_UNIX socket paths cap at 104 bytes (macOS) / 108 (Linux). Chrome appends
 # ``com.google.Chrome.XXXXXX/SingletonSocket`` (~45) and the code kernel
@@ -1025,19 +1028,29 @@ def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRAT
 
 
 def _prune_scratch_dir_once(scratch: Path) -> None:
-    global _scratch_prune_last_attempt
+    global _scratch_prune_last_attempt, _scratch_pruned_once
     import time
 
     now = time.time()
-    if now - _scratch_prune_last_attempt < _SCRATCH_PRUNE_INTERVAL_SECONDS:
+    # FORK: the once-per-process latch stays the hard stop (import-time boot hooks, tests),
+    # and the hourly throttle is keyed PER SCRATCH DIR: a routed caller's home is a different
+    # dir, so one home's pass must not suppress another's.
+    if _scratch_pruned_once:
         return
-    _scratch_prune_last_attempt = now
+    key = str(scratch)
+    if now - _scratch_prune_by_dir.get(key, 0.0) < _SCRATCH_PRUNE_INTERVAL_SECONDS:
+        return
     stamp = scratch / _SCRATCH_PRUNE_STAMP
     try:
         if now - stamp.stat().st_mtime < _SCRATCH_PRUNE_INTERVAL_SECONDS:
+            # Deferred by another process — do NOT burn this dir's hour, or a process whose
+            # first pass was deferred would never try again (the 38h/0-prune incident).
             return
     except OSError:
         pass
+    _scratch_pruned_once = True
+    _scratch_prune_last_attempt = now
+    _scratch_prune_by_dir[key] = now
     with contextlib.suppress(Exception):
         stamp.touch()
         from hermes_constants_scratch_detach import spawn_prune

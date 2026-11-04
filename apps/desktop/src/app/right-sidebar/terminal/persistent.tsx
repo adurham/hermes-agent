@@ -100,7 +100,10 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     let pendingReason = 'initial'
     let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
 
-    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
+    // Blur suspends the rect chase: it forces layout, and an unfocused window is not
+    // being watched. `isPaused()` alone only covers hidden/minimized windows.
+    const rendererPaused = () =>
+      pauseController ? pauseController.isPaused() || pauseController.isBlurred() : document.visibilityState === 'hidden'
 
     const cancelFrame = () => {
       if (frame !== 0) {

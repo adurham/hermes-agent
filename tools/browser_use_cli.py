@@ -591,6 +591,18 @@ def _kill_cli_process_group(proc) -> None:
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
 
 
+def _reap_dead_child(proc) -> None:
+    """``wait()`` a child we just SIGKILLed so it never lingers as ``<defunct>``.
+
+    The drain after a group kill can still time out when a process OUTSIDE the group holds the capture
+    pipes; the child itself is already dead, but its ``Popen`` handle stays referenced by the
+    ``TimeoutExpired`` traceback callers may keep, so nothing reaps it. ``wait()`` blocks on the PROCESS
+    (dead already), never on the pipes, so it cannot wedge the way the drain can.
+    """
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        proc.wait(timeout=_POST_KILL_DRAIN_S)
+
+
 def _run_cli_killing_process_group(cmd, code, env, timeout):
     """Run the CLI in its own process group and kill the whole group on timeout.
 
@@ -609,6 +621,7 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
         _kill_cli_process_group(proc)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.communicate(timeout=_POST_KILL_DRAIN_S)
+        _reap_dead_child(proc)
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 

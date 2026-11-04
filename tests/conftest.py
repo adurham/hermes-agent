@@ -128,6 +128,9 @@ import hermes_constants
 # collection must not start one: mark this process's once-per-process prune done. Tests that
 # reload hermes_constants reset that flag, so the per-test fixture below stubs the spawn itself.
 hermes_constants._scratch_pruned_once = True
+# FORK: the hourly throttle is keyed per scratch dir; a fresh test process has none recorded.
+hermes_constants._scratch_prune_last_attempt = 0.0
+hermes_constants._scratch_prune_by_dir = {}
 
 _HERMES_EXPORTED_TMP = os.environ.get(SCRATCH_DIR_MARKER_ENV, "")
 if _HERMES_EXPORTED_TMP:

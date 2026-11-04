@@ -3,49 +3,6 @@
   "name": "memory",
   "parameters": {
     "properties": {
-      "action": {
-        "description": "The action to perform (single-op shape). Omit when using the hot-tier 'operations' batch array. Hot-tier edit actions are 'add'/'patch'/'remove' ('patch' replaces exactly the old_text span; set old_text to the whole entry to rewrite it). Hot 'replace' is not available — use 'patch'. The 'replace' enum member is WARM-tier only (fact_id + content).",
-        "enum": [
-          "add",
-          "patch",
-          "remove",
-          "read",
-          "recall",
-          "recall_related",
-          "feedback",
-          "promote",
-          "demote",
-          "pin",
-          "unpin",
-          "pinned",
-          "replace"
-        ],
-        "type": "string"
-      },
-      "category": {
-        "description": "Warm-tier category filter / assignment. Free-form string (e.g. 'tanium', 'debugging', 'preferences'). Defaults to 'general' on add.",
-        "type": "string"
-      },
-      "content": {
-        "description": "The entry content. Required for 'add' and 'patch' (hot tier) and for warm 'add'/'replace'. For hot 'patch' it is the text that replaces the old_text span — the rest of the entry is kept. For warm 'replace' it is the COMPLETE new fact text, applied by fact_id. Alias: 'new_text' is also accepted.",
-        "type": "string"
-      },
-      "fact_id": {
-        "description": "Warm-tier fact id. Required for 'replace'/'remove'/'feedback'/'promote'. Returned by 'add'/'recall'.",
-        "type": "integer"
-      },
-      "helpful": {
-        "description": "Warm-tier feedback flag. True → trust+0.05, helpful_count+1. False → trust-0.10. Helps the recall ranker prefer reliable facts.",
-        "type": "boolean"
-      },
-      "new_text": {
-        "description": "Alias for 'content'. If both are set, 'content' wins.",
-        "type": "string"
-      },
-      "old_text": {
-        "description": "REQUIRED for 'patch' and 'remove' (single-op shape). For 'patch': text from one entry that replaces exactly this span (the span must occur once in the entry). For 'remove': a short unique substring IDENTIFYING the entry to delete (it locates the entry, it is not spliced out). Omit only for 'add'. Hot tier (and cross-tier demote) use this substring; it is ignored for the warm tier (warm uses fact_id).",
-        "type": "string"
-      },
       "operations": {
         "description": "Hot-tier batch shape: a list of operations applied atomically in one call against the final char budget. Preferred when making multiple hot-tier changes or consolidating to make room. Each item is {action, content?, old_text?}.",
         "items": {
@@ -55,16 +12,50 @@
               "enum": [
                 "add",
                 "patch",
-                "remove"
+                "remove",
+                "read",
+                "recall",
+                "recall_related",
+                "feedback",
+                "promote",
+                "demote",
+                "pin",
+                "unpin",
+                "pinned",
+                "replace"
               ],
+              "type": "string"
+            },
+            "category": {
+              "description": "Warm-tier category filter / assignment. Free-form string (e.g. 'tanium', 'debugging', 'preferences'). Defaults to 'general' on add.",
               "type": "string"
             },
             "content": {
               "description": "Required for 'add' and 'patch'. For 'add', the new entry. For 'patch', the text that replaces old_text; the rest of the entry is kept.",
               "type": "string"
             },
+            "fact_id": {
+              "description": "Warm-tier fact id. Required for 'replace'/'remove'/'feedback'/'promote'. Returned by 'add'/'recall'.",
+              "type": "integer"
+            },
             "old_text": {
               "description": "REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces exactly this span (it must occur once in the entry); 'remove' deletes the whole entry. Omit for 'add'.",
+              "type": "string"
+            },
+            "query": {
+              "description": "Warm-tier search query. Required for 'recall'. Used as the seed for 'recall_related' if no fact_id is given. Plain text — keyword search.",
+              "type": "string"
+            },
+            "tags": {
+              "description": "Warm-tier tags on add/replace. Comma-separated free-form (e.g. 'tds,mcp,review').",
+              "type": "string"
+            },
+            "tier": {
+              "description": "Which tier to write/read. Defaults to 'hot' for backward compat. Use 'warm' for new content unless it must be always-loaded. Warm-only actions (recall, recall_related, feedback, promote, demote) ignore this param.",
+              "enum": [
+                "hot",
+                "warm"
+              ],
               "type": "string"
             }
           },
@@ -75,14 +66,6 @@
         },
         "type": "array"
       },
-      "query": {
-        "description": "Warm-tier search query. Required for 'recall'. Used as the seed for 'recall_related' if no fact_id is given. Plain text — keyword search.",
-        "type": "string"
-      },
-      "tags": {
-        "description": "Warm-tier tags on add/replace. Comma-separated free-form (e.g. 'tds,mcp,review').",
-        "type": "string"
-      },
       "target": {
         "description": "'memory' for personal notes, 'user' for user profile. Hot tier (add/patch/remove/read): which file to operate on — REQUIRED for a hot write (a call that omits it is refused; retry with target='memory' or target='user'). Cross-tier promote: which hot file the fact lands in (defaults to 'memory'). Cross-tier demote: which hot file the fact comes from (defaults to 'memory'). Ignored for warm-tier-only actions (add/recall/recall_related/read/replace/remove/feedback).",
         "enum": [
@@ -90,18 +73,6 @@
           "user"
         ],
         "type": "string"
-      },
-      "tier": {
-        "description": "Which tier to write/read. Defaults to 'hot' for backward compat. Use 'warm' for new content unless it must be always-loaded. Warm-only actions (recall, recall_related, feedback, promote, demote) ignore this param.",
-        "enum": [
-          "hot",
-          "warm"
-        ],
-        "type": "string"
-      },
-      "top_k": {
-        "description": "Warm-tier max results (default 5, max 25). For 'read' max 200.",
-        "type": "integer"
       }
     },
     "required": [],

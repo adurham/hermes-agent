@@ -66,6 +66,13 @@ class ScriptedModel(BaseHTTPRequestHandler):
                 return _call('tool_call', calls=[{'name': 'process_manage', 'arguments': {
                     'action': 'handoff', 'session_id': state.first_proc,
                     'data': 'watcher for the parent; report its result'}}])
+            if (last['role'] == 'tool' and 'does not exist' in str(last.get('content') or '')
+                    and 'process_manage' not in called):
+                # FORK: "auto" is budget-gated, so a child's handful of small tools never
+                # activates the tool_search bridge — process_manage is EXPOSED directly
+                # instead of deferred, and tool_call is not in the surface at all.
+                return _call('process_manage', action='handoff', session_id=state.first_proc,
+                             data='watcher for the parent; report its result')
             if last['role'] == 'tool' and not state.release.exists():
                 handoff = str(last.get('content') or '')
                 if re.search(r'"error":\s*"', handoff):
@@ -76,7 +83,11 @@ class ScriptedModel(BaseHTTPRequestHandler):
         if last['role'] == 'user' and 'START' in text and not state.delegated:
             state.delegated = True
             return _call('delegate_task', goal=CHILD_GOAL)
-        if (last['role'] == 'user' and state.first_proc and f'Background process {state.first_proc}' in text
+        # Upstream v0.22.7 coalesces the queued notices of one inbound turn: the process
+        # completion can share a turn with the delegation batch notice, and then it is not
+        # ``last``. Scan the trailing user messages for it instead of only the last one.
+        recent_user = ' '.join(str(m.get('content') or '') for m in messages if m['role'] == 'user')
+        if (state.first_proc and f'Background process {state.first_proc}' in recent_user
                 and not state.second_started):
             state.second_started = True
             return _call('terminal', command='sleep 2; echo SECOND_DONE fence=${HERMES_DELEGATED_CHILD_CONTEXT:-none}', background=True, notify_on_complete=True)

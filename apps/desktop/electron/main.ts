@@ -14035,7 +14035,11 @@ function installPerfCaptureHooks(window: BrowserWindow): void {
     read: file => fs.promises.readFile(file, 'utf8'),
     remove: file => fs.promises.rm(file, { force: true })
   }).then(result =>
-    rememberLog(result.ok ? `[perf] trace written to ${result.path}` : `[perf] trace capture failed: ${result.reason}`)
+    // `in`-narrowing, not `result.ok`: the boolean discriminant widens out of the
+    // promise chain here, and only the failure arm carries `reason`.
+    rememberLog('reason' in result
+      ? `[perf] trace capture failed: ${result.reason}`
+      : `[perf] trace written to ${result.path}`)
   )
 }
 
