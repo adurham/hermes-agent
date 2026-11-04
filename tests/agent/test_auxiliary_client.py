@@ -5119,7 +5119,7 @@ class TestCustomEndpointApiKeyInheritance:
                 explicit_api_key=None,
             )
 
-        assert captured.get("api_key") == "«redacted:sk-…»"
+        assert captured.get("api_key") == 'sk-runtime-key'
 
     def test_cross_host_aux_endpoint_does_not_inherit_main_key(self, monkeypatch):
         """An aux base_url on a DIFFERENT host than the main model must NOT

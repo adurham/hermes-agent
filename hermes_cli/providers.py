@@ -324,18 +324,23 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
         return None
     if prof is None:
         return None
-    env_vars = tuple(prof.env_vars or ())
-    url_vars = tuple(v for v in env_vars if v.endswith(("_BASE_URL", "_URL")))
-    key_vars = tuple(v for v in env_vars if v not in url_vars)
-    api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
-    # A mode outside the reverse table is a plugin-registered dialect: keep its name so
-    # ``determine_api_mode`` can check the transport registry instead of degrading it.
-    mode = (prof.api_mode or "").strip()
-    return ProviderDef(id=prof.name, name=prof.display_name or prof.name or name,
-                       transport=api_mode_to_transport.get(mode, mode or "openai_chat"),
-                       api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
-                       base_url_env_var=next(iter(url_vars), ""),
-                       auth_type=prof.auth_type or "api_key", source="plugin-profile")
+    try:
+        env_vars = tuple(prof.env_vars or ())
+        url_vars = tuple(v for v in env_vars if v.endswith(("_BASE_URL", "_URL")))
+        key_vars = tuple(v for v in env_vars if v not in url_vars)
+        api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
+        # A mode outside the reverse table is a plugin-registered dialect: keep its name so
+        # ``determine_api_mode`` can check the transport registry instead of degrading it.
+        mode = (prof.api_mode or "").strip()
+        return ProviderDef(id=prof.name, name=prof.display_name or prof.name or name,
+                           transport=api_mode_to_transport.get(mode, mode or "openai_chat"),
+                           api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
+                           base_url_env_var=next(iter(url_vars), ""),
+                           auth_type=prof.auth_type or "api_key", source="plugin-profile")
+    except AttributeError:
+        # Not profile-shaped (a sentinel/stub from a host seam, or a partially initialised
+        # plugin): treat it as "no plugin profile" rather than crashing provider lookup.
+        return None
 
 
 def _profile_overlay(canonical: str) -> Optional[HermesOverlay]:

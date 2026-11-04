@@ -4,6 +4,109 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-11-03 (upstream sync) — v0.22.6 and v0.22.7 merged
+
+**Range.** `v0.22.5..v0.22.7` (v0.22.6 = `f0d94882e89`, v0.22.7 = `b200f5bc60e`): 3,475 first-parent
+/ 4,071 total commits, 4,654 files, +272,222/−96,852. Collision surface: the fork diverged on 1,295
+files, upstream touched 4,654, **409 files both sides changed**. 98 conflicts (83 UU, 13 UD, 2 DU;
+146 conflict blocks) — more conflicts than v0.22.5's 65 but far smaller hunks.
+
+**Resolution.** Four read-only resolver groups (agent-core; gateway/state/cli-config; tools;
+desktop/TS), parent took manifests, lockfiles, docs and every UD/DU decision. Notable:
+- **browser tools moved.** Upstream deleted the built-in `browser_*` tools into `plugins/browser/*`
+  and renamed `tools/browser_tool_lifecycle.py` → `tools/browser_session_lifecycle.py`. Took the
+  rename, ported the fork's three harness-daemon hooks (claim-aware exit stop, idle stop, harness
+  orphan reap) into the new module, retargeted the fork's harness tests, removed the dead module.
+- **provider plugins removed upstream:** `copilot` and `copilot-acp`; the dashboard oauth entry that
+  called the now-absent `_copilot_acp_status` went with them.
+- **`web_server_config`:** upstream's explicit-endpoint route adopted; the fork's same-provider repick
+  kept as the no-`explicit_provider` path (that is the route that keeps a custom-endpoint key alive
+  when the Desktop picker sends provider+model with no base_url).
+- **pyproject:** fork `anthropic==0.100.0` CC-OAuth floor kept; upstream's `httpx2 2.15.1` /
+  `starlette 1.9.0` / `pytest-asyncio 1.4.0` adopted. `uv.lock` reseeded from the tag and
+  regenerated (`pm.build_env --lock-only`, `--check-lock` rc 0; delta = exactly the fork
+  test-tooling pins). `package-lock.json` reseeded and re-resolved; the fork's inert `mermaid`
+  override dropped (upstream had retired it and nothing in the workspace depends on it).
+- 12 doc pages upstream deleted (skills moved to the optional catalog) removed; fork-only URL
+  branding kept on the surviving pages.
+
+**Defects caught before the sync commit (all fixed):**
+
+1. **Silent call-site loss in `tools/browser_use_cli.py`** — the merge took upstream's rewrite of the
+   exec path and dropped BOTH fork call sites: the pre-call `_reap_orphans_before_driving(daemon)`
+   drain and the janitor arming `_lazy_call(... "_start_browser_cleanup_thread", ...)`. Four
+   fork harness-lifecycle tests went red (a daemon outlived its owner; no janitor was ever armed).
+   Restored against the new module (`tools.browser_session_lifecycle.start_cleanup_thread`); the
+   file's own `_reap_orphans_before_driving` helper came back with it. 27/27 in
+   `tests/tools/test_browser_harness_orphans.py`.
+2. **Dead module references** — `tools/browser_tool_lifecycle.py` survived the merge as an
+   unmodified-by-upstream/patched-by-fork file; its imports point at five deleted `browser_tool_*`
+   modules. Removed the file, retargeted the fork's test imports (public names, no leading
+   underscores) and the one `tools.browser_tool_cdp._resolve_cdp_override` monkeypatch that no longer
+   has a target.
+3. **`web_server_config` first pass spliced the two conflict blocks in the wrong order** (the
+   explicit-endpoint block landed inside `_apply_main_assignment_sync`). The ruff F821 diff caught it;
+   re-merged so `_prepare_main_assignment`/`_apply_main_assignment_sync` own their original halves.
+4. **`hermes_cli/gateway.py` kept local duplicates** of three `gateway_launchd` constants (F811);
+   `tui_gateway/session_notifications.py` referenced a bare `logger` the tag had already dropped.
+5. **Test-side redaction artifact** — `tests/agent/test_auxiliary_client.py::test_runtime_override_key_is_used`
+   had a real key in the scoped dict and the `«redacted:…»` placeholder in its assertion (the
+   placeholder was written into this file by an earlier redacting edit). The merge made the two halves
+   disagree; the assertion now uses the same literal the call binds.
+
+**Verification.** Zero unmerged paths, zero real conflict markers; AST parse clean on 2,151 changed
+`.py`; import resolver 0 findings new in merged vs both baselines (py) and 0 unresolved (ts).
+Vendor-string scan 0; `tests/known_failing.txt` re-verified (98 entries, all resolving).
+
+Full per-file suite on amd-workstation (same env for all three trees, so the diff is the code):
+merged 649 failing node ids, upstream tag 613, pre-merge fork 557. Failing in merged and in NEITHER
+baseline: 34. The 2026-10-17 rule held — every one of those 34 was a real merge defect or a
+test-side mismatch, and 28 are now green:
+
+* **Stale/abandon cluster (11 tests, `test_stream_stale_abandon.py`, `test_stream_max_lifetime.py`).**
+  Two layers. (a) The tests mock `client.messages.stream`; the fork's adapter prefers
+  `client.beta.messages.stream` (typed beta kwargs), and a bare MagicMock auto-vivifies that as an
+  EMPTY stream — the fork's own conftest documents this trap. Bound both namespaces in the tests.
+  (b) After that, the abandon never fired: the fork's cold-start grace
+  (`agent/fork/stream_recovery.effective_stale_timeout`) inflates ANY pre-first-event window to
+  `max(3x base, 600s)`, including an explicitly configured `HERMES_STREAM_STALE_TIMEOUT`. An
+  explicit deadline is the operator's number, so `_resolve_stale_timeout` now marks it overridden
+  (`_stream_stale_timeout_override`) and the grace applies only to the computed default. All 11
+  green.
+* **`agent/turn_recovery_autorecover.py`** read `_current_streamed_assistant_text` as text; a stub
+  agent whose `__getattr__` returns a callable handed it a function and `.strip()` blew up. Guarded
+  with `isinstance(..., str)` in `attempt_progress_chars` and `ladder_eligible`.
+* **`hermes_cli/providers.py::_plugin_profile_pdef`** assumed a full profile object; upstream's new
+  test stubs `providers.get_provider_profile` with a sentinel `object()`. An AttributeError now
+  means "no plugin profile" instead of crashing provider lookup.
+* **`cli.py`**'s macOS notifier detaches without the fork's `detached-spawn: ok — <why>` marker,
+  which the fork's own ratchet test enforces; marker added.
+* **`tests/hermes_cli/test_provider_env_injection_pm_runtime_skip.py` retired**: its subject
+  (`hermes_cli.config._inject_profile_env_vars`) is gone upstream, and `config_provider_env` builds
+  the table from `providers.bundled_profiles()` with no config read and no discovery, so the
+  pm-runtime scan it guarded cannot happen any more.
+
+Still red and understood, next attack vectors in order:
+1. `test_bedrock_anthropic_foreign_reasoning::test_a_rejection_the_strip_cannot_heal_stays_bounded`
+   — the thinking-signature strip never runs (0 "Thinking block signature recovery" lines) for
+   `Invalid data in redacted_thinking block`; the classifier arm of the G1 `_is_anthropic_thinking_rejection`
+   widening needs re-checking against the bedrock adapter's error text.
+2. `test_external_process_streaming::test_streaming_capability_preserves_positional_plugin_construction`
+   — a provider-profile field tuple differs; the positional `ProviderProfile(...)` construction order
+   the fork's external-process seam passes is the suspect.
+3. `gateway/test_reload_plugins_connects_mcp` — the reloaded plugin registers `rpprobe_ping`, not
+   `mcp__rpprobe__ping`; the reload path bypasses `tools/mcp_tool_schema.py`'s namespacing.
+4. `gateway/test_local_viewer_transformed_final` — the transformed final surfaces
+   `Your api key is SECRET-123.` where None is expected (local-viewer transform + redaction seam).
+5. `tests/scripts/test_code_health_cli` — env gap only: the merged tree wants ruff 0.15.22, the
+   suite venv has 0.15.10 and no uv/pip to install it.
+6. `tests/test_scratch_dir` (2 tests) — prune list comes back empty; scratch-prune path.
+
+Prompt-surface fixtures re-rendered on the merged tree (9 surfaces, 24 files) and
+`tests/ci/test_prompt_surface.py` passes. The render must run on Linux: the script pins
+`sys.platform = "linux"` before importing `zoneinfo`, which makes macOS 3.14 look for
+`_sysconfigdata__linux_darwin`.
+
 ### 2026-11-01 (turn transcript) — a Stopped turn was persisted as "your request was not processed"
 
 **Symptom.** The owner, after pressing Stop twice in the PS5 kernel chat: "It is refusing to answer

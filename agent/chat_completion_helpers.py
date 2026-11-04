@@ -668,6 +668,20 @@ def _configured_stale_base(agent) -> float:
     return cfg if cfg is not None else _stream_env_stale_base()[0]
 
 
+def _stale_timeout_configured_explicitly(agent) -> bool:
+    """True when the stale window is an EXPLICIT operator setting (per-provider
+    ``stale_timeout_seconds`` or HERMES_STREAM_STALE_TIMEOUT), not the built-in 180s.
+
+    FORK: the cold-start grace (``effective_stale_timeout``) is a heuristic that protects a
+    DEFAULT window from killing a slow cold prefill. An explicit number is the deadline the
+    operator asked for — inflating it 3x/600s silently ignored the setting (and made the
+    stale-abandon path unreachable for short windows), so an explicit value is authoritative.
+    """
+    if get_provider_stale_timeout(agent.provider, agent.model) is not None:
+        return True
+    return _stream_env_stale_base()[1]
+
+
 def _local_stream_stale_timeout_default() -> float:
     """Local-provider stale ceiling: ``agent.local_stream_stale_timeout`` (900s) or
     HERMES_LOCAL_STREAM_STALE_TIMEOUT. Shared by the stream stale detector and the
@@ -4421,15 +4435,21 @@ class _StreamingCall(StreamingWaitMonitor):
         crashed endpoint forever. Cloud values scale with context size and are
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
         base = _configured_stale_base(self.agent)
+        # FORK: an explicitly configured window IS the effective window (no cold-start grace).
+        explicit_stale = _stale_timeout_configured_explicitly(self.agent)
         if base == 180.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
             # FORK: the local ceiling lives in a helper so the stale detector and the Responses
             # first-event watchdog share it; assign the BASE (the ``_stream_stale_timeout``
             # property applies the cold-start grace on top).
             self._stream_stale_timeout_base = _local_stream_stale_timeout_default()
+            if explicit_stale:
+                self._stream_stale_timeout_override = True
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return
         self._stream_stale_timeout_base = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
+        if explicit_stale:
+            self._stream_stale_timeout_override = True
 
     def _partial_stream_stub(self, error):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

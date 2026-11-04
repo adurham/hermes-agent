@@ -1300,6 +1300,14 @@ def reap_orphaned_harness_daemons(exclude=(), force: bool = False) -> int:
     return reaped
 
 
+def _reap_orphans_before_driving(daemon: tuple[str, ...]) -> None:
+    """Best-effort drain of dead owners' daemons; cleanup must never break the browser call itself."""
+    try:
+        reap_orphaned_harness_daemons(exclude=(daemon,))
+    except Exception as e:  # pragma: no cover — defensive: a sweep failure is never fatal
+        logger.debug("harness orphan reap failed: %s", e)
+
+
 # Bounded escalation for a wedged daemon. ``--reload`` asks the daemon to shut itself down; one that never
 # answers used to keep its record and be retried on every sweep forever. After this many consecutive
 # failed reloads the daemon is signalled directly — but only once its pid is PROVEN to be that daemon.
@@ -1560,9 +1568,19 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
+    daemon = daemon_identity(env)
+    # Before this call spawns anything: drain daemons whose owning Hermes process died without stopping
+    # them (a crash, SIGKILL, a one-shot run). Outside the bot-desktop fence, and never this call's own
+    # daemon — the point is to stop the leak, not to hand this call a cold daemon.
+    _reap_orphans_before_driving(daemon)
 
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
+        # The janitor is what stops this call's daemon once it goes idle; only the managed-Chromium route
+        # used to start it (via browser_session.get_session_info), so a CDP-override / BU-cloud exec had
+        # no idle stop.
+        _lazy_call("tools.browser_session_lifecycle", "start_cleanup_thread", None,
+                   "browser janitor start failed")
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()

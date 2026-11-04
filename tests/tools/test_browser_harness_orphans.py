@@ -506,16 +506,17 @@ def test_an_idle_stop_never_kills_a_daemon_another_live_process_still_owns(runti
 def test_a_clean_exit_stops_driven_daemons_even_with_no_browser_session(monkeypatch):
     """atexit used to stop harness daemons only inside ``if _active_sessions:``. A CDP-override or BU-cloud
     exec never creates a session there, so a clean ``hermes`` exit left every daemon it drove running."""
-    from tools import browser_tool, browser_session_lifecycle as lifecycle
+    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
     identity = ("", "", "", "", "exit-me")
     stopped = []
     monkeypatch.setattr(bu, "_driven_daemons", {identity: "home"})
     monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: stopped.extend(daemons))
-    monkeypatch.setattr(browser_tool, "_cleanup_done", False)
-    monkeypatch.setattr(browser_tool, "_active_sessions", {})
+    monkeypatch.setattr(bs, "_cleanup_done", False)
+    monkeypatch.setattr(bs, "_active_sessions", {})
     monkeypatch.setattr(lifecycle, "reap_orphaned_browser_sessions", lambda: None)
-    monkeypatch.setattr(lifecycle, "_stop_all_lightpanda", lambda: None)
-    monkeypatch.setattr(lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
+    # The new exit path stops harness daemons BEFORE cleanup_all_browsers(); stub that sweep so the
+    # assertion measures the claim-aware stop under test, not real browser/lightpanda teardown.
+    monkeypatch.setattr(lifecycle, "cleanup_all_browsers", lambda: None)
 
     lifecycle.emergency_cleanup_all_sessions()
 
@@ -793,18 +794,19 @@ def test_exit_leaves_a_daemon_another_live_owner_still_claims(runtime, monkeypat
     """A clean exit of THIS process must not take down a daemon a live peer (same dirs + BU_NAME) drives:
     only our claim goes."""
     from hermes_constants import hermes_home_key
-    from tools import browser_tool, browser_session_lifecycle as lifecycle
+    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
     identity = tuple(_identity(runtime, "shared-exit", runtime))
     monkeypatch.setattr(bu, "_driven_daemons", {identity: hermes_home_key()})
     mine = _record_path(identity)
     _write_record(mine, identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
     stopped = []
     monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: stopped.extend(daemons))
-    monkeypatch.setattr(browser_tool, "_cleanup_done", False)
-    monkeypatch.setattr(browser_tool, "_active_sessions", {})
+    monkeypatch.setattr(bs, "_cleanup_done", False)
+    monkeypatch.setattr(bs, "_active_sessions", {})
     monkeypatch.setattr(lifecycle, "reap_orphaned_browser_sessions", lambda: None)
-    monkeypatch.setattr(lifecycle, "_stop_all_lightpanda", lambda: None)
-    monkeypatch.setattr(lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
+    # The new exit path stops harness daemons BEFORE cleanup_all_browsers(); stub that sweep so the
+    # assertion measures the claim-aware stop under test, not real browser/lightpanda teardown.
+    monkeypatch.setattr(lifecycle, "cleanup_all_browsers", lambda: None)
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         _write_record(_record_path(identity, other.pid), identity, runtime, other.pid,
