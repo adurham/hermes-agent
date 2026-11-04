@@ -5,6 +5,8 @@ import {
   $planGauges,
   forgetPlanGauge,
   notePlanGauge,
+  planGaugeFor,
+  planGaugeSlot,
   planScopeFor,
   resetPlanGauges
 } from '@/store/plan-gauge'
@@ -18,6 +20,14 @@ const gauge = (used_bp: number, reset: null | number = WINDOW_RESET): PlanGauge 
   id: 'day',
   label: 'Today',
   provider: 'nous',
+  resets_at_ms: reset,
+  used_bp
+})
+
+const claudeGauge = (used_bp: number, reset: null | number = WINDOW_RESET): PlanGauge => ({
+  id: 'week',
+  label: 'Current week',
+  provider: 'claude-subscription-directsdk-experimental',
   resets_at_ms: reset,
   used_bp
 })
@@ -48,7 +58,7 @@ describe('the plan allowance is an account fact', () => {
     const scope = planScopeFor('runtimeB')
 
     expect(planScopeFor('runtimeA')).toBe(scope)
-    expect($planGauges.get()[scope]?.gauge.used_bp).toBe(6_800)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(6_800)
   })
 
   it('keeps the newest window and never drags the number backwards inside one', () => {
@@ -57,19 +67,19 @@ describe('the plan allowance is an account fact', () => {
     notePlanGauge(scope, gauge(6_800), 'runtimeA')
     // A session resumed from an older snapshot still carries yesterday's lower figure.
     notePlanGauge(scope, gauge(6_100), 'runtimeB')
-    expect($planGauges.get()[scope]?.gauge.used_bp).toBe(6_800)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(6_800)
 
     notePlanGauge(scope, gauge(7_200), 'runtimeB')
-    expect($planGauges.get()[scope]?.gauge.used_bp).toBe(7_200)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(7_200)
 
     // A new allowance window wins even though its counter starts lower.
     notePlanGauge(scope, gauge(400, WINDOW_RESET + 86_400_000), 'runtimeA')
-    expect($planGauges.get()[scope]?.gauge.used_bp).toBe(400)
-    expect($planGauges.get()[scope]?.gauge.resets_at_ms).toBe(WINDOW_RESET + 86_400_000)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(400)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.resets_at_ms).toBe(WINDOW_RESET + 86_400_000)
 
     // ...and a snapshot from the window BEFORE it is ignored.
     notePlanGauge(scope, gauge(9_900, WINDOW_RESET), 'runtimeC')
-    expect($planGauges.get()[scope]?.gauge.used_bp).toBe(400)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(400)
   })
 
   it('does not carry one source allowance onto another', () => {
@@ -81,8 +91,36 @@ describe('the plan allowance is an account fact', () => {
     const remoteScope = planScopeFor('remote-1')
 
     expect(remoteScope).toContain('coder')
-    expect($planGauges.get()[remoteScope]?.gauge.used_bp).toBe(9_000)
-    expect($planGauges.get()[planScopeFor(null)]).toBeUndefined()
+    expect(planGaugeFor($planGauges.get(), remoteScope, 'nous')?.used_bp).toBe(9_000)
+    expect(planGaugeFor($planGauges.get(), planScopeFor(null), 'nous')).toBeNull()
+  })
+
+  it('keeps one slot per plan owner: a switch to Claude cannot be overwritten by the spent Nous plan', () => {
+    // The reported bug: both accounts report into the same backend source. A single slot per scope
+    // kept the higher (Nous, 100%) number and the bar stayed on it after the manual switch.
+    const scope = planScopeFor('runtimeA')
+
+    notePlanGauge(scope, gauge(10_000), 'runtimeA')
+    notePlanGauge(scope, claudeGauge(4_200), 'runtimeB')
+
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(10_000)
+    expect(planGaugeFor($planGauges.get(), scope, 'claude-subscription-directsdk-experimental')?.used_bp).toBe(4_200)
+    // A provider with no observation in this source shows nothing — never another account's plan.
+    expect(planGaugeFor($planGauges.get(), scope, 'ollama-cloud')).toBeNull()
+
+    // Before its first reply a session does not know its provider; two owners is no honest guess.
+    expect(planGaugeFor($planGauges.get(), scope)).toBeNull()
+  })
+
+  it('shows the scope only allowance before the session knows its provider', () => {
+    const scope = planScopeFor('runtimeA')
+
+    notePlanGauge(scope, claudeGauge(4_200), 'runtimeB')
+
+    // One plan owner in the source: the pre-first-reply tab shows the account number, as it would
+    // a moment later; with two owners (previous test) no guess is made.
+    expect(planGaugeFor($planGauges.get(), scope)?.used_bp).toBe(4_200)
+    expect(planGaugeFor($planGauges.get(), scope, 'claude-subscription-directsdk-experimental')?.used_bp).toBe(4_200)
   })
 
   it('drops the slot once the allowance window it describes has reset', () => {
@@ -92,13 +130,14 @@ describe('the plan allowance is an account fact', () => {
     const scope = planScopeFor('runtimeA')
 
     notePlanGauge(scope, gauge(9_500, reset))
-    expect($planGauges.get()[scope]).toBeDefined()
+    expect($planGauges.get()[planGaugeSlot(scope, 'nous')]).toBeDefined()
 
     vi.advanceTimersByTime(61_001)
 
     // A passed reset is no longer current (gateway/session_usage.py::plan_gauge) — the number goes
     // rather than lying about a window that ended.
-    expect($planGauges.get()[scope]).toBeUndefined()
+    expect($planGauges.get()[planGaugeSlot(scope, 'nous')]).toBeUndefined()
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')).toBeNull()
   })
 
   it('keeps a window whose reset is beyond the timer ceiling (a month-long allowance)', () => {
@@ -111,21 +150,23 @@ describe('the plan allowance is an account fact', () => {
     notePlanGauge(scope, gauge(3_000, Date.now() + 40 * 86_400_000))
     vi.advanceTimersByTime(5_000)
 
-    expect($planGauges.get()[scope]?.gauge.used_bp).toBe(3_000)
+    expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(3_000)
   })
 
   it('observes the active session twin too, so a stats-only path still reaches the slot', () => {
     $activeSessionId.set('runtimeA')
     $currentUsage.set({ calls: 2, input: 1, output: 1, total: 2, plan_gauge: gauge(5_000) })
 
-    expect($planGauges.get()[planScopeFor('runtimeA')]?.gauge.used_bp).toBe(5_000)
+    expect(planGaugeFor($planGauges.get(), planScopeFor('runtimeA'), 'nous')?.used_bp).toBe(5_000)
   })
 
-  it('forgets a slot on request (teardown / a source that went away)', () => {
+  it('forgets every owner slot of a source on request (teardown / a source that went away)', () => {
     const scope = planScopeFor('runtimeA')
     notePlanGauge(scope, gauge(6_800))
+    notePlanGauge(scope, claudeGauge(4_200))
     forgetPlanGauge(scope)
 
-    expect($planGauges.get()[scope]).toBeUndefined()
+    expect($planGauges.get()[planGaugeSlot(scope, 'nous')]).toBeUndefined()
+    expect($planGauges.get()[planGaugeSlot(scope, 'claude-subscription-directsdk-experimental')]).toBeUndefined()
   })
 })

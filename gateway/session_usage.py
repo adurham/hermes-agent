@@ -139,69 +139,151 @@ def _portal_window_gauges():
     return tuple(fields.get("gauges") or ()) if fields else ()
 
 
-def _answering_elsewhere(agent) -> bool:
-    """True while this agent answers on some provider other than the plan's owner."""
-    provider = str(getattr(agent, "provider", "") or "").strip().lower()
-    return bool(provider) and provider != GAUGE_PROVIDER
-
-
 def _fallback_bound(agent) -> bool:
     """True while a provider fallback (or a persisted fallback route) carries the turn."""
     return getattr(agent, "_fallback_activated", False) is True
 
 
+def _provider_of(agent) -> str:
+    return str(getattr(agent, "provider", "") or "").strip().lower()
+
+
+def _primary_provider(agent) -> str:
+    primary = getattr(agent, "_primary_runtime", None)
+    primary = primary if isinstance(primary, dict) else {}
+    return str(primary.get("provider") or "").strip().lower()
+
+
+def _gauge_owner(agent) -> str:
+    """Whose allowance the status bar shows: the chat's OWN route, not merely who answered.
+
+    While a fallback carries the turn the chat keeps its route in ``_primary_runtime`` (the next
+    turn restores it), so the number belongs to that primary. Without a fallback the chat's route
+    is the provider that is answering — a deliberate ``switch_model`` moves ``_primary_runtime``
+    with it — so the previous provider's allowance must not linger on the bar. That distinction is
+    the whole bug: a spent plan used to be read as proof of a fallback, which painted "Nous Portal
+    → <provider>" on a session the operator had simply switched away.
+    """
+    provider = _provider_of(agent)
+    if _fallback_bound(agent):
+        primary = _primary_provider(agent)
+        if primary and primary != provider:
+            return primary
+    return provider
+
+
+# Account-usage window labels → the ids each surface knows (desktop/i18n and the TUI render the
+# client words for these; any other id shows the window's own label).
+_WINDOW_GAUGE_IDS = {
+    "current session": "session", "session": "session",
+    "current week": "week", "weekly": "week", "week": "week",
+    "today": "day", "daily": "day", "day": "day",
+    "monthly": "month", "month": "month",
+    "large models (monthly)": "top_tier",
+}
+
+
+def _window_gauge_id(label) -> str:
+    return _WINDOW_GAUGE_IDS.get(str(label or "").strip().lower(), "window")
+
+
+def _account_window_gauge(provider: str) -> dict | None:
+    """The answering provider's own subscription allowance, from the account-usage cache.
+
+    The cache is what the model picker and ``/usage`` fill; this only reads it and asks for a
+    background refresh when the snapshot is missing or stale. Never fetch inline: this runs on
+    every usage tick, and the providers' usage APIs are rate-limited (the plugin hook that owns
+    Claude's endpoint honours its ``retry-after`` on its own).
+
+    Only account-scoped windows are eligible: a model-scoped weekly cap (Anthropic's Opus/Sonnet
+    weeks) says nothing about the account, so showing it as the session's one allowance would
+    claim a limit that does not block the model in use.
+    """
+    from agent.account_usage_cache import cached_account_usage, refresh_account_usage_async, snapshot_is_stale
+
+    snapshot = cached_account_usage(provider)
+    if snapshot is None or snapshot_is_stale(snapshot):
+        refresh_account_usage_async([provider])
+    if snapshot is None or snapshot_is_stale(snapshot):
+        return None
+    now_ms = int(time.time() * 1000)
+    live: list[tuple[object, int | None, float]] = []
+    for window in snapshot.windows:
+        used = getattr(window, "used_percent", None)
+        if getattr(window, "scope", "account") != "account" or used is None:
+            continue
+        reset = getattr(window, "reset_at", None)
+        reset_ms = int(reset.timestamp() * 1000) if reset is not None else None
+        if reset_ms is not None and reset_ms <= now_ms:
+            continue  # the window it describes already rolled over
+        live.append((window, reset_ms, float(used)))
+    if not live:
+        return None
+    full = [row for row in live if row[2] >= 100.0]
+    # A full window is what blocks, and of several the one that frees up last (same rule as
+    # ``usage_gauges.binding_gauge``); otherwise the fullest is the one worth showing.
+    window, reset_ms, used = (max(full, key=lambda row: row[1] or 0) if full
+                              else max(live, key=lambda row: row[2]))
+    return {"id": _window_gauge_id(getattr(window, "label", "")), "label": getattr(window, "label", ""),
+            "used_bp": max(0, min(10_000, round(used * 100))), "resets_at_ms": reset_ms,
+            "provider": provider}
+
+
 def plan_gauge(agent) -> dict | None:
-    """Window plans only: the allowance the status bar shows at a glance (today's, else the one that binds),
-    from the reply headers the agent already tracks — no extra round trip, None for everyone else.
+    """The allowance the status bar shows at a glance, from the route the chat is actually on.
 
-    The dict names the plan's owner (``provider``): these gauges come from the ``x-nous-credits-*``
-    reply/account shape (``agent/credits_tracker.py`` communicates no other), so a status bar can
-    label whose allowance the number is — and every session of that account agrees on it — instead
-    of each viewer guessing from its own session's provider.
+    On a Nous window plan the gauge comes from the ``x-nous-credits-*`` reply headers the agent
+    already tracks; a turn a fallback carries carries no headers of its own, so the account's
+    Portal block stands in (the number must not vanish at 100%, the one moment it exists for).
+    On any other provider the gauge is that provider's own subscription windows (Claude 5h/week,
+    Codex session/weekly, ...), from the account-usage cache — never Nous's, which is not in the
+    mix for a session the operator moved away.
 
-    A turn the preflight moved off a spent Nous plan carries no headers of its own — and a fallback
-    bound into the session before a restart answers without ever setting ``_fallback_activated`` at
-    all — so the account's Portal block stands in. Its readout appears while a fallback is bound, or
-    whenever the plan reads spent on the session that is not on it: without it the number vanished at
-    100%, the one moment it exists for.
+    The dict names the plan's owner (``provider``) so a status bar can label whose allowance the
+    number is — and every session of that account agrees on it.
     """
     with contextlib.suppress(Exception):
-        state = getattr(agent, "_credits_state", None)
-        if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
-            if (payload := _gauge_payload(getattr(state, "gauges", ()))) is not None:
-                return payload
-        if _answering_elsewhere(agent):
-            payload = _gauge_payload(_portal_window_gauges())
-            if payload is not None and (_fallback_bound(agent) or payload.get("used_bp", 0) >= 10_000):
-                return payload
+        owner = _gauge_owner(agent)
+        if not owner:
+            return None
+        if owner == GAUGE_PROVIDER:
+            state = getattr(agent, "_credits_state", None)
+            if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
+                if (payload := _gauge_payload(getattr(state, "gauges", ()))) is not None:
+                    return payload
+            # A swap away from the plan never saw its own reply headers. The Portal block is the
+            # account's, and only a fallback may put another provider's turn under it.
+            if _fallback_bound(agent) and _provider_of(agent) != GAUGE_PROVIDER:
+                return _gauge_payload(_portal_window_gauges())
+            return None
+        return _account_window_gauge(owner)
     return None
 
 
 def plan_route(agent, gauge: dict | None = None) -> dict | None:
-    """The swap a status bar names while the turn runs off the plan (the contract's ``Route``).
+    """The swap a status bar names while a fallback carries the turn (the contract's ``Route``).
 
-    ``primary_*`` is the route this chat returns to. ``agent._primary_runtime`` carries it — except
-    after a fallback was bound into the session and the gateway restarted: the session then *is* the
-    backup, and the snapshot names the backup too. A swap that names no departure is no swap, so the
-    plan's owner (``GAUGE_PROVIDER``) stands in: that IS the allowance the number belongs to.
+    ``primary_*`` is the route this chat returns to. Present ONLY while a fallback is actually
+    active: a session the operator switched to another provider is on that provider by choice,
+    and calling it a fallback from the plan owner would be a fabricated departure. The previous
+    implementation inferred one from a spent plan, which put "Nous Portal → Claude" on a manual
+    switch — the chat's own route had already moved, so nothing had been left behind.
     """
-    provider = str(getattr(agent, "provider", "") or "").strip().lower()
-    if not provider or provider == GAUGE_PROVIDER:
+    provider = _provider_of(agent)
+    if not provider or not _fallback_bound(agent):
+        return None
+    primary_provider = _primary_provider(agent)
+    if not primary_provider or primary_provider == provider:
         return None
     gauge = gauge if gauge is not None else plan_gauge(agent)
     if gauge is None:
         return None
     primary = getattr(agent, "_primary_runtime", None)
     primary = primary if isinstance(primary, dict) else {}
-    primary_provider = str(primary.get("provider") or "").strip().lower()
     primary_model = str(primary.get("model") or "").strip() or None
-    if primary_provider and primary_provider != provider:
-        return {"model": str(getattr(agent, "model", "") or ""), "provider": provider,
-                "fallback_active": True, "primary_model": primary_model,
-                "primary_provider": primary_provider}
     return {"model": str(getattr(agent, "model", "") or ""), "provider": provider,
-            "fallback_active": True, "primary_model": primary_model if primary_provider else None,
-            "primary_provider": GAUGE_PROVIDER}
+            "fallback_active": True, "primary_model": primary_model,
+            "primary_provider": primary_provider}
 
 
 def usage_stats(agent) -> dict:
