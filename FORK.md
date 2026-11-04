@@ -86,21 +86,66 @@ test-side mismatch, and 28 are now green:
   the table from `providers.bundled_profiles()` with no config read and no discovery, so the
   pm-runtime scan it guarded cannot happen any more.
 
-Still red and understood, next attack vectors in order:
-1. `test_bedrock_anthropic_foreign_reasoning::test_a_rejection_the_strip_cannot_heal_stays_bounded`
-   — the thinking-signature strip never runs (0 "Thinking block signature recovery" lines) for
-   `Invalid data in redacted_thinking block`; the classifier arm of the G1 `_is_anthropic_thinking_rejection`
-   widening needs re-checking against the bedrock adapter's error text.
-2. `test_external_process_streaming::test_streaming_capability_preserves_positional_plugin_construction`
-   — a provider-profile field tuple differs; the positional `ProviderProfile(...)` construction order
-   the fork's external-process seam passes is the suspect.
-3. `gateway/test_reload_plugins_connects_mcp` — the reloaded plugin registers `rpprobe_ping`, not
-   `mcp__rpprobe__ping`; the reload path bypasses `tools/mcp_tool_schema.py`'s namespacing.
-4. `gateway/test_local_viewer_transformed_final` — the transformed final surfaces
-   `Your api key is SECRET-123.` where None is expected (local-viewer transform + redaction seam).
-5. `tests/scripts/test_code_health_cli` — env gap only: the merged tree wants ruff 0.15.22, the
-   suite venv has 0.15.10 and no uv/pip to install it.
-6. `tests/test_scratch_dir` (2 tests) — prune list comes back empty; scratch-prune path.
+**Closed after the landing (the six rows above, plus three the re-sweep surfaced).** All green on the
+workstation tree at `a335ad2175a`:
+
+1. **Thinking-signature strip looked dead** (`test_bedrock_anthropic_foreign_reasoning`). It ran: the
+   fork demotes that self-heal to DEBUG (see the demotion rows above), so upstream's
+   `caplog.at_level(INFO)` saw zero lines. Captured at DEBUG instead — the strip-once bound the test
+   asserts was never broken.
+2. **`ProviderProfile` positional ratchet** (`test_external_process_streaming`). The fork's
+   `empty_completion_policy` was added positionally into the middle of the released slot list; a plugin
+   subclass's own positional option then landed on the wrong field. Made it `kw_only=True` (all call
+   sites are keyword); the released order is unchanged.
+3. **MCP tool naming** (`test_reload_plugins_connects_mcp`). Upstream's copy filters the wire name
+   `mcp__<server>__<tool>`; the fork registers `mcp_registered_tool_name(...)` (bare `<server>_<tool>`).
+   Test now asserts through that helper.
+4. **Local-viewer text leak** (`test_local_viewer_transformed_final`). The fork's
+   `final_content_replaced` case had been merged OUT of the `response_transformed` guard, so every
+   completed streamed turn repainted the reply (and a redacted one leaked the raw text). Both cases are
+   now gated together: text is carried only when the stored final differs from what the stream sent.
+5. **Scratch prune** (`test_scratch_dir`, 2). The fork's once-per-hour throttle was one global float, so
+   a routed home never got its own pass and a pass deferred by another process burned the hour. Now keyed
+   per scratch dir (`_scratch_prune_by_dir`), the `_scratch_pruned_once` latch still stops import-time
+   passes, and a deferred stamp no longer records an attempt.
+6. **Code-health env gap** — ruff 0.15.22 installed into the suite venv (`resolve_ruff` reads
+   `sys.prefix/bin/ruff` first), 39 passed / 1 skipped.
+7. **Delegation sweep** (`test_async_delegation_replay_retirement[sweep]`). Upstream #144563's lost-copy
+   rule now re-offers a live owner's row when no in-memory copy exists; the fork's test asserted the old
+   "live owner is never re-offered". Test aligned; the queued-copy suppressor is still covered by
+   `test_live_owner_dead_completion_keeps_its_replay_and_is_delivered`.
+8. **Post-kill reap** (`test_browser_use_cli::test_post_kill_drain_is_bounded`). The merge dropped
+   `_reap_dead_child(proc)` and its helper entirely; a drain that misses its deadline left the killed
+   child `<defunct>`. Restored.
+9. **`memory` schema shape** (`test_memory_tool_schema`). Upstream advertises ONE shape
+   (`target` + `operations[]`); the merge unioned the fork's legacy single-op properties back in. The
+   schema now advertises only that shape, with the fork's warm-tier actions/fields folded into the
+   `operations[]` item so nothing loses reach, and `_withdraw_warm_tool_surface` narrows the item.
+
+Also repaired in the same pass (same class, found by the re-sweep): `restore_login_path` in
+`test_terminal_task_cwd`'s expected spawn kwargs; `browser_navigate` → `browser_exec` in the fork's
+tool-search tests (upstream retired the legacy browser family); the catalog's first-sentence rule for
+`consult`, `send_to_parent` and `skill_pitfalls` (their first sentences were over the 80-char cap);
+`tool_search_on` for the bridge-lifecycle test (the fork's budget-gated `auto` never activates a bridge
+for two small MCP tools); `route_entry`'s `authority.runner` contract in the mid-turn handoff test; and
+the two-profile handoff daemon test, whose scripted child must call `process_manage` directly when the
+bridge is absent and whose parent turn now sees the completion notice coalesced with the delegation
+batch notice.
+
+**Desktop leg (first run on Linux, amd-workstation).** `tsc --build tsconfig.json` and
+`tsconfig.electron.json` both clean. `vitest --project ui` 1548/1548 files, `ui-tui` 248/248, `web`
+72/72. Two defects fixed on the way:
+- the fork's `electron/perf-capture.ts` passed camelCase trace options (`categories`, `recordMode`,
+  `traceBufferSizeInKb`) that Electron IGNORES — the perf trace silently recorded its defaults. Now
+  Electron 44's `TraceConfig` (`included_categories`, `recording_mode`, `trace_buffer_size_in_kb`).
+  That also surfaced `main.ts`/the test not narrowing the `TraceResult` union; `in`-narrowed.
+- `PersistentTerminal`'s rect tracking never suspended on window blur: it gated on
+  `pauseController.isPaused()` (hidden/minimized only) while the fork's own focus-latch split moved
+  "unfocused" behind a live `document.hasFocus()` check. Added `isBlurred()` (the latch alone, healed
+  by the existing input hooks) and the rect loop now suspends on it.
+The `electron` vitest project cannot run on this workstation: 11 files sit in "Downloading Electron
+binary…" (no internet from the box) and the rest need a real Electron window/display. Not a code gate
+— unverified, not failing.
 
 Prompt-surface fixtures re-rendered on the merged tree (9 surfaces, 24 files) and
 `tests/ci/test_prompt_surface.py` passes. The render must run on Linux: the script pins

@@ -79,4 +79,9 @@ def test_reload_plugins_answers_with_the_plugins_mcp_tools_already_registered(ga
     answer = reload_plugins_verb(runner, loop)({})
 
     assert answer["reloaded"] is True and "rpprobe" in answer["plugins"]
-    assert "mcp__rpprobe__ping" in registry.get_all_tool_names()
+    # FORK: MCP tools register BARE (<server>_<tool>, tools/mcp_tool_schema.mcp_registered_tool_name) —
+    # upstream's copy of this test filters the mcp__<server>__<tool> wire name, which is not what the
+    # registry holds (FORK.md: "MCP tool naming in upstream's new tests").
+    from tools.mcp_tool_schema import mcp_registered_tool_name
+
+    assert mcp_registered_tool_name("rpprobe", "ping") in registry.get_all_tool_names()

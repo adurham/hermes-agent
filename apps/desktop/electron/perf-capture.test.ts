@@ -9,7 +9,10 @@ function tracer(overrides: Partial<{ start: () => Promise<void>; stop: () => Pro
   }
 }
 
-const quiet = () => {}
+// A no-op sleep for the capture tests: ``captureTraceOnce``'s ``sleep`` is
+// ``(ms: number) => Promise<void>``, and the merge brought this file into the
+// electron tsconfig's program, so a void-returning stub no longer type-checks.
+const quiet = async () => {}
 
 describe('traceDurationMs', () => {
   it('ignores an unset or nonsense window', () => {
@@ -36,7 +39,10 @@ describe('captureTraceOnce', () => {
 
     expect(result).toEqual({ ok: true, path: '/tmp/t.json' })
     expect(t.startRecording).toHaveBeenCalledTimes(1)
-    expect(t.startRecording.mock.calls[0][0].categories).toContain('cc')
+    // `vi.fn(overrides.start ?? ...)` types the mock's call tuple from that zero-arg
+    // stub, so read the options off the recorded call explicitly.
+    const started = (t.startRecording.mock.calls[0] as unknown as [{ included_categories?: string[] }])[0]
+    expect(started.included_categories).toContain('cc')
     expect(t.stopRecording).toHaveBeenCalledTimes(1)
     expect(write).toHaveBeenCalledWith('/tmp/t.json', '{"traceEvents":[]}')
   })

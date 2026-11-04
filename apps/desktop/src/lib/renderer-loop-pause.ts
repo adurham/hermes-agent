@@ -71,6 +71,13 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
     !document.hasFocus()
 
   return {
+    /** The BLUR LATCH alone: the window lost keyboard focus and no input event has
+     *  disproved it yet. This is what a layout/precision loop gates on — the rect chase
+     *  forces layout, and `document.hasFocus()` inside its rAF callback is both a live
+     *  read after the fact and a value jsdom/test surfaces set independently of the
+     *  blur event. `unfocused` keeps the live check for decoration, which the heal
+     *  path can restore without a focus event. */
+    isBlurred: () => pauseWhenUnfocused && !windowPaused && !windowFocused,
     dispose: () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('blur', onBlur)

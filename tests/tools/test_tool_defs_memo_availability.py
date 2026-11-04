@@ -173,7 +173,9 @@ def _tool_results(server):
     return out
 
 
-def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, clock):
+def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, clock, tool_search_on):
+    # FORK: "auto" is budget-gated (a couple of small MCP tools never reach threshold_pct), so a
+    # test about the bridge lifecycle forces the bridge on instead of relying on auto activation.
     """Composed: one AIAgent across turns, real bridge dispatch, the mail server recovering
     between turns without re-registering (the reconnect path keeps its registered names)."""
     from run_agent import AIAgent

@@ -302,7 +302,9 @@ def test_a_rejection_the_strip_cannot_heal_stays_bounded(bedrock_claude_agent, c
     ordinary retryable budget and then the fallback chain, never an endless strip-and-resend."""
     agent, log, converse_models = bedrock_claude_agent
     agent._anthropic_client.messages.always_reject = True
-    with caplog.at_level(logging.INFO):
+    # FORK: the self-heal logs at DEBUG, not WARNING (FORK.md, "thinking-signature recovery
+    # demotion" — kept so the merge does not restore the noisy warning). Capture at DEBUG.
+    with caplog.at_level(logging.DEBUG):
         result = agent.run_conversation("q3", conversation_history=_gpt_history(stamped=False))
 
     assert caplog.text.count("Thinking block signature recovery") == 1

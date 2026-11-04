@@ -55,8 +55,16 @@ export type TraceFailure = 'start-refused' | 'stop-failed' | 'stop-timeout' | 'e
 
 export type TraceResult = { ok: true; path: string } | { ok: false; reason: TraceFailure }
 
+/** Electron's own `TraceConfig` shape (snake_case + `recording_mode`). The camelCase
+ *  names this used before were silently IGNORED by Electron, so the trace fell back to
+ *  its defaults (record-until-full, default categories, 100 MB) — the perf capture was
+ *  measuring a different trace than the one it asked for. */
 export type TracerLike = {
-  startRecording(options: { recordMode?: string; categories: string[]; traceBufferSizeInKb?: number }): Promise<void> | void
+  startRecording(options: {
+    recording_mode?: 'record-until-full' | 'record-continuously' | 'record-as-much-as-possible' | 'trace-to-console'
+    included_categories?: string[]
+    trace_buffer_size_in_kb?: number
+  }): Promise<void> | void
   stopRecording(): Promise<string> | string
 }
 
@@ -108,9 +116,9 @@ export async function captureTraceOnce({
 
   try {
     await tracer.startRecording({
-      categories: [...categories],
-      recordMode: 'recordAsMuchAsPossible',
-      traceBufferSizeInKb: 100_000
+      included_categories: [...categories],
+      recording_mode: 'record-as-much-as-possible',
+      trace_buffer_size_in_kb: 100_000
     })
     started = true
   } catch {

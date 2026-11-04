@@ -218,7 +218,10 @@ class ProviderProfile:
     # retries are free (e.g. subscription-subprocess routes) — no deterministic
     # short-circuit, a larger same-provider retry budget, and the fallback chain only after
     # a wall-clock floor (agent.empty_response_guard.transient_* in config.yaml).
-    empty_completion_policy: str = "refusal_like"
+    # FORK: keyword-only — the released positional slots are frozen (upstream's
+    # test_external_process_streaming ratchet), so a later-added field must never
+    # shift a plugin subclass's own positional option.
+    empty_completion_policy: str = field(default="refusal_like", kw_only=True)
 
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These

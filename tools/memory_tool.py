@@ -1190,6 +1190,23 @@ MEMORY_SCHEMA = {
     },
 }
 
+# FORK: advertise ONE shape (upstream v0.22.7 narrowed this to target + operations[]).
+# The fork's warm-tier actions and their fields stay reachable by folding them into the
+# operations[] item; the legacy single-op shape stays handler-accepted but never advertised.
+_MEMORY_LEGACY_PROPS = dict(MEMORY_SCHEMA["parameters"]["properties"])
+_ops_item = _MEMORY_LEGACY_PROPS["operations"]["items"]
+_ops_item["properties"]["action"]["enum"] = list(_MEMORY_LEGACY_PROPS["action"]["enum"])
+for _extra_key in ("tier", "query", "fact_id", "entity", "entities", "keywords", "min_trust",
+                   "limit", "category", "tags", "trust_delta", "supersedes"):
+    _extra_prop = _MEMORY_LEGACY_PROPS.get(_extra_key)
+    if _extra_prop is not None:
+        _ops_item["properties"].setdefault(_extra_key, _extra_prop)
+MEMORY_SCHEMA["parameters"]["properties"] = {
+    "target": _MEMORY_LEGACY_PROPS["target"],
+    "operations": _MEMORY_LEGACY_PROPS["operations"],
+}
+
+
 
 # Schema text when only one built-in store is enabled: (target description, TARGETS replacement).
 _SINGLE_TARGET_TEXT = {
@@ -1272,23 +1289,29 @@ def _warm_surface_withdrawn() -> bool:
 def _withdraw_warm_tool_surface(parameters: dict[str, Any], description: str) -> str:
     """Narrow the advertised `memory` schema to the hot tier. Returns the new description."""
     props = parameters["properties"]
-    props["action"]["enum"] = list(_HOT_ONLY_ACTIONS)
-    props["action"]["description"] = (
-        "The action to perform (HOT tier only in this session — the warm tier is served by "
-        "fact_store / fact_feedback, not by this tool). Omit when using the 'operations' "
-        "batch array. 'patch' replaces exactly the old_text span (set old_text to the whole "
-        "entry to rewrite it)."
-    )
-    props["tier"]["enum"] = ["hot"]
-    props["tier"]["description"] = (
-        "Only 'hot' is available here in this session; warm-tier facts are served by "
-        "fact_store / fact_feedback."
-    )
+    # FORK: the schema advertises ONE shape (target + operations[]), so the per-op surface
+    # lives on the operations ITEM — narrow it there, not on removed top-level keys.
+    item = props.get("operations", {}).get("items", {}).get("properties", {})
+    if "action" in item:
+        hot = [a for a in item["action"].get("enum") or [] if a in _HOT_ONLY_ACTIONS]
+        item["action"]["enum"] = hot or list(_HOT_ONLY_ACTIONS)
+        item["action"]["description"] = (
+            "The action to perform (HOT tier only in this session — the warm tier is served by "
+            "fact_store / fact_feedback, not by this tool). 'patch' replaces exactly the "
+            "old_text span (set old_text to the whole entry to rewrite it)."
+        )
+    if "tier" in item:
+        item["tier"]["enum"] = ["hot"]
+        item["tier"]["description"] = (
+            "Only 'hot' is available here in this session; warm-tier facts are served by "
+            "fact_store / fact_feedback."
+        )
     props["target"]["description"] = (
         "'memory' for personal notes, 'user' for user profile. REQUIRED for a hot write "
         "(a call that omits it is refused; retry with target='memory' or target='user')."
     )
     for name in _WARM_ONLY_PARAMS:
+        item.pop(name, None)
         props.pop(name, None)
 
     for anchor, replacement in _WARM_DESCRIPTION_REWRITES:

@@ -975,8 +975,8 @@ registry.register(
 SKILL_PITFALLS_SCHEMA = {
     "name": "skill_pitfalls",
     "description": (
-        "Return ONLY the pitfalls / gotchas / known-issues sections of a skill — "
-        "cheap (~500-3000 tokens, vs ~30k for skill_view) so you can re-check "
+        "Return ONLY a skill's pitfalls / gotchas / known-issues. "
+        "Cheap (~500-3000 tokens, vs ~30k for skill_view) so you can re-check "
         "what NOT to do before any risky operation. Use this whenever you "
         "loaded a skill earlier in the session and now want a fast checklist "
         "refresh before a destructive command (cluster restart, file "

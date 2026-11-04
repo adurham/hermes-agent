@@ -251,18 +251,18 @@ class TestForkDeferToolsets:
     def test_defer_toolsets_defers_a_core_tool(self, monkeypatch):
         """A core tool whose toolset is in defer_toolsets becomes deferrable."""
         from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
-        self._patch_registry(monkeypatch, {"browser_navigate": "browser"})
+        self._patch_registry(monkeypatch, {"browser_exec": "browser"})
         cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["browser"]})
-        # browser_navigate is in _HERMES_CORE_TOOLS, so without the override
-        # it would never defer.
-        assert is_deferrable_tool_name("browser_navigate", cfg) is True
+        # browser_exec is in _HERMES_CORE_TOOLS (the legacy browser_navigate family
+        # retired upstream in v0.22.7), so without the override it would never defer.
+        assert is_deferrable_tool_name("browser_exec", cfg) is True
 
     def test_no_override_keeps_core_eager(self, monkeypatch):
         """Without defer_toolsets, a core tool stays eager (upstream rule)."""
         from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
-        self._patch_registry(monkeypatch, {"browser_navigate": "browser"})
+        self._patch_registry(monkeypatch, {"browser_exec": "browser"})
         cfg = ToolSearchConfig.from_raw(None)
-        assert is_deferrable_tool_name("browser_navigate", cfg) is False
+        assert is_deferrable_tool_name("browser_exec", cfg) is False
 
     def test_defer_tools_defers_single_core_tool(self, monkeypatch):
         from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name

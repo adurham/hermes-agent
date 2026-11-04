@@ -334,8 +334,8 @@ def check_consult_requirements() -> bool:
 CONSULT_SCHEMA = {
     "name": "consult",
     "description": (
-        "Get a second opinion from a smarter/more capable reference model "
-        "before committing to a risky or uncertain decision. Use it to "
+        "Get a second opinion before a risky or uncertain call. "
+        "Asks a smarter/more capable reference model to "
         "sanity-check your own reasoning, review a plan or diff for "
         "structural issues you might be tunnel-visioned past, or ask a "
         "pointed question you're not fully confident about. NOT for routine "

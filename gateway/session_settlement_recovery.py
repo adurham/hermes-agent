@@ -79,8 +79,13 @@ def completion_payload(row, settled, response, captured):
         if captured_result.get('response_transformed'):
             complete['response_transformed'] = True
         # The stream carried the raw reply and the turn counts as delivered (``response`` is
-        # None): this frame is the only carrier of the rewrite the session stored.
-        if not response and (final := captured_result.get('final_response')):
+        # None): this frame is the only carrier of the rewrite the session stored — and of any
+        # reply that replaced the final message's streamed content (the fork's turn-contract
+        # close). A plain streamed turn carries NOTHING here: the stream WAS the delivery, so a
+        # text field would make the viewer paint the reply twice (upstream's guarantee).
+        if (not response
+                and (captured_result.get('response_transformed') or captured_result.get('final_content_replaced'))
+                and (final := captured_result.get('final_response'))):
             complete['text'] = complete['content'] = final
         # The reply replaced the final message's streamed content (turn-contract close): the
         # viewer settles its streamed draft bubble onto this text, never paints both.

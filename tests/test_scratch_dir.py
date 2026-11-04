@@ -169,7 +169,7 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
     assert not idle.exists() and live.exists() and fresh.exists()
 
 
-def test_prune_once_retries_after_hour_when_first_attempt_was_deferred(tmp_path, monkeypatch):
+def test_prune_once_retries_after_hour_when_first_attempt_was_deferred(tmp_path, monkeypatch, scratch_prune_spawns):
     """A long-lived process whose first prune is deferred by a fresh `.last_prune` stamp must
     still prune once the hour passes. The old once-per-process flag was burned *before* the
     stamp check, so a process deferred on its first call never pruned again for its lifetime
@@ -192,16 +192,20 @@ def test_prune_once_retries_after_hour_when_first_attempt_was_deferred(tmp_path,
     stamp = scratch / hermes_constants._SCRATCH_PRUNE_STAMP
     stamp.touch()  # fresh stamp: another process pruned less than an hour ago
 
+    monkeypatch.setattr(hermes_constants, "_scratch_pruned_once", False)  # this process may prune
     hermes_constants._prune_scratch_dir_once(scratch)
-    assert stale.exists()  # deferred by the fresh stamp — old and new code both defer here
+    assert scratch_prune_spawns == []  # deferred by the fresh stamp — no pass, and no hour burned
+    assert stale.exists()
 
-    # The hour passes: this process's last attempt is stale and so is the shared stamp.
-    hermes_constants._scratch_prune_last_attempt -= 7200
+    # The hour passes: this process's throttle entry is stale and so is the shared stamp.
+    hermes_constants._scratch_prune_by_dir.clear()
     long_ago = time.time() - 7200
     os.utime(stamp, (long_ago, long_ago))
 
     hermes_constants._prune_scratch_dir_once(scratch)
-    assert not stale.exists()  # must prune now, not never
+    # The pass is a detached child (stubbed to a recorder here): the contract is that it is
+    # STARTED now, not that this call waits for the rmtree.
+    assert scratch_prune_spawns == [scratch], "must prune now, not never"
 
 
 @pytest.mark.platforms("posix")  # DirEntry.stat() reports st_nlink only on POSIX
