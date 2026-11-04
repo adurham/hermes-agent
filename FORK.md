@@ -45,7 +45,12 @@ back."
   FORK.md entry): `ClaudeOAuthDirectSDKProfile.fetch_account_usage` now reads
   `CLAUDE_SUBSCRIPTION_DIRECTSDK_OAUTH_TOKEN` — deliberately NOT the pooled `CLAUDE_CODE_OAUTH_TOKEN`,
   which may be a different account — and returns the 5h/weekly windows, honouring a 429 `retry-after`
-  with a module-wide cooldown (the endpoint throttles hard; a 2-minute refresh cadence would 429).
+  and a 401/403 scope refusal with a long cooldown (the endpoint throttles hard). Live probe of that
+  endpoint with the plugin's own token: 429 during the rate-limit window, then
+  `403 permission_error: OAuth token does not meet scope requirement user:profile` — a
+  `claude setup-token` credential is inference-only. So for THIS account no Claude gauge can be read
+  yet; the statusbar hides the plan item rather than lying, and the hook is the seam a
+  profile-scoped credential (an interactive `claude auth login`) would feed.
 
 **Tests.** `tests/gateway/test_local_viewer_usage.py`: `test_a_manual_switch_shows_the_new_providers_own_windows`
 (the reported scenario: spent Nous plan, Claude gauge, no route), `test_a_fallback_keeps_the_primaries_allowance_and_names_it`
@@ -53,10 +58,10 @@ back."
 chat's route; a spent plan is not evidence of a swap). Desktop: `plan-gauge.test.ts` (two owners in one
 scope, provider selection, legacy/unknown-provider fallbacks) and the statusbar test "shows the focused
 session's own plan after a manual switch". Plugin: `tests/test_usage.py` (window parsing, 429 cooldown,
-no token → no request).
+403 scope rest, no token → no request).
 
-**Verified.** `pytest tests/gateway/test_local_viewer_usage.py` 19/19; `vitest run --project ui`,
-`tsc -p . --noEmit`, and eslint on the changed desktop files; plugin `tests/test_usage.py` 3/3. Fail-before
+**Verified.** `pytest tests/gateway/test_local_viewer_usage.py` 20/20; `vitest run --project ui`,
+`tsc -p . --noEmit`, and eslint on the changed desktop files; plugin `tests/test_usage.py` 4/4. Fail-before
 proved on a clean `HEAD` worktree: 4 of the gateway tests fail there (including the manual-switch case),
 pass on the fix.
 
