@@ -64,6 +64,7 @@ _CANDIDATE_QUARANTINE_TTL: dict[str, Optional[float]] = {
     "rate limit": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "connection error": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "invalid provider response": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+    "provider unavailable": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
 }
 
 
