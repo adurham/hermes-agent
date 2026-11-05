@@ -25,6 +25,7 @@ import logging
 import os
 import platform
 import subprocess
+import time
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,40 @@ def is_on_battery() -> Optional[bool]:
 
 def _run_taskpolicy(argv: list) -> int:
     return subprocess.run(argv, capture_output=True, timeout=5).returncode
+
+
+#: How long a probe answer stays fresh when it is only feeding per-job spawns.
+_PROBE_TTL_SEC = 30.0
+_probe_cache: dict = {"at": 0.0, "value": None}
+
+
+def on_battery_cached(probe: Optional[Probe] = None, ttl: float = _PROBE_TTL_SEC) -> Optional[bool]:
+    """``is_on_battery`` behind a short TTL: a background-job spawn should not
+    pay for a `pmset` call every time, and 30 s of staleness cannot mislabel a
+    job that runs for minutes."""
+    now = time.monotonic()
+    if now - _probe_cache["at"] < ttl:
+        return _probe_cache["value"]
+    value = (probe or is_on_battery)()
+    _probe_cache["at"] = now
+    _probe_cache["value"] = value
+    return value
+
+
+def battery_prefix(probe: Optional[Probe] = None) -> list:
+    """argv prefix that starts a child under the background policy on battery.
+
+    For work nobody is waiting on — background terminal jobs, long builds — the
+    6.1x throughput cost buys a third less energy per unit of work. Foreground
+    tool calls stay at full speed. Empty (so callers can splice unconditionally)
+    off macOS and on AC.
+    """
+    if platform.system() != "Darwin":
+        return []
+    if on_battery_cached(probe) is not True:
+        return []
+    return [TASKPOLICY, "-b"]
+
 
 
 def taskpolicy_argv(on_battery: bool, pid: Optional[int] = None) -> list:
