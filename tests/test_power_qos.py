@@ -149,3 +149,42 @@ def test_maybe_enable_applies_when_opted_in(monkeypatch):
         is True
     )
     assert called and "-b" in called[0]
+
+
+def _clear_probe_cache():
+    power_qos._probe_cache.update({"at": 0.0, "value": None})
+
+
+def test_battery_prefix_only_on_battery(monkeypatch):
+    monkeypatch.setattr(power_qos.platform, "system", lambda: "Darwin")
+
+    _clear_probe_cache()
+    assert power_qos.battery_prefix(probe=lambda: True) == ["/usr/bin/taskpolicy", "-b"]
+
+    _clear_probe_cache()
+    assert power_qos.battery_prefix(probe=lambda: False) == []
+
+    _clear_probe_cache()
+    assert power_qos.battery_prefix(probe=lambda: None) == []
+
+
+def test_battery_prefix_is_a_noop_off_macos(monkeypatch):
+    monkeypatch.setattr(power_qos.platform, "system", lambda: "Linux")
+    _clear_probe_cache()
+    assert power_qos.battery_prefix(probe=lambda: True) == []
+
+
+def test_cached_probe_honours_its_ttl():
+    calls = []
+
+    def probe():
+        calls.append(1)
+        return True
+
+    _clear_probe_cache()
+    power_qos.on_battery_cached(probe, ttl=60)
+    power_qos.on_battery_cached(probe, ttl=60)
+    assert len(calls) == 1
+
+    power_qos.on_battery_cached(probe, ttl=0)
+    assert len(calls) == 2

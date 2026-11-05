@@ -32,6 +32,25 @@
   }
 }
 
+/* Battery gate: settle decorative loops after one pass.
+   An `infinite` animation is a composite at the panel's refresh rate for as
+   long as it runs, whether or not anything is happening — on a 120 Hz panel
+   that is 120 passes a second of pure decoration, and it keeps ProMotion from
+   idling down. On battery (root attribute mirrors the main process's
+   powerMonitor) those loops stop. Indicators that mean "work is in flight"
+   opt back in: a frozen spinner reads as a hung app. */
+html[data-on-battery='true'] *,
+html[data-on-battery='true'] *::before,
+html[data-on-battery='true'] *::after {
+  animation-iteration-count: 1 !important;
+}
+
+html[data-on-battery='true'] .glyph-spinner__strip,
+html[data-on-battery='true'] .decode-cursor-blink,
+html[data-on-battery='true'] .progress-slide {
+  animation-iteration-count: infinite !important;
+}
+
 /* Blanket reduced-transparency gate: turn the CSS backdrop-filter frost OFF
    everywhere when the OS accessibility signal asks for it (macOS: System
    Settings → Accessibility → Display → Reduce transparency; Windows 11
