@@ -104,9 +104,17 @@ Full inventory of everything the fork carries that upstream does not, measured a
 fork's signature features (warm-tier memory + extraction, delegation personas/routing, cross-session
 messaging, turn-close contract, consult, provider adapters, behavioural guards) — so a de-fork round
 is not a deletion round. All 64 fork-added Python modules have live referrers. The only retired
-implementations are the six upstream-first reversals recorded above. Remaining removable weight is
-scaffolding: five `apps/desktop/scripts/diag-scroll-*.mjs` probes, `scroll-harness.{html,tsx}`, the
-two root-level audit artifacts and `scripts/hermes_token_check.py` (manual diagnostic only).
+implementations are the six upstream-first reversals recorded above.
+
+Acted on the review the same day: `agent/promise_gate.py` deleted (its own branch proved it inert —
+`_promise_kind = None if _contract`, and `turn_contract` is true everywhere), and 27 files of
+investigation scaffolding removed (16 `apps/desktop/scripts/diag-*.mjs`, `scroll-harness.{html,tsx}`,
+`FORK_md_audit_2026_08_18.md`, `apps/desktop/GAPS.md`, `scripts/hermes_token_check.py` + test,
+`.merge-v0.22.5.log`). Two review conclusions were corrected against the code: the warm-tier tool
+surface is ALREADY withdrawn when `memory.provider` is set (`_withdraw_warm_tool_surface`), so only
+the extraction/conflict pipeline is load-bearing; and upstream's "personas" are prompt-overlay
+personalities, not the fork's `delegation.model_by_role` routing. Upstreaming is off the table
+(owner, 2026-11-05) — divergence is permanent, so the goal is a small, locally-tested fork.
 
 ### 2026-11-05 (sync close-out) — v0.23.0 landed on `main`, and the ledger behind it
 
