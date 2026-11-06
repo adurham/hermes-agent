@@ -370,6 +370,8 @@ export function useSessionStateCache({
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
       // churning `$messages` and jerking the scroll position while reading.
+      // A sealed interim is also a completed reply: auto-speak must receive it
+      // while tools continue, without requiring per-token paint in a hidden window.
       //
       // A session SWITCH is a third case, distinct from a same-session
       // heartbeat: `viewSessionIdRef` names whichever session's transcript is
@@ -384,7 +386,11 @@ export function useSessionStateCache({
       // session that's already on screen should get the scroll-jank-avoiding
       // RAF coalescing.
       const isSessionSwitch = sessionId !== viewSessionIdRef.current
-      const isCriticalTransition = !viewState.busy || viewState.needsInput || isSessionSwitch
+      const isCriticalTransition =
+        !viewState.busy ||
+        viewState.needsInput ||
+        isSessionSwitch ||
+        (viewState.interimBoundaryPending && !viewState.streamId)
 
       if (isCriticalTransition) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
