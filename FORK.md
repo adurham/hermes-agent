@@ -97,6 +97,17 @@ checkpoint helper routes upstream's `_run_git(_stage_all_args(...))` through `_a
    `tests/gateway/test_feishu_sdk_name_binding.py` ties the spelled-out initialisers to
    `_LARK_SDK_IMPORTS` so the next upstream addition cannot drift again.
 
+### Fork divergence review — 2026-11-05
+
+Full inventory of everything the fork carries that upstream does not, measured against `v0.23.0`:
+`docs/fork-review-2026-11-05.md`. Headline: upstream v0.23.0 has **no equivalent** for any of the
+fork's signature features (warm-tier memory + extraction, delegation personas/routing, cross-session
+messaging, turn-close contract, consult, provider adapters, behavioural guards) — so a de-fork round
+is not a deletion round. All 64 fork-added Python modules have live referrers. The only retired
+implementations are the six upstream-first reversals recorded above. Remaining removable weight is
+scaffolding: five `apps/desktop/scripts/diag-scroll-*.mjs` probes, `scroll-harness.{html,tsx}`, the
+two root-level audit artifacts and `scripts/hermes_token_check.py` (manual diagnostic only).
+
 ### 2026-11-05 (sync close-out) — v0.23.0 landed on `main`, and the ledger behind it
 
 **Landed.** `sync/upstream-v0.23.0` fast-forwarded onto `main` and pushed (`925b5c2444d`; `v0.23.0` is
