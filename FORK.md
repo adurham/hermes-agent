@@ -60,9 +60,13 @@ an obvious owner, and the two generated artifacts were re-rendered instead of ha
   fork's lifecycle wrapper; the fork's local latch body (dead after the swap) delegates instead.
 - **cli.py:** upstream's new `CLIBacktrackMixin` added to the bases, the fork's attention-notifier
   reaper kept. **tests.yml:** upstream's 3-slice split with the fork's fork-repo `if:` guard.
-- **feishu adapter:** upstream's import block (adds `PatchMessageRequest*`).
-- **config_defaults / web_server_config:** fork slots kept (`pet_dialogue`, `reasoning_effort_by_role`,
-  and the canonical aux-task list, a strict superset of upstream's).
+- **feishu adapter:** upstream's import block, and the two names it adds ARE bound at module level —
+  see the defect below; the fork spells the `None` initialisers out where upstream uses
+  `globals().update(...)`, so a bare import-block merge leaves the new names unbound.
+- **config_defaults / web_server_config:** fork slots kept (`pet_dialogue`, `reasoning_effort_by_role`),
+  but the fork's aux-task lists **dropped `web_extract` and `skills_hub`**: upstream retired both aux
+  blocks in v0.23.0 and the config comment says leftovers are ignored, so the dashboard was rendering
+  three slots that route nothing. Same edit in `agent/auxiliary_client.py` and `hermes_cli/config.py`.
 - **Generated:** `gateway-contract.openrpc.json` + `gateway-contract.generated.ts` re-rendered with
   `scripts/gen_gateway_contracts.py` (the fork's `InflightTool` schema survives), the command-parity
   doc with `scripts/gen_gateway_command_parity.py` (106 → 105 registry commands: one retired).
@@ -73,6 +77,19 @@ F811/F821/F601 3-tree diff 0 findings new in merged; import resolver 0 new (py) 
 (ts); `fork_symbol_sweep` 37 fork-only defs checked, both prod refs false positives (an XML element
 name and a local variable); `fork_line_sweep` 9 flagged rows, every one accounted for (7 the
 deliberate adoptions above, 2 generated files). Desktop `tsc --build` clean for both projects.
+
+**Two defects the merge introduced silently — found by running the tags, not by reading the diff.**
+1. **Five `streamThrottle.register(win)` call sites stayed deleted.** Adopting upstream's dial is only
+   half of it: the fork's `7c61589695e` had also removed the registrations from `main.ts` (secondary,
+   browser, instance, HUD, primary). Upstream never touched those exact lines, so git auto-merged the
+   deletion and nothing pointed at it — the dial had no windows. Restored at all five factories; tsc
+   does not catch this class (the method exists, it is simply never called).
+2. **feishu: `AttributeError: PatchMessageRequestBody`.** Upstream's new
+   `test_feishu_clarify_choice_cards.py` exercises the retire path; the module-level initialiser line
+   did not carry the two new names, so the no-SDK import path raised. Fixed, plus
+   `tests/gateway/test_feishu_sdk_name_binding.py` ties the spelled-out initialisers to
+   `_LARK_SDK_IMPORTS` so the next upstream addition cannot drift again.
+
 ### 2026-11-04 (desktop status bar + gateway usage) — a manually switched chat kept showing Nous's spent plan
 
 **Symptom.** The owner, after starting a chat on Nous, hitting the plan's 100% week, and switching the
