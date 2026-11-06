@@ -6681,7 +6681,7 @@ _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 # "anthropic" — so the presence of any of these at the top level unambiguously
 # marks a task-first config. Kept in sync with DEFAULT_CONFIG["auxiliary"].
 _BUILTIN_AUX_TASK_KEYS = frozenset({
-    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "vision", "compression", "approval", "mcp",
     "title_generation", "tts_audio_tags", "triage_specifier",
     "kanban_decomposer", "profile_describer", "curator", "monitor",
     "session_search", "memory_extraction", "delegation_router",
