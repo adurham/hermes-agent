@@ -14147,7 +14147,7 @@ conflict here keep the provenance-only gate (no `mcp_` prefix check) — re-addi
 upstream's prefix match would re-break fork MCP parallelism.
 
 
-### Fork-only fix — 2026-06-10 (provider-aware web search: native on Claude) — **DORMANT under the live config (2026-11-05): every auxiliary task resolves to ollama-cloud or claude-subscription, never to an Anthropic *aux* path (`hermes doctor` aux matrix: 20/20 resolve, 0 issues). Kept because the same code also guards the main Claude adapter; do not delete without checking that path.**
+### Fork-only fix — 2026-06-10 (provider-aware web search: native on Claude) — **REMOVED 2026-09-25** (Slice C). The plugin and its wire-shape injection are gone; only a comment in `agent/side_question_request.py` still mentions `web_search_20250305`. Nothing left to maintain.
 
 The CLI kept emitting **"Web search isn't configured"** on a plain Anthropic
 setup with no third-party search key. Root cause was a half-built capability,
@@ -14336,7 +14336,7 @@ without `auxiliary.<task>.provider: exo` in `config.yaml`, so upstream users
 who never set it see no change.
 
 
-### Fork-only fix — 2026-06-21 (Anthropic aux 401 fix + provider-matched sonnet-4-6) — **DORMANT under the live config (2026-11-05): every auxiliary task resolves to ollama-cloud or claude-subscription, never to an Anthropic *aux* path (`hermes doctor` aux matrix: 20/20 resolve, 0 issues). Kept because the same code also guards the main Claude adapter; do not delete without checking that path.**
+### Fork-only fix — 2026-06-21 (Anthropic aux 401 fix + provider-matched sonnet-4-6) — **LIVE, not dormant (corrected 2026-11-05)**: the placeholder-key guard in `agent/auxiliary_client.py::_try_anthropic` is what makes an exo→Anthropic switch work, and exo is a configured provider (`providers.exo`, base_url to the Mac studio). Removing it reintroduces the guaranteed 401.
 
 **Status (2026-10-09 de-fork pass): PARTIAL — part 5 (`caller_model`) HISTORICAL — upstream independently stopped pre-filling `provider="auto"` calls from the main model (`resolve_provider_client`: `if not model and provider != "auto"`), and the fork's `caller_model` code is already gone. The merge note below that says "keep all three … `caller_model` capture" is obsolete: on conflict, keep only edits (1) and (2). Parts 1–4 stay live: the `_try_anthropic` placeholder-key guard still reproduces upstream, and the sonnet aux routing is now `claude-sonnet-5` via `_ANTHROPIC_DEFAULT_AUX_MODEL`. Kept for history.**
 
@@ -14735,7 +14735,7 @@ always injects them); positive markers are a `defaults` key or a known
 provider-id key only.
 
 
-### Fork-only fix — 2026-06-22 (Anthropic aux 400: Haiku request carries Sonnet-only context-1m beta) — **DORMANT under the live config (2026-11-05): every auxiliary task resolves to ollama-cloud or claude-subscription, never to an Anthropic *aux* path (`hermes doctor` aux matrix: 20/20 resolve, 0 issues). Kept because the same code also guards the main Claude adapter; do not delete without checking that path.**
+### Fork-only fix — 2026-06-22 (Anthropic aux 400: Haiku request carries Sonnet-only context-1m beta) — **LIVE in the main path, not dormant (corrected 2026-11-05)**: upstream now owns the mechanism (`_common_betas_for_base_url(..., drop_context_1m_beta=)`), and the fork's remaining piece is the `agent._oauth_1m_beta_disabled` latch, which `agent/turn_recovery.py` sets on a real 400 for ordinary Claude calls. Deleting it removes the recovery, not an aux nicety.
 
 **Symptom:** With the `fallback_model`→Haiku change live, the first aux task to
 fire (title generation) failed with `HTTP 400: The long context beta is not yet
@@ -14789,7 +14789,7 @@ signature + its anthropic `step1_model` branch, `_try_anthropic` signature + its
 `resolve_provider_client`. With all three None, behavior is identical to before.
 
 
-### Fork-only fix — 2026-06-22 (auto aux + cheap pin gets main-model fallback on single-provider setups) — **DORMANT under the live config (2026-11-05): every auxiliary task resolves to ollama-cloud or claude-subscription, never to an Anthropic *aux* path (`hermes doctor` aux matrix: 20/20 resolve, 0 issues). Kept because the same code also guards the main Claude adapter; do not delete without checking that path.**
+### Fork-only fix — 2026-06-22 (auto aux + cheap pin gets main-model fallback on single-provider setups) — **REMOVED 2026-11-05**: the 13-line FORK block in `call_llm`'s `is_auto` branch is deleted. Every auxiliary task in the live config carries a configured fallback chain (`fallback: nous` or a provider pin), so the block could never fire; the upstream `elif` branch still calls `_try_main_agent_model_fallback`.
 
 **Symptom:** On an Anthropic-only setup (Max subscription, no third-party aux
 keys), once cheap per-task models are pinned (`fallback_model`→Haiku for

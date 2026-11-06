@@ -428,11 +428,11 @@ memory provider) is the real test for dead weight.
 | Git / checkpoint | 5 | **CONSOLIDATE** | merge-defect restores become one assertion each; the 2026-11-05 unreadable-path fix stays (verify it logs the skipped path) |
 | Other | 62 | **RE-TRIAGE** | not a cluster: test-order leaks → shared fixtures; merge restores → drift guards; approval-timeout and cost accounting stay (kanban workers and spend numbers depend on them) |
 
-**Concretely obsolete or dormant under this config** (safe to leave unmaintained, drop only with a test):
+**Cleaned up / reclassified 2026-11-05:**
 
-- the Anthropic-aux Haiku `context-1m` 400 fix and the Sonnet-4-6 aux pinning — aux never runs on Anthropic here;
-- the single-provider "cheap pin falls back to the main model" fix — every aux task has an explicit provider;
-- the native-Claude web-search swap, unless a reviewer role actually searches (it does not today).
+- **removed** — the single-provider "cheap pin falls back to the main model" block in `call_llm`'s `is_auto` branch (13 lines) and its test (42 lines). No aux task in this config can reach it: every one has a configured fallback chain.
+- **already gone** — the native-Claude web-search swap (retired in Slice C, 2026-09-25); only a comment remains.
+- **kept, reclassified as live** — the Anthropic aux 401 placeholder-key guard (protects the exo→Anthropic switch; `providers.exo` is configured) and the Haiku `context-1m` fix (upstream owns the mechanism; the fork's latch is set by `turn_recovery` on a real 400 for ordinary Claude calls).
 
 **Never drop without a replacement test:** the three gateway/turn fixes (hard stop destroying an
 accepted correction, queued row deleted before send, completion landing on the running turn), the
@@ -457,7 +457,7 @@ asked for already exists; where it did, the evidence is named so nobody re-does 
 | Tools/skills: check upstream for a loop guardrail first | **checked — different mechanism** | upstream's `gateway/bot_loop_guard.py` is a bot-to-bot hop cap (`bot_loop_guard.max_hops`), not a tool-call loop guard; the fork's stays |
 | Gateway/turns: audit the 16 fixes against the promise_gate deletion | **audited — no dependency** | `promise_gate` was imported only by `agent/turn_final_response.py`; none of the turn/queue fixes touch it |
 | Sessions/subagents: keep, they are lane-worker load-bearing | **kept, covered** | `tests/tools/test_agent_messaging_contract.py`, `test_agent_messaging_send_dispatch.py`, `test_delegate.py` |
-| Models: drop the dormant Anthropic-aux subset | **marked dormant, not deleted** | 4 entries annotated **DORMANT** in `FORK.md`; the same code also guards the main Claude adapter, so deletion needs a path check first |
+| Models: drop the dormant Anthropic-aux subset | **cleaned up 2026-11-05** | The single-provider main-model fallback is gone (13-line FORK block + its 42-line test). The other three were NOT dormant on inspection: the placeholder-key guard protects the exo→Anthropic switch (exo is configured), and the `_oauth_1m_beta_disabled` latch is set by `turn_recovery` for ordinary Claude calls. The web-search swap was already deleted in Slice C. All four entries in `FORK.md` now say which it is |
 | Memory: likely drop | **rejected on reachability** | the staged confirm is `write_approval.MEMORY` (hot-tier writes) and runs on every memory edit |
 | Other: re-triage the 62 | **rule adopted, not a sweep** | merge-defect restores get a drift-guard test only the **second** time the same restore is needed; first-time restores stay as-is (a guard per restore would cost more than the restore) |
 

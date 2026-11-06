@@ -8684,19 +8684,6 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
                 failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
-        # FORK: current main agent model, last-resort safety net for auto tasks.
-        # Upstream's _try_main_fallback_chain reads the CONFIGURED
-        # fallback_providers/fallback_model chain and SKIPS the main provider —
-        # so on a single-provider setup (e.g. Anthropic-only, no configured
-        # fallbacks) with a cheap per-task model pin (fallback_model→Haiku), a
-        # rate-limited Haiku call would get NO fallback at all. Re-try the
-        # CURRENT main model (e.g. Opus) on the same provider/creds. Guard the
-        # degenerate same-model case so we don't pointlessly re-hit the same
-        # rate-limited backend.
-        if fb_client is None and (route.final_model or "") != (_read_main_model() or ""):
-            fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
-                failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
     elif fb_client is None and not explicit_auth_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
