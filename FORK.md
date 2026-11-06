@@ -4,6 +4,30 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-11-05 (checkpoint) — one unreadable path aborted the whole snapshot
+
+**Symptom.** A project holding a root-owned `0600` file (or a directory this user cannot search)
+got no checkpoints at all: `git add -A` exits 128 with `fatal: adding files failed` and stages
+nothing, and the checkpoint note stayed silent about it.
+
+**Cause.** `CheckpointManager.ensure_checkpoint` staged with a bare `git add -A` (through the
+per-project index), so git's first permission-denied path aborted the whole add.
+
+**Fix.** `_add_all()` retries the add with `:(exclude,literal)<path>` pathspecs built from git's own
+diagnostics — only permission-denied shapes (`error: open("…"): Permission denied`,
+`warning: could not open directory '…': Permission denied`, `unable to stat '…': Permission denied`)
+are treated as skippable, so disk-full, `index.lock` and corrupt-store failures still fail the
+snapshot instead of being swallowed. The skipped paths are then dropped from the index (a stale
+entry would be checked out over a path that cannot be written) and listed in the checkpoint note.
+The retry is bounded (`_MAX_STAGE_ROUNDS`) and stops as soon as git reports no NEW path. Both the
+size-cap preflight and the plain stage go through the one helper; `_stage_all_args` stays the single
+source of the store self-exclusion, which is the seam upstream's
+`test_snapshot_repairs_a_store_staged_before_the_fix` monkeypatches.
+
+**Verification.** `tests/tools/test_checkpoint_unreadable_paths.py` +
+`test_checkpoint_store_self_exclusion.py` 20 passed; the whole `-k checkpoint` slice 190 passed,
+8 skipped (amd-workstation, v0.23.0 tree).
+
 ### 2026-11-05 (upstream sync) — v0.23.0 merged
 
 **Range.** `v0.22.7..v0.23.0` (v0.23.0 = `2bd378ed1b8`): 777 first-parent / 808 total commits, 1,223

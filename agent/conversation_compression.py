@@ -4258,23 +4258,6 @@ def compress_context(
                 commit_fence.finish_commit()
 
 
-def _ensure_compression_feasibility(agent: Any, lifecycle) -> None:
-    """Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
-    ``_compression_warning`` so status replay still surfaces the warning. Marked checked only
-    after the probe completes (transient failures are swallowed inside). A hard rejection
-    propagates; retire the announced phase first so the client is not left compacting.
-
-    Phase extracted from ``compress_context`` for the CC budget (v0.21.7 close-out). The
-    route-aware latch itself lives in ``conversation_compression_feasibility`` (upstream
-    v0.23.0): it re-probes when the compression route moved since the recorded probe.
-    """
-    try:
-        lazy_compression_feasibility_check(agent)
-    except Exception:
-        lifecycle.complete(force_terminal=True)
-        raise
-
-
 # 4 MB leaves headroom under Anthropic's 5 MB; shrinking loses quality but only
 # runs after a confirmed provider rejection, so the alternative is failure.
 _IMAGE_SHRINK_TARGET_BYTES = 4 * 1024 * 1024
