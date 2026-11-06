@@ -451,14 +451,16 @@ def _stage_all(
 
     Returns ``(ok, skipped_paths, stderr)``.
     """
-    return _add_all_excluding(
+    return _add_all(
         store, working_dir, index_file,
-        [f":(exclude,top,literal){p}" for p in _store_pathspecs(store.parent, working_dir)],
+        base_args=_stage_all_args(store.parent, working_dir),
     )
 
 
-def _add_all_excluding(
-    store: Path, working_dir: str, index_file: Path, base_excludes: list[str],
+def _add_all(
+    store: Path, working_dir: str, index_file: Path,
+    base_args: Optional[list[str]] = None,
+    file_excludes: Optional[list[str]] = None,
 ) -> tuple[bool, list[str], str]:
     """``git add -A`` into ``index_file``, skipping unreadable paths.
 
@@ -470,11 +472,13 @@ def _add_all_excluding(
     still staged. Any other failure — index lock, corrupt store, disk full —
     names no unreadable path and is still returned as a failure.
 
-    ``base_excludes`` are exclude pathspecs that must ride along (the store
-    itself, paths already over the size cap).
+    Exactly one arg shape is used: ``base_args`` (the command line, which may
+    already carry ``:(exclude)`` pathspecs) or ``file_excludes`` (too many
+    pathspecs for the command line — git refuses a file form beside them).
 
     Returns ``(ok, skipped_paths, stderr)``.
     """
+    assert (base_args is None) != (file_excludes is None)
     skipped: list[str] = []
     ok, err = False, ""
     # Diagnostics are parsed, so pin them to the untranslated C locale.
@@ -484,14 +488,14 @@ def _add_all_excluding(
         # Each retry can only add paths, and git reports every unreadable
         # path it met in one pass, so this terminates in a couple of rounds.
         for _ in range(_MAX_STAGE_ROUNDS):
-            excludes = list(base_excludes) + [f":(exclude,literal){p}" for p in skipped]
-            if excludes:
-                spec_file.write_bytes(
-                    b"".join(os.fsencode(s) + b"\0" for s in [".", *excludes])
-                )
-                args = ["add", "-A", f"--pathspec-from-file={spec_file}", "--pathspec-file-nul"]
+            skip_excludes = [f":(exclude,literal){p}" for p in skipped]
+            if base_args is not None:
+                args = [*base_args, *skip_excludes]
             else:
-                args = ["add", "-A"]
+                spec_file.write_bytes(b"".join(
+                    os.fsencode(s) + b"\0" for s in [".", *file_excludes, *skip_excludes]
+                ))
+                args = ["add", "-A", f"--pathspec-from-file={spec_file}", "--pathspec-file-nul"]
             ok, _, err = _run_git(
                 args, store, working_dir,
                 timeout=_GIT_TIMEOUT * 2, index_file=index_file,
@@ -1855,19 +1859,30 @@ class CheckpointManager:
     ) -> tuple[bool, list[str], str]:
         """Stage the worktree without opening files already over the size cap.
 
-        The store self-exclusion and the oversize paths both ride as exclude
-        pathspecs through ``_add_all_excluding``, which also drops paths this
-        user cannot read so one of them cannot abort the whole snapshot.
+        No oversize paths: upstream's own ``_stage_all_args`` (its store
+        self-exclusion stays one function). Oversize paths: they ride as a
+        pathspec file, since git refuses a file form beside command-line
+        pathspecs. Either shape still drops paths this user cannot read, so one
+        of them cannot abort the whole snapshot.
         """
-        excludes = [
-            f":(exclude,top,literal){p}" for p in _store_pathspecs(store.parent, working_dir)
-        ]
+        oversize: list[str] = []
         if self.max_file_size_mb > 0:
-            oversize = self._oversize_paths_for_staging(store, working_dir, index_file)
-            if oversize is None:
-                return False, "oversize preflight failed"
-            excludes = [f":(exclude,top,literal){rel}" for rel in oversize] + excludes
-        return _add_all_excluding(store, working_dir, index_file, excludes)
+            found = self._oversize_paths_for_staging(store, working_dir, index_file)
+            if found is None:
+                return False, [], "oversize preflight failed"
+            oversize = found
+        if not oversize:
+            return _add_all(
+                store, working_dir, index_file,
+                base_args=_stage_all_args(store.parent, working_dir),
+            )
+        return _add_all(
+            store, working_dir, index_file,
+            file_excludes=[
+                f":(exclude,top,literal){rel}"
+                for rel in [*oversize, *_store_pathspecs(store.parent, working_dir)]
+            ],
+        )
 
     def _oversize_paths_for_staging(
         self, store: Path, working_dir: str, index_file: Path,
