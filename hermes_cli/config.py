@@ -1416,7 +1416,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
 # ``agent.auxiliary_client._BUILTIN_AUX_TASK_KEYS`` — kept local to avoid a
 # config→agent import cycle.
 _AUX_TASK_FIRST_KEYS = frozenset({
-    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "vision", "compression", "approval", "mcp",
     "title_generation", "tts_audio_tags", "triage_specifier",
     "kanban_decomposer", "profile_describer", "curator", "monitor",
     "session_search", "memory_extraction", "delegation_router",

@@ -652,7 +652,7 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
 # ordering in the UI. Keeping only a subset is a UI-only blind spot: ``hermes config set``
 # routes every task while the dashboard silently cannot show or edit the missing ones.
 _AUX_TASK_SLOTS: tuple[str, ...] = (
-    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "vision", "compression", "approval", "mcp",
     "title_generation", "tts_audio_tags", "review", "voice_chat", "triage_specifier",
     "kanban_decomposer", "profile_describer", "curator", "monitor", "session_search",
     "memory_extraction", "delegation_router", "background_review", "consult",
