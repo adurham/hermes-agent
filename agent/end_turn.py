@@ -2,8 +2,9 @@
 
 deepseek-v4.1-flash ends turns by *announcing* work instead of doing it — "I'm dispatching
 it now: take the compat table, rank the rest…" with no tool call, admitting on the next turn
-that nothing was dispatched. Two generations of prose detectors were built for that
-(``agent/promise_gate.py``): the first could never fire, the second required a whitelisted
+that nothing was dispatched. Three generations of prose detectors were built for that
+(the last one, ``agent/promise_gate.py``, retired 2026-11-05): the first could never fire,
+the second required a whitelisted
 verb, the third matched grammar. Measured over three days of transcripts the third would
 judge ~45 replies a day at roughly 50% precision, against 3 real firings in two days under
 the previous one. Text classification of a model's own prose is a losing game: the producer
