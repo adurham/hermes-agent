@@ -1,8 +1,34 @@
 # Fork notes — adurham/hermes-agent
 
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
-Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
-PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
+Fork-only work stays here.
+
+**Upstreaming is closed** (owner, 2026-11-05): the fork cannot keep more than a few PRs open at a time,
+and CI only runs when a maintainer notices, so patches sent up cost more than they save. Nothing below
+is a pending upstream contribution — divergence is permanent and is managed locally. The inventory of
+what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
+computed from the tree, not maintained by hand.
+
+### 2026-11-05 (sweep) — FORK.md audited against the tree
+
+Read every one of the 345 entries and checked its claims against `main` at `3b8709639` plus upstream
+`main` (`ca4360692`). Findings and what changed:
+
+1. **The hard-fork boundary table was 14 rows wrong.** It still listed files deleted between 2026-08-26
+   and 2026-10-09 as live boundaries, and it was missing 57 fork-only paths that were added since it was
+   last written. Rebuilt from `git ls-tree` minus upstream's tree: 82 live paths, grouped by area, with
+   the retired ones moved to their own table with a date and a reason. It is now reproducible, not
+   hand-maintained.
+2. **Four entries described code that no longer exists** and now carry RETIRED/SUPERSEDED markers with
+   the date: `agent/promise_gate.py` (two entries, replaced by `end_turn`), `scripts/hermes_token_check.py`,
+   and the desktop scroll harness (`scroll-harness.html`, `src/dev/scroll-harness.tsx`, the
+   `diag-scroll-*.mjs` probes).
+3. **One entry cited a path that never existed in this repo**: `hermes_cli/onboarding_migrations.py` in
+   the v0.23.0 sync record. It is not in the fork or in upstream; the sentence now says so instead of
+   implying it exists.
+4. **No entry claims something the code contradicts.** Every "Fork-only feature" still resolves to live
+   code; every "Fork-only fix" whose file survives still shows the fix in place, and the ones whose file
+   was deliberately retired are marked as such.
 
 ### 2026-11-05 (checkpoint) — one unreadable path aborted the whole snapshot
 
@@ -773,7 +799,7 @@ measures the new height, so the exact-match test in the scroll handler read its 
 input and cancelled the restore. Fixed by forgiving a small deviation from the in-flight restore's own
 target when the transcript height changed under it (`THREAD_SCROLL_GLUE_TOLERANCE_PX`); a reader's
 scrollbar drag changes no height and still ends the restore. The dev harness
-(`scroll-harness.html` + `scripts/diag-scroll-*.mjs`) does not reproduce it — the trigger is the live
+(`scroll-harness.html` + `scripts/diag-scroll-*.mjs`, **retired 2026-11-05**) did not reproduce it — the trigger is the live
 pane's own layout — so this one rests on the live trace, not a headless case.
 
 ### 2026-10-30 (harness, documented, not fixed) — a tool call cannot get the time it asks for
@@ -809,7 +835,7 @@ so a released restore now pins to the bottom (and records `bottom`), leaving "Sh
 explicit retry path when the pages do arrive. Two existing tests that encoded the old "stay clamped"
 expectation were updated to the new landing.
 
-**Harness (headless, no Electron, no LLM).** `scroll-harness.html` + `src/dev/scroll-harness.tsx` mount the
+**Harness (headless, no Electron, no LLM) — RETIRED 2026-11-05** (nothing referenced it once these tickets closed). `scroll-harness.html` + `src/dev/scroll-harness.tsx` mounted the
 real `Thread` in the real tab topology (inactive panes kept mounted and hidden exactly as the pane shell does)
 and serve it from Vite; `scripts/diag-scroll-tabs.mjs` and `scripts/diag-scroll-deep.mjs` drive it in headless
 Chromium (Playwright, already in the desktop devDependencies), step by step, printing the geometry. The
@@ -1258,15 +1284,19 @@ Cost, stated plainly: on the same corpus 136 of 1,975 finals would now be judged
 costs exactly one re-prompt (`MAX_PROMISE_GATE_RETRIES = 1`), which the model can answer with a
 one-line stated blocker. Silence was the worse error.
 
-Verified: `tests/test_promise_gate.py` 41/41, plus `tests/agent/test_stall_guards.py` and
+**RETIRED 2026-11-05** — `agent/promise_gate.py` deleted: it only ran with the turn-close contract off,
+and `turn_contract` has been true everywhere since. The tests below went with it.
+
+Verified at the time: `tests/test_promise_gate.py` 41/41, plus `tests/agent/test_stall_guards.py` and
 `tests/agent/test_bare_toolcall_recovery.py` (100/100 across the three files). Red on the previous
 gate: 3 of the new tests fail against it (`test_deferrals_to_an_unlisted_verb_are_gated`,
 `test_commitment_under_a_real_conclusion_is_gated`, `test_promise_conjoined_to_a_user_instruction…`).
 
-### Promise-without-action gate widened to turns that END on a promise — 2026-10-24
+### Promise-without-action gate widened to turns that END on a promise — 2026-10-24 — **SUPERSEDED 2026-11-05**
 
 `agent/promise_gate.py` existed to re-prompt deepseek-v4.1-flash when it ends a turn by promising work
-instead of doing it, but it could not fire on the shape the operator actually kept hitting. Two defects:
+instead of doing it, but it could not fire on the shape the operator actually kept hitting. Two defects
+(both moot since the file was deleted — `agent/end_turn.py` replaced the whole approach):
 
 1. `finish_text_response` passed a SESSION-wide tool-call count (`sum(... messages ...)`), so the gate's
    "zero tool calls this turn" condition was false from the session's first tool call onward — it was
@@ -1801,8 +1831,8 @@ re-verified every load-bearing claim and staged per wave).
   `override_max_tokens` / `override_fallback_chain` riding alongside (the helper deliberately not extended).
 - **`hermes_cli/setup_profile.py` — upstream DELETED it** (`b120ac575d5`: "release the agentic setup
   profiles once, at serve boot" — the copy hooks in profile create/clone/import and distribution
-  install go with it; `hermes_cli/onboarding_migrations.py` releases a canary/RC `hermes-setup` profile
-  once per install, latched by `onboarding.seen.setup_profile_released`). The fork carried no local
+  install go with it; the release hook it names, `hermes_cli/onboarding_migrations.py`, is not present in
+  either tree at v0.23.0 — the claim is upstream's design note, not a file the fork can point at). The fork carried no local
   delta on the file and its `profiles.py` call sites were upstream code at v0.21.7 — took the deletion;
   no fork behavior lost.
 - **`hermes_cli/banner.py` — merge defect:** the merge silently DROPPED the fork-only helper
@@ -3284,7 +3314,7 @@ tests in the neighbouring classifier/cooldown/run-agent suites green; one live o
 provider returned "pong" (window had reopened). No code change was needed in the plugin — its
 native-error hook stays scoped to dead logins.
 
-### Fork-only fix — 2026-09-30 (hermes_token_check.py: the daily check was blind to the native credential store)
+### Fork-only fix — 2026-09-30 (hermes_token_check.py: the daily check was blind to the native credential store) — **RETIRED 2026-11-05**
 
 **Problem:** hermes-gw-01's Claude calls started failing on every request after the box
 rebooted — `ClaudeCodeLoggedOut` / "Failed to authenticate: OAuth session expired and could
@@ -13644,50 +13674,175 @@ e.g. `git show 7b6cb3f98`. That tag is fetched automatically with
 
 ### Hard-fork boundaries (zero merge conflicts ever)
 
-These files/directories don't exist upstream and never will. Upstream merges
-will never touch them.
+These paths exist in the fork and not upstream, so a merge can never touch them. **This
+table is computed, not hand-maintained** — regenerate it with
+`git ls-tree -r --name-only HEAD` minus `git ls-tree -r --name-only upstream/main` (the
+2026-11-05 sweep rebuilt it from 82 paths after finding 14 retired rows still listed as live).
 
-| Path | Purpose |
+**agent/**
+
+| path | purpose |
 |---|---|
-| `agent/fork/__init__.py` | Marker module for fork-only code |
-| `agent/fork/_mixin.py` | `ForkForwardersMixin` — `AIAgent` inherits it so fork-only methods (`_record_loaded_skill`, `_maybe_skill_recall_hint`, `_capture_rate_limits_from_headers`, etc.) appear on the agent while their real impls live in sibling fork modules. Keeps `run_agent.py` free of fork code → zero merge surface for these forwarders. |
-| `agent/fork/skill_recall.py` | Skill-recall reminder — tracks loaded skills + nudges agent to re-check `skill_pitfalls()` before destructive ops |
-| `agent/fork/memory_recall.py` | Memory-recall reminder — nudges agent to call `memory(action='recall', ...)` against the warm-tier store every N tool calls (or on explicit "remember"-style directives); auto mode runs the recall and injects the top hit. Config: `agent.memory.recall_reminder_*`. |
-| `agent/fork/memory_session_pin.py` | Session-pin — keeps selected warm-tier facts visible in the system prompt for the rest of the current session (gone on restart). Exposes `memory(action='pin'/'unpin'/'pinned', fact_id=N)`. Config: `agent.memory.session_pin_max_count`/`max_chars`. |
-| `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
-| `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context). **CC alias arg translation REMOVED 2026-09-25** with the CC alias layer (Slice B — `_repair_tool_call`'s CC fast-path and the CC canonical name advertising no longer exist, so there are no CC-named args to translate); `is_anthropic_refusal` was retired 2026-09-22 (upstream maps `stop_reason="refusal"` itself). The scrub rung is still live. |
-| `agent/fork/anthropic_server_tool_passes.py` | The fork's Anthropic **server-tool** passes for native web search / tool_search (pairing, ordering, orphan and type-canonicalization rules), plus the deliberate verbatim-replay citation strip. Replaced `agent/fork/anthropic_messages.py` (the fork's ~540-line vendored `convert_messages_to_anthropic`) in the 2026-09-14 sync: upstream's `agent/anthropic_message_convert.py` converged on and overtook the fork converter, so the fork now layers ONLY these passes on top of upstream's implementation. See "Converter consolidation" below. **RETIRED 2026-09-25** (Slice C, owner-approved server-tool cluster removal — see "Fork-only retirement — 2026-09-25 (Slice C)" below). |
-| `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
-| `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand. **RETIRED 2026-10-09 de-fork pass** (COVERED-BY-UPSTREAM by the `tools/tool_search.py` bridge; deleted with `tools/hermes_load_tools.py` and `_apply_tool_search`). |
-| `agent/fork/diagnostics.py` | Per-turn overload/cache-strip state (`init_state`). Usage history, the xAI 403 hint and the tools-signature hash are all retired (the hash in the 2026-10-09 de-fork pass). |
-| `agent/fork/consult_nudge.py` | Second-opinion (consult tool) reminder — nudges the agent to call `consult(question, context)` for a review from a configurable reference model after N risky tool calls; reuses `skill_recall`'s risky-tool set. Config: `consult.nudge_interval`. |
-| `agent/hot_tier_audit.py` | Hot-tier audit — heuristic stale-path detection + opt-in LLM keep/demote/stale/dead classification. On a real curator pass, reads `MEMORY.md`/`USER.md`; heuristic-only mode (default) flags/demotes entries whose extracted filesystem paths no longer exist on disk. `curator.consolidate: true` upgrades to an LLM classification pass (reuses the skill curator's aux-model binding) whose `demote` verdicts move to warm tier and `stale`/`dead` verdicts hard-delete only when `curator.prune_builtins` is also on; an LLM failure or a sanity-cap trip aborts with zero mutation rather than falling back to the heuristic. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
-|| `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. **RETIRED 2026-09-25** (Slice C, owner-approved server-tool cluster removal — see "Fork-only retirement — 2026-09-25 (Slice C)" below). |
-||| `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. **DELETED 2026-09-25** (Slice B, commits `baee2825c6` + `06b24bbbeb`, owner-approved CC-wire-shape removal; restore point tag `pre-cc-removal-20260925` → `822cbb45f6`). Do NOT re-carry on the next sync. |
-|| `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. **REMOVED 2026-09-23** (deliberate product decision, commit `658d2248f3` — account-ban risk + already non-functional; see "Fork-only retirements — 2026-09-23" below). Do NOT re-carry on the next sync. |
-|| `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. **REMOVED 2026-09-23** (same decision/commit as `gemini_cloudcode_adapter.py` above). Do NOT re-carry on the next sync. |
-|| `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
-|| `hermes_cli/delegation_stats.py` | Fork-only delegation statistics display (`/delegation` stats readout). |
-|| `hermes_cli/model_tiers.py` | Shared source of truth for the delegation model-tier ladders: the Anthropic ladder (haiku/sonnet/opus anchors) and the local ladder resolved live from `delegation.model_by_role` role anchors. Used by `delegation_stats.suggest_retunes` and by `tools/delegation_router.py`'s escalate-only tier check. Fork-only (row added 2026-10-09 de-fork pass). |
-|| `hermes_cli/keyboard_protocol.py` | Fork keyboard protocol for CLI interaction patterns. **RETIRED 2026-08-26** (see the de-fork audit at the top of this file, commit `1a37f832e9`): upstream's `hermes_cli/pt_input_extras.py` installer family supersedes the mapping table (fork added 0 sequences upstream didn't already cover), and the fork's unconditional `enable()` push was defeating upstream's allowlist-gated `_enable_extended_enter_keys()` Ghostty exception (`1a8fea3ce2`, #87630). |
-|| `hermes_cli/memory_confirm.py` | Memory confirmation dialogs (warm-tier memory verify-before-save). **CONSOLIDATED 2026-09-23** (owner-approved, commit `23f7b34f26`): 689 → 199 lines, now a staging adapter onto upstream's `tools/write_approval.py` pending store + `/memory pending|approve|reject`; the fork-only conflict-verdict display, side-by-side `/memory show` and re-classifying `/memory edit` are preserved as enrichments of that shared mechanism. See "Fork-only retirements — 2026-09-23" below. |
-|| `hermes_cli/personas.py` | Fork-only persona management (`/persona` slash command). |
-|| `hermes_cli/ruflo_agents.py` | Fork-only ruflo agent type catalog. |
-|| `hermes_cli/submit.py` | **RETIRED 2026-09-22** (owner-approved consolidation, commits `071c694df7` + the follow-up). Superseded by upstream's `hermes peer run` (`hermes_cli/subcommands/peer.py`), which had converged on the same `POST /v1/runs` mechanism and was already strictly better on one axis (it sends an `Idempotency-Key` submit.py never had, and probes `/v1/capabilities` to warn when a peer can't durably replay a run). The three capabilities submit.py uniquely had were ported onto `peer.py` first, as fork-only enhancements that leave every upstream path untouched: (1) SSE `--tail` streaming, now `peer run --tail` plus a new `peer tail <target> <run_id>` action, rebased on peer.py's `run_id` model and routed through the same `open_credentialed_url` redirect policy as every other peer request (submit.py used raw httpx with no such protection — a security gain, not just a port); (2) the permissive credential chain, WIDENED onto upstream's registry rather than replacing it — `--url`/`--api-key` for an ad-hoc gateway, and the reserved target name `default` resolving `HERMES_GATEWAY_URL` → `~/.hermes/.env` → the built-in default; an *unregistered* name still hard-fails, so a typo can never silently route a prompt to the wrong machine, and a *registered* peer never falls back to the gateway-wide key (that would weaken the registry's per-peer guarantee); (3) session-less operation as `run --no-session`, an opt-out — upstream's forced canonical "Bot Chat" stays the DEFAULT because that transcript is the point of the bot-to-bot DM feature (cross-turn continuity + a human-inspectable record on the remote machine). Also carried over: `-f/--file`, `--instructions`, `-q`. `hermes submit` itself remains for ONE release as a deprecation shim (`hermes_cli/main.py::cmd_submit`) that prints the translated `hermes peer run` command and exits 2; delete the shim, its parser, `_BUILTIN_SUBCOMMANDS["submit"]` and `tests/hermes_cli/test_submit_shim.py` together. Equivalent: `hermes submit "x"` → `hermes peer run default "x" --no-session`. |
-|| `plugins/model-providers/exo/` | First-class exo provider profile (`custom:exo` provider type). |
-|| `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. **REMOVED 2026-09-25** (Slice A, commit `ecb91a03ab`, owner-approved). The directory is absent from the tree, and its dead config was cleaned up 2026-09-29 (see the "Slice A/C dead-config follow-through" entry). Do NOT re-carry. |
-|| `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; plugin, post-setup hook and pyproject extra deleted. |
-|| `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; directory and `tests/tools/test_cc_proxy_mcp.py` deleted. | — **restored 2026-10-10 (live dependency on the corp connector stack).**
-|| `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. **RETIRED 2026-09-23** (owner-approved, commit `37d7fb4782`): superseded by upstream's `hermes_cli/cli_subagent_monitor.py` dock, which also offers steer/stop/transcript-tail; every signal the board uniquely rendered was ported onto the registry the dock already reads first. See "Fork-only retirements — 2026-09-23" below. |
-|| `tools/hermes_load_tools.py` | Fork tool loading bridge — loads fork-only tools into agent runtime. **RETIRED 2026-10-09 de-fork pass** (with `agent/fork/tool_search_lazy.py`). |
-|| `tools/memory_warm.py` | Warm-tier memory tool — search/recall/pin/unpin warm facts. |
-|| `tools/memory_extraction/` | Memory extraction system (extractor, buffer, conflict, prompts). |
-|| `tools/memory_auto_feedback/` | Memory auto-feedback module (audit and learning-ledger). |
-| `tools/consult_tool.py` | Second-opinion tool — asks a configurable reference model (`auxiliary.consult`) for a review before a risky/uncertain decision; refusals/empty responses degrade gracefully to `unavailable: true` rather than erroring. Available to main agent + subagents (not in `DELEGATE_BLOCKED_TOOLS`). |
-| `tools/delegation_router.py` | Cheap classifier that reads a delegate_task goal+context in ONE batch call and serves two roles: (a) full routing for tasks with no explicit model/agent_type (or `agent_type='auto'`) — capability tier (light/standard/deep) and optionally a ruflo persona, mapped tier→role→model through `delegation.model_by_role`; (b) an ESCALATE-ONLY tier check for tasks that DID state an agent_type — replaces the stated role only when the classifier's tier ranks strictly higher (never a downgrade), ranked via `hermes_cli/model_tiers.py`'s Anthropic AND local ladders. An explicit `model=` bypasses both. Fail-open everywhere. Config: `delegation.auto_route.*` (incl. `escalate_only`, default true), `auxiliary.delegation_router`. |
-| `FORK.md` | This file |
-| `scripts/setup-merge-drivers.sh` | Retirement stub (2026-10-09): removes the stale `uvlock-ours` driver from a clone's `.git/config`. `uv.lock` now merges `merge=ours`; relock with `hermes pm lock`. **[RETIRED 2026-10-09 de-fork round 2]** — the stub itself is deleted (it only removed an inert setting). |
-| `scripts/autostash_cleanup.py` | Safe cleanup for the `hermes-update-autostash-*` orphans `hermes update` parks (and never GCs - it only warns past 7 days). Containment audit per touched path (HEAD blob compare, then an exact-blob search of reachable history), bundle-archive before dropping, drop by INDEX highest-first. An uncontained blob is recoverable work and is never dropped; paths absent from HEAD count as superseded-by-removal only when they were TRACKED at the stash base AND `--allow-removed` is passed. Read-only by default. Tests: `tests/scripts/test_autostash_cleanup.py`. |
+| `agent/anthropic_adapter_kwargs.py` | Phases of ``anthropic_adapter.build_anthropic_kwargs``: the Claude Code OAuth identity transforms, ``tool_choice`` mapping, the thinking / effort parameters and |
+| `agent/anthropic_adapter_tool_blocks.py` | Phases of ``anthropic_adapter._strip_unknown_tool_blocks``: the text breadcrumbs that replace a stale ``tool_use`` / ``tool_result`` pair, and the per-message b |
+| `agent/empty_fallback_restore.py` | Bounded mid-run primary restore after an EMPTY-response fallback |
+| `agent/end_turn.py` | Explicit turn-close contract |
+| `agent/exo_canonical_serializer.py` | Canonical byte-stable serializer for the exo provider wire path |
+| `agent/failover_state.py` | Live failover identity for an agent — what it is ACTUALLY running on |
+| `agent/fork/__init__.py` | Fork-specific modules for the adurham/hermes-agent fork |
+| `agent/fork/_mixin.py` | Mixin class providing thin forwarder methods for fork-only features |
+| `agent/fork/anthropic_recovery.py` | Anthropic provider recovery helpers (fork-only) |
+| `agent/fork/consult_nudge.py` | Consult nudge feature (fork-only) |
+| `agent/fork/diagnostics.py` | Per-turn diagnostics (fork-only) |
+| `agent/fork/generation_stats.py` | exo generation-stats capture (fork-only): persist the engine's per-response ``: generation_stats`` |
+| `agent/fork/memory_recall.py` | Memory-recall reminder feature (fork-only) |
+| `agent/fork/memory_session_pin.py` | Session-pin feature (fork-only) |
+| `agent/fork/rate_limit_tracker.py` | Rate-limit observability (fork-only) |
+| `agent/fork/silence_guard.py` | Silence guard (fork-only): text-starvation / convergence pressure for long silent turns |
+| `agent/fork/skill_recall.py` | Skill-recall reminder feature (fork-only) |
+| `agent/fork/stream_recovery.py` | Streaming-recovery helpers (fork-only) |
+| `agent/hot_tier_audit.py` | Hot-tier audit — stale-path detection heuristic + LLM classification |
+| `agent/turn_final_response_contract.py` | The turn-close contract's verdict on a text-only ending: the loop-side half of ``agent/end_turn.py``, split out of ``finish_text_response`` |
+| `agent/usage_preflight.py` | Per-turn usage preflight: does the primary's plan have room for this turn *before* we ask? Hermes' fallback chain is reactive — the turn discovers a spent allow |
+
+**hermes_cli/**
+
+| path | purpose |
+|---|---|
+| `hermes_cli/agents_inbox.py` | ``hermes agents inbox`` implementation |
+| `hermes_cli/config_aux_provider_first.py` | Per-task phase of ``hermes_cli.config.convert_auxiliary_to_provider_first`` |
+| `hermes_cli/config_defaults_aux.py` | The auxiliary-task model block ``DEFAULT_CONFIG["auxiliary"]`` is built from |
+| `hermes_cli/delegation_stats.py` | Per-role delegation stats — telemetry for ruflo-persona subagents |
+| `hermes_cli/fork_banner.py` | Fork-owned banner branding + git-state subsystem |
+| `hermes_cli/mcp_gateway.py` | MCP server exposing the hermes gateway's /v1/runs API as tools |
+| `hermes_cli/memory_confirm.py` | Session-exit staging of LLM-extracted memory proposals |
+| `hermes_cli/model_tiers.py` | Shared source of truth for delegation model tiers |
+| `hermes_cli/persona_library.py` | Persona discovery |
+| `hermes_cli/personas.py` | Persona discovery + per-role model config (hermes-runtime side) |
+| `hermes_cli/portable_glyphs.py` | Portable-glyph registry + cluster normalization for prompt_toolkit chrome |
+| `hermes_cli/power_qos.py` | Battery-aware process scheduling on macOS |
+| `hermes_cli/subcommands/agents.py` | ``hermes agents`` subcommand parser |
+
+**tools/**
+
+| path | purpose |
+|---|---|
+| `tools/agent_messaging_contract.py` | Shared contract for local agent messaging (design: docs/design/local-agent-messaging.md) |
+| `tools/agent_messaging_tools.py` | Model-facing tools for local agent messaging (Transport A) |
+| `tools/agent_messaging_transport_a.py` | Transport A — in-process local agent messaging |
+| `tools/bridges/__init__.py` | Stdio MCP bridges |
+| `tools/bridges/cc_proxy_mcp.py` | cc_proxy_mcp.py — stdio MCP shim that proxies to Anthropic's claude.ai MCP proxy (https://mcp-proxy.anthropic.com/v1/mcp/{server_id}) using the OAuth bearer tok |
+| `tools/consult_tool.py` | Consult Tool Module - Second Opinion From a Reference Model Lets the agent (main or delegated subagent) ask a smarter/more capable reference model for a second  |
+| `tools/content_filter_scrub.py` | Shared regex scrub for shell-command patterns that trip Anthropic's content filter |
+| `tools/cross_session_integration.py` | Transport B integration glue — the seam between ``cross_session_transport`` and the live processes that must heartbeat, drain, and inject |
+| `tools/cross_session_tool.py` | Model-facing ``list_agents`` tool (Transport B) |
+| `tools/cross_session_transport.py` | Transport B — cross-process agent messaging backed by ``state.db`` |
+| `tools/delegation_router.py` | Auto-route delegated tasks to the right model tier (fork feature) |
+| `tools/memory_auto_feedback/__init__.py` | Automatic warm-tier feedback layer |
+| `tools/memory_auto_feedback/audit.py` | Implementation for tools.memory_auto_feedback |
+| `tools/memory_extraction/__init__.py` | Auto-extraction layer for warm-tier memory (Phase 2) |
+| `tools/memory_extraction/buffer.py` | Per-session buffer for proposed memory entries |
+| `tools/memory_extraction/conflict.py` | Conflict resolution between proposed and existing warm-tier facts |
+| `tools/memory_extraction/extractor.py` | Extractor — the main orchestration module for Phase 2 auto-memory |
+| `tools/memory_extraction/orphan_sweep.py` | Drain extraction proposals stranded by a deferred (gateway shutdown) session end |
+| `tools/memory_extraction/prompts.py` | Extraction prompts for Phase 2 auto-memory |
+| `tools/memory_warm.py` | Warm-tier memory backend for the unified `memory` tool |
+| `tools/personas_sync.py` | Personas Sync -- Manifest-based seeding and updating of bundled personas |
+
+**gateway/**
+
+| path | purpose |
+|---|---|
+| `gateway/agent_messaging_bridge.py` | Transport A (in-process agent messaging) bridge for the gateway |
+| `gateway/builtin_hooks/__init__.py` | Built-in gateway hooks that are always registered |
+
+**plugins/**
+
+| path | purpose |
+|---|---|
+| `plugins/model-providers/exo/__init__.py` | Exo cluster provider profile |
+| `plugins/model-providers/exo/plugin.yaml` | — |
+| `plugins/platforms/feishu/feishu_audio.py` | Audio metadata for Feishu uploads (the ``duration`` field opus files carry) |
+| `plugins/platforms/slack/adapter_rich_text.py` | Render Slack ``rich_text`` element trees to readable lines (quotes, lists, code) |
+
+**scripts/**
+
+| path | purpose |
+|---|---|
+| `scripts/autostash_cleanup.py` | Audit and clean up aged ``hermes update`` autostash orphans in a git checkout |
+| `scripts/check-unspecced-sdk-mocks.py` | Grep-based checker for unspecced Mock()/MagicMock() at known SDK client boundaries in tests/ |
+| `scripts/gen_xterm_width_fixture.js` | — |
+| `scripts/hlxc-test.sh` | script |
+| `scripts/sync-fork-branding.py` | Repoint "get code/docs from here" links at the adurham/hermes-agent fork |
+
+**personas/**
+
+| path | purpose |
+|---|---|
+| `personas/delegation/jr-coder.md` | persona definition |
+| `personas/delegation/mid-coder.md` | persona definition |
+| `personas/delegation/pm.md` | persona definition |
+| `personas/delegation/reviewer.md` | persona definition |
+| `personas/delegation/sr-coder.md` | persona definition |
+
+**apps/**
+
+| path | purpose |
+|---|---|
+| `apps/desktop/electron/perf-capture.ts` | desktop module |
+| `apps/desktop/src/app/session/hooks/use-message-stream/session-pane-visibility.ts` | desktop module |
+| `apps/desktop/src/lib/model-fallback-label.ts` | desktop module |
+| `apps/desktop/src/store/pet-voice.ts` | Desktop-only pet TTS: mirrors `display.pet.voice_enabled` / `voice_provider` |
+| `apps/desktop/src/store/plan-gauge.ts` | desktop module |
+| `apps/desktop/src/store/power-animations.ts` | desktop module |
+
+**ui-tui/**
+
+| path | purpose |
+|---|---|
+| `ui-tui/src/lib/modelFallback.ts` | desktop module |
+
+**web/**
+
+| path | purpose |
+|---|---|
+| `web/src/lib/session-overview.ts` | desktop module |
+
+**(root)/**
+
+| path | purpose |
+|---|---|
+| `.npmrc` | — |
+| `FORK.md` | persona definition |
+| `package-lock.json` | data |
+
+### Retired boundaries — do NOT re-carry on a sync
+
+These were fork-only files and are deliberately gone. Each name is kept so a future merge that
+re-introduces the upstream half is caught, and so nobody re-adds the fork half by reflex.
+
+| path | retired | why |
+|---|---|---|
+| `agent/fork/anthropic_server_tool_passes.py` | 2026-09-25 | Slice C — Anthropic server-tool cluster removed (owner-approved) |
+| `agent/fork/anthropic_native_web_search.py` | 2026-09-25 | Slice C — native web search moved to upstream |
+| `agent/fork/anthropic_messages.py` | 2026-09-14 | vendored converter superseded by `agent/anthropic_message_convert.py` |
+| `agent/fork/tool_search_lazy.py` | 2026-10-09 | covered by upstream `tools/tool_search.py` |
+| `agent/cc_aliases.py` | 2026-09-25 | Slice B — CC alias wire shape removed |
+| `agent/gemini_cloudcode_adapter.py` | 2026-09-23 | account-ban risk + non-functional |
+| `agent/google_oauth.py` | 2026-09-23 | same decision as the Gemini adapter |
+| `agent/promise_gate.py` | 2026-11-05 | inert under `turn_contract`; superseded by `agent/end_turn.py` |
+| `hermes_cli/keyboard_protocol.py` | 2026-08-26 | upstream `pt_input_extras.py` supersedes the mapping table |
+| `hermes_cli/ruflo_agents.py` | 2026-10-09 | de-fork round 2 — the ruflo shim was deleted; personas carry the catalog |
+| `hermes_cli/submit.py` | 2026-09-22 | superseded by upstream `hermes peer run` |
+| `hermes_cli/onboarding_migrations.py` | — | never existed in this tree; listed by mistake |
+| `plugins/web/claude_code/` | 2026-09-25 | Slice A — CC web backend removed |
+| `plugins/web/trafilatura/` | 2026-10-09 | de-fork round 2 — free extract backend retired |
+| `tools/swarm_board.py` | 2026-09-23 | superseded by upstream's `cli_subagent_monitor` dock |
+| `tools/hermes_load_tools.py` | 2026-10-09 | retired with `tool_search_lazy` |
+| `scripts/setup-merge-drivers.sh` | 2026-10-09 | stub for an inert merge driver |
+| `apps/desktop/scripts/diag-*.mjs` | 2026-11-05 | investigation scaffolding, zero referrers |
+| `apps/desktop/scroll-harness.html + src/dev/scroll-harness.tsx` | 2026-11-05 | harness those probes drove |
+| `scripts/hermes_token_check.py` | 2026-11-05 | manual diagnostic, referenced only by its own test |
 
 ### Soft-fork edits (merge conflicts possible)
 
