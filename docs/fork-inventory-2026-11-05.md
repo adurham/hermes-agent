@@ -461,3 +461,42 @@ asked for already exists; where it did, the evidence is named so nobody re-does 
 | Memory: likely drop | **rejected on reachability** | the staged confirm is `write_approval.MEMORY` (hot-tier writes) and runs on every memory edit |
 | Other: re-triage the 62 | **rule adopted, not a sweep** | merge-defect restores get a drift-guard test only the **second** time the same restore is needed; first-time restores stay as-is (a guard per restore would cost more than the restore) |
 
+## H. Reduction review (2nd consult) — ranked cuts, verified
+
+Goal set by the owner: stop carrying what does not earn its keep. Carrying cost = fork-added/removed
+lines inside files that ALSO exist upstream (the ones that conflict each sync). Measured: **446
+upstream-owned files, 32,735 changed lines**; the top 16 are 11,131 of them.
+
+The Claude consult route failed (`HERMES_MODEL_ADMISSION_CONSUMED`), so the review ran on the
+documented fallback (`glm-5.3-flash` on ollama-cloud). Its ranked list was then checked against the
+tree — three of its top claims do not survive:
+
+| reviewer claim | verification | verdict |
+|---|---|---|
+| Cut `tools/browser_use_cli.py` (805 lines) — "likely leftover harness" | the delta is harness-daemon OWNERSHIP machinery: `_reap_dead_child`, home-key daemon registry, `stop_harness_daemons` | **wrong** — real machinery; seam candidate, not a delete |
+| `cli.py`'s 88 "delegation" hits are per-role wiring (≈1,400 lines) | the hits are the word "delegate" in docstrings; the real added defs are CLI feature glue (`_run_memory_confirm_before_exit`, `_fold_curator_cost_before_exit`, `_wrap_stream_line`, `_persist_global_model_switch`, `_handle_delegation_command`) | **wrong** — no per-role duplication to collapse |
+| `agent/hot_tier_audit.py` is "internal diagnostics, archive-able" | the live config sets `curator.hot_tier_audit: true` and `hot_tier_audit_dry_run: false`, i.e. it mutates memory every curator pass | **wrong** — cutting it changes memory behaviour silently |
+| Role routing could collapse to ≈400 lines (from 2,840) | `tools/delegate_tool.py` is genuinely +967/−12 of routing: `_resolve_role_credentials`, `_load_role_maps`, `_auto_route_batch`, `_persona_exists`, `_resolve_task_routes`, advisories | **partly right** — the seam is real, the 2,400-line saving is not |
+
+What actually stands, in order of value:
+
+1. **`tools/delegate_tool.py` (967 lines) — move the routing behind a seam.** The logic is fork-only but
+   lives in an upstream file. A `delegate_tool` that imports a fork router module would keep ~1 import
+   instead of 967 lines. Risk: a role silently resolving to the default model — mitigate with a startup
+   assertion that every configured role resolves to model+persona, plus a before/after dump of resolved
+   role configs (the config is static, so the parity check is cheap and decisive).
+2. **Provider/exo/failover branches (≈3,400 lines across `anthropic_adapter`, `auxiliary_client`,
+   `chat_completion_helpers`, `rate_limit_tracker`) — seam, do not delete.** Move behind fork subclasses
+   registered by the fork loader, one-for-one, no behaviour change in the first pass. The exo→Anthropic
+   placeholder guard stays (it protects a configured provider switch).
+3. **Memory hooks in `tools/memory_tool.py` + `agent/curator.py` (≈1,477 lines) — last, and only with a
+   measurement.** This is the one place where a wrong cut fails silently as memory-quality decay, and the
+   holographic provider has no dedupe/refinement/contradiction fallback. Instrument the warm/extraction
+   entry points with hit counters over real workdays before touching it.
+4. **`hermes_cli/subcommands/peer.py` + `plugins/platforms/a2a/adapter.py` (≈616 lines)** — cheapest
+   speculative surface, but only after a grep of config/scripts/cron/Electron for invocations. Failure
+   mode is loud (an invocation error).
+
+The long tail is the real pool: 21,604 lines across 430 files. The sweep for it is mechanical — fork-only
+modules with zero incoming import edges and no config reference, quarantined a week before deletion.
+
