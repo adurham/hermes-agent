@@ -447,8 +447,10 @@ class SlashCommandCompleter(Completer):
         def _cmd_completion(cmd_name: str, meta: str):
             return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
 
+        builtin_names: set[str] = set()
         for cmd, desc in COMMANDS.items():
             if self._command_allowed(cmd) and cmd[1:].startswith(word):
+                builtin_names.add(cmd[1:])
                 yield _cmd_completion(cmd[1:], desc)
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():
             if cmd[1:].startswith(word):
@@ -459,7 +461,9 @@ class SlashCommandCompleter(Completer):
             if cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
         for cmd_name, desc in self._plugin_commands().items():
-            if cmd_name.startswith(word):
+            # register_command's CLI-only carve-out can give a plugin a name the CLI still
+            # dispatches to its own built-in; list the command once, the one that will run.
+            if cmd_name.startswith(word) and cmd_name not in builtin_names:
                 yield _cmd_completion(cmd_name, f"🔌 {desc or 'Plugin command'}")
 
     def _plugin_commands(self) -> Mapping[str, str]:

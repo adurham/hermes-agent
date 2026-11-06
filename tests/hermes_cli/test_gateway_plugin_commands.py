@@ -356,6 +356,15 @@ def test_completion_lists_the_gateways_plugin_commands(local_plugin_reads):
     assert local_plugin_reads == []
 
 
+def test_completion_lists_a_shared_builtin_name_once(local_plugin_reads):
+    """``advanced-delegation`` registers ``/delegation``, a name the CLI still dispatches to
+    its own built-in; completion must offer the command once, not twice."""
+    from prompt_toolkit.document import Document
+    completer = SlashCommandCompleter(plugin_commands_provider=lambda: {"delegation": "Advanced delegation"})
+    texts = [c.text for c in completer.get_completions(Document("/deleg"), None)]
+    assert texts.count("delegation") == 1
+
+
 def _unloaded_since_the_cached_read(monkeypatch, name, skills=()):
     """The CLI ran ``/name`` and cached the catalog (``skills``: the session's skill commands the
     gateway lists); then a gateway plugin reload dropped it (same session, same gateway life), so
