@@ -320,10 +320,16 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
 
     // Neither timer nor rAF callbacks run. Data delivery must carry progress
     // through both production buffers, not just journal an empty cached tail.
-    now = 500
+    // Below the floor again (50 ms after the last paint, unfocused floor is
+    // 200 ms): the delta is queued and nothing reaches the cache. This is the
+    // fork's contract — an unfocused window does not repaint per token.
+    now = 300
     act(() => appendAssistantDelta!(SID, ' third'))
-    now = 750
+    expect(cachedText()).toBe('first second')
+
+    now = 550
     act(() => appendAssistantDelta!(SID, ' fourth'))
+    expect(cachedText()).toBe('first second third fourth')
     const recovered = recoverInFlightTurnJournal(storedId, [prompt])
     expect(recovered.applied).toBe(true)
     expect(recovered.messages.at(-1)?.parts).toEqual([
