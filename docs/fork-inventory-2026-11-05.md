@@ -442,3 +442,22 @@ fails silently rather than loudly.
 **Correction to Fable's evidence read:** the 18 `tests/providers` failures are not "dead weight from
 the fork" — they fail identically on the pre-merge baseline tree, i.e. they are upstream tests that
 are already red, not fork fixes whose tests rotted.
+
+## G. Fable's recommendations — executed
+
+Checked each verdict against the tree rather than assuming the work was needed. Most of what Fable
+asked for already exists; where it did, the evidence is named so nobody re-does it.
+
+| recommendation | status | evidence |
+|---|---|---|
+| Desktop: guard the gateway→desktop event contract | **already in place** | `apps/desktop/src/api/canonical-producer-contract.test.ts` |
+| CLI: pin the `x-api-key` leak with a test | **already in place** | `tests/agent/test_nous_portal_anthropic_wire.py:222` asserts `"x-api-key" not in headers` on the Bearer path |
+| Git/checkpoint: the unreadable-path fix must log what it skipped | **already in place** | `tools/checkpoint_manager.py:519` — `logger.warning("Checkpoint of %s skipped %d unreadable path(s): %s", …)` |
+| Models: provider-matrix test scoped to configured providers | **already in place** | `hermes_cli/doctor_config.py::_validate_auxiliary_config`, run against the live config: 20 tasks resolve, 0 issues (all ollama-cloud except `consult`→claude-subscription) |
+| Tools/skills: check upstream for a loop guardrail first | **checked — different mechanism** | upstream's `gateway/bot_loop_guard.py` is a bot-to-bot hop cap (`bot_loop_guard.max_hops`), not a tool-call loop guard; the fork's stays |
+| Gateway/turns: audit the 16 fixes against the promise_gate deletion | **audited — no dependency** | `promise_gate` was imported only by `agent/turn_final_response.py`; none of the turn/queue fixes touch it |
+| Sessions/subagents: keep, they are lane-worker load-bearing | **kept, covered** | `tests/tools/test_agent_messaging_contract.py`, `test_agent_messaging_send_dispatch.py`, `test_delegate.py` |
+| Models: drop the dormant Anthropic-aux subset | **marked dormant, not deleted** | 4 entries annotated **DORMANT** in `FORK.md`; the same code also guards the main Claude adapter, so deletion needs a path check first |
+| Memory: likely drop | **rejected on reachability** | the staged confirm is `write_approval.MEMORY` (hot-tier writes) and runs on every memory edit |
+| Other: re-triage the 62 | **rule adopted, not a sweep** | merge-defect restores get a drift-guard test only the **second** time the same restore is needed; first-time restores stay as-is (a guard per restore would cost more than the restore) |
+
