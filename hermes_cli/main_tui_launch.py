@@ -349,6 +349,24 @@ def _safe_tui_cwd(env: Optional[dict] = None) -> str:
         return str(PROJECT_ROOT)
 
 
+def _remote_attach_cwd(env: Optional[dict] = None) -> str:
+    """The workspace ``HERMES_TUI_REMOTE_CWD`` names for an explicit remote attach, else "".
+
+    ``hermes --tui`` normally pins the session's cwd to this machine's launch directory: correct
+    for a local session, wrong for an attach to a gateway on another machine, whose owner refuses a
+    path that does not exist there. The wrapper that owns such an attach sets
+    ``HERMES_TUI_REMOTE_CWD`` to the owner-side workspace; the launcher then sends that path on
+    ``session.create`` (via ``HERMES_TUI_CWD``) while ``HERMES_CWD`` keeps this machine's folder for
+    the client's own file paths. Honoured only for an explicit attach URL: without one, the launch
+    folder is this machine's and a stray value must not move a local session's cwd.
+    """
+    env = env or {}
+    url = (env.get("HERMES_TUI_GATEWAY_URL") or "")
+    if not str(url).strip():
+        return ""
+    return str((env.get("HERMES_TUI_REMOTE_CWD") or "")).strip()
+
+
 def _apply_tui_python_env(env: dict) -> None:
     """Seed/repair Python-related env vars shared by CLI and dashboard TUI launches."""
     from hermes_cli.main import PROJECT_ROOT
@@ -482,6 +500,14 @@ def _launch_tui(
     # names *a* real directory, so the is_dir() repair in _apply_tui_python_env keeps it
     # and the gateway starts in last session's project. `--worktree` still wins below.
     env["HERMES_CWD"] = _safe_tui_cwd(env)
+    # An explicit remote attach names its workspace on the OWNER's host; a checkout built here
+    # cannot be that workspace, so the combination is refused rather than silently ignored.
+    remote_cwd = _remote_attach_cwd(env)
+    if remote_cwd and worktree:
+        print("Error: --worktree builds a checkout on this machine and cannot be the workspace of a "
+              "session on the gateway's host (HERMES_TUI_REMOTE_CWD). Drop one of them.",
+              file=sys.stderr)
+        raise SystemExit(2)
     from hermes_cli.shared_session_attach import configure_tui_attachment
     try:
         configure_tui_attachment(env, resume_session_id)
@@ -517,7 +543,11 @@ def _launch_tui(
     # A local interactive session starts where the user launched (or in the --worktree), the
     # classic CLI's rule; terminal.cwd stays the default for gateway, cron and remote backends.
     # HERMES_TUI_CWD is what the TUI sends on session.create, which beats the configured cwd (#84015).
-    if str(env.get("TERMINAL_ENV") or "local") == "local":
+    if remote_cwd:
+        # The owner's workspace is the session's cwd; the launch folder here is not a path there.
+        # TERMINAL_CWD stays this client's own terminal config: the owner resolves its own.
+        env["HERMES_TUI_CWD"] = remote_cwd
+    elif str(env.get("TERMINAL_ENV") or "local") == "local":
         env["TERMINAL_CWD"] = env["HERMES_TUI_CWD"] = env["HERMES_CWD"]
     else:
         env.pop("HERMES_TUI_CWD", None)

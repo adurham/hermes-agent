@@ -521,6 +521,9 @@ def _resolve_chat_argv(
     # scope overrides HERMES_HOME before config is bridged into the env.
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    # A dashboard chat is served by THIS host's gateway: an operator's remote-attach workspace
+    # (HERMES_TUI_REMOTE_CWD, a path on another machine) must never reach its child.
+    env.pop("HERMES_TUI_REMOTE_CWD", None)
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
     try:

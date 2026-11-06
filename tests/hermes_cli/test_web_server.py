@@ -5663,10 +5663,14 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     )
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+    # An operator's remote-attach workspace names a path on ANOTHER machine; a dashboard chat is
+    # served by this host's gateway and must never inherit it.
+    monkeypatch.setenv("HERMES_TUI_REMOTE_CWD", "/home/someone/elsewhere")
 
     _argv, _cwd, env = _web_server_chat._resolve_chat_argv()
 
     assert env is not None
+    assert "HERMES_TUI_REMOTE_CWD" not in env
     gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
     assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
     assert "token=" in gateway_url

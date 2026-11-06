@@ -363,6 +363,84 @@ def test_launch_tui_local_session_starts_in_launch_dir_not_terminal_cwd(monkeypa
         assert Path(env["TERMINAL_CWD"]).resolve() == configured.resolve()
 
 
+def test_launch_tui_remote_attach_sends_the_owner_workspace(monkeypatch, main_mod, tmp_path):
+    """An explicit remote attach sends the OWNER's workspace as the session cwd.
+
+    The launch folder on this machine names nothing on the owner's host, whose session.create
+    refuses a cwd that does not exist there. HERMES_TUI_REMOTE_CWD names the owner-side
+    workspace while HERMES_CWD keeps this machine's folder for the client's own file paths.
+    """
+    launch = tmp_path / "launch-project"
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://owner.example:9120/api/ws?token=t")
+    monkeypatch.setenv("HERMES_TUI_REMOTE_CWD", "/home/owner/project")
+    monkeypatch.delenv("HERMES_CWD", raising=False)
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    env = captured["env"]
+    assert env["HERMES_TUI_CWD"] == "/home/owner/project"
+    assert Path(env["HERMES_CWD"]).resolve() == launch.resolve()
+
+
+def test_launch_tui_ignores_a_remote_workspace_without_an_attach_url(monkeypatch, main_mod, tmp_path):
+    """HERMES_TUI_REMOTE_CWD alone must not move a LOCAL session's cwd."""
+    launch = tmp_path / "launch-project"
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("HERMES_TUI_REMOTE_CWD", "/home/owner/project")
+    monkeypatch.delenv("HERMES_CWD", raising=False)
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    env = captured["env"]
+    assert Path(env["HERMES_TUI_CWD"]).resolve() == launch.resolve()
+
+
+def test_launch_tui_refuses_worktree_on_a_remote_attach(monkeypatch, main_mod, tmp_path, capsys):
+    """A checkout built here cannot be the workspace of a session on the gateway's host."""
+    launch = tmp_path / "launch-project"
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://owner.example:9120/api/ws?token=t")
+    monkeypatch.setenv("HERMES_TUI_REMOTE_CWD", "/home/owner/project")
+    monkeypatch.chdir(launch)
+    monkeypatch.setattr(main_tui_launch, "_setup_tui_worktree",
+        lambda: pytest.fail("a remote attach must not build a worktree"),
+    )
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui(worktree=True)
+
+    assert exc.value.code == 2
+    assert "worktree" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("flag", ["HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"])
 def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypatch, main_mod, capsys, flag):
     """`hermes --tui --safe-mode` (or an exported HERMES_IGNORE_USER_CONFIG=1) reads no profile
