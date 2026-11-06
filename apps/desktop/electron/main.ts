@@ -16506,9 +16506,10 @@ function isAnyTurnInFlight() {
   return mergeActiveWork(activeWorkByWebContents.values()).count > 0
 }
 
-function applyKeepAwakeFromActiveWork() {
+function updateStreamThrottleFromActiveWork() {
   const working = isAnyTurnInFlight()
 
+  streamThrottle.update(working)
   // The 'while-working' keep-awake mode rides the same merged signal: no
   // listener or timer of its own (see the keep-awake block below).
   applyKeepAwake(working)

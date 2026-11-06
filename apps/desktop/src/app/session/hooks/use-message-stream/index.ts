@@ -305,6 +305,10 @@ export function useMessageStream({
 
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
   const flushHandleRef = useRef<(() => void) | null>(null)
+  // Absolute time (performance.now clock) the armed wake-up is meant to fire at,
+  // so a newly queued session due SOONER can re-arm it instead of inheriting a
+  // parked session's later wake-up.
+  const flushDeadlineRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
   // flush floor in scheduleDeltaFlush so multi-stream load yields to input.
@@ -486,9 +490,6 @@ export function useMessageStream({
       return paintable ? delay : Math.max(delay, Math.ceil(soonest))
     }
 
-    if (flushHandleRef.current !== null && sinceLast < adaptiveFloor) {
-      return
-    }
 
     const runFlush = () => {
       flushHandleRef.current = null
@@ -551,17 +552,37 @@ export function useMessageStream({
       }
     }
 
-    // Incoming deltas can drain overdue work; the native deadline fallback
-    // also commits a quiet tail without enabling hidden-window painting.
-    if (flushHandleRef.current !== null) {
-      flushHandleRef.current()
-      runFlush()
+    const armFlushTimer = () => {
+      const now = performance.now()
+      const delay = nextFlushDelay(now)
 
-      return
+      if (delay === null) {
+        return
+      }
+
+      // A wake-up is already armed for the earliest moment the queue knew about.
+      // A LATER deadline is not worth re-arming for; an EARLIER one is: a
+      // visible chat's first delta must not inherit the 250ms wake-up that a
+      // parked session's queue armed a moment before it.
+      if (flushHandleRef.current !== null) {
+        const armedFor = flushDeadlineRef.current ?? Number.POSITIVE_INFINITY
+
+        if (armedFor <= now + delay) {
+          return
+        }
+
+        flushHandleRef.current()
+      }
+
+      // The native work clock (main process) commits the flush even while the
+      // window is hidden and Chromium has parked this renderer's timers; it
+      // never enables painting, which is the throttle dial's job.
+      flushDeadlineRef.current = now + delay
+      flushHandleRef.current = scheduleStreamWork(runFlush, delay)
     }
 
-    flushHandleRef.current = scheduleStreamWork(runFlush, Math.max(0, adaptiveFloor - sinceLast))
-  }, [flushQueuedDeltas])
+    armFlushTimer()
+  }, [drainSessionDeltas, flushQueuedDeltas, sessionFlushDue, sessionFlushFloor])
 
   const queueDelta = useCallback(
     (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
@@ -673,9 +694,11 @@ export function useMessageStream({
           }
 
           if (flushHandleRef.current !== null) {
-            window.clearTimeout(flushHandleRef.current)
+            flushHandleRef.current()
             flushHandleRef.current = null
           }
+
+          flushDeadlineRef.current = null
 
           drainSessionDeltas(id)
           painted = true
