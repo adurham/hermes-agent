@@ -553,3 +553,25 @@ has a decisive oracle (8 roles → 8 exact assertions), converts a silent failur
 and removes the role-map duplication with the personas module — which proves the seam pattern before it
 is applied to `cli.py`, where the touch points are many and the failure mode is silent.
 
+## H2. Executed: the `delegate_tool` seam (first cut, verified)
+
+`tools/delegate_tool.py` 1,895 -> 1,265 lines. Fourteen fork-only functions (630 lines) moved verbatim to
+`tools/delegate_tool_routing.py` and imported back under their original names: role maps, credential
+binding, auto-route batching and its skip causes, advisories, route info, the model roster and the
+task-model guard. Upstream has none of those symbols, so this was pure conflict surface.
+
+Verification: `tests/tools -k "delegate or delegat"` = **755 passed, 3 failed, 6 skipped**. The three
+failures are `test_delegation_recovery_diagnostics::test_unfinished_delegation_recovery_keeps_transcript_locator`,
+which fail identically at the pre-change base `883fecc` — no regression.
+
+`tests/tools/test_delegate_role_parity.py` is the new drift guard: eight roles, eight literal
+model/provider assertions, plus a batch test that one role's pin cannot leak onto a neighbour and a
+test that `sr-coder` never answers on the batch default. Two tests needed repointing because a
+monkeypatch on `tools.delegate_tool._resolve_delegation_credentials` no longer intercepts a call made
+from the routing module — a general hazard of this seam pattern, worth remembering for the next one.
+
+**Not executed: `browser_use_cli.py`.** Its 549 movable lines sit on module-level mutable state
+(`_driven_daemons`, `_daemon_calls_in_flight`, `_owned_daemon_groups`, the sweep lock) that the 48
+shared upstream functions also read, so a naive move would split one daemon registry across two
+modules. That needs the state itself to move behind accessors first — a separate, test-gated step.
+
