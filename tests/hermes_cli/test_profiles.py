@@ -646,9 +646,20 @@ class TestCreateProfile:
         # Files at the source root are excluded outright.
         for history in (
             "state.db", "state.db-wal", "state.db-shm",
-            "backups", "state-snapshots", "checkpoints",
+            "state-snapshots", "checkpoints",
         ):
             assert not (profile_dir / history).exists(), history
+        # `backups/` gets the same contract as `sessions/` and `cron/`: the source archive
+        # must not come across, but the clone may write its OWN config backup there
+        # (upstream v0.23.0 backs up a profile's config on write, giving
+        # `backups/config/config.yaml.good.<stamp>`). Asserting the directory is absent
+        # would forbid that; the contract is that no source history arrived.
+        assert not (profile_dir / "backups" / "backup.tar.gz").exists()
+        if (profile_dir / "backups").exists():
+            leftover = [p for p in (profile_dir / "backups").rglob("*") if p.is_file()]
+            assert leftover, "an empty backups/ dir means something copied the shape, not a writer"
+            for f in leftover:
+                assert f.relative_to(profile_dir / "backups").parts[0] == "config", f
         # `sessions/` and `cron/` are excluded as CONTENT but deliberately re-created as
         # empty skeletons so the clone can run (upstream 48465c3933: "--clone-all no longer
         # copies cron jobs"; the same re-mkdir covers sessions). Asserting the dir is absent
