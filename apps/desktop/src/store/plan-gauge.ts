@@ -31,6 +31,15 @@ export interface PlanGaugeObservation {
 
 export const $planGauges = atom<Record<string, PlanGaugeObservation>>({})
 
+/** One allowance per (backend source, plan owner). A scope can host sessions on different
+ *  providers — a chat switched from Nous to Claude keeps both accounts' observations — so the
+ *  provider is part of the slot key. A single slot per scope let the first account's number win
+ *  (`supersedes` only ever raises a percentage within a window) and put Nous's spent plan on a
+ *  session answering on Claude. */
+export function planGaugeSlot(scopeKey: string, provider?: string): string {
+  return `${scopeKey}\u0000${String(provider ?? '').trim().toLowerCase()}`
+}
+
 /**
  * The source a runtime session's allowance belongs to: the scope its own events proved, else the
  * actively served source — `session-states.recordSessionEventScope` records nothing for the local
@@ -41,6 +50,34 @@ export function planScopeFor(runtimeId: null | string | undefined): string {
     sessionEventScopeFor(runtimeId) ??
     registryBackendScopeKey(activeGatewayConnectionId(), $activeGatewayProfile.get())
   )
+}
+
+/**
+ * The allowance to paint for one source and one plan owner. Exact owner first; a legacy observation
+ * without a provider keeps working for an older gateway. A session that does not know its provider
+ * yet (before its first reply) inherits the scope's only allowance — the account number the tab
+ * would show a moment later; with several owners in one scope there is no honest guess, so none.
+ */
+export function planGaugeFor(
+  gauges: Record<string, PlanGaugeObservation>,
+  scopeKey: string,
+  provider?: string
+): PlanGauge | null {
+  const owner = String(provider ?? '').trim().toLowerCase()
+
+  if (owner) {
+    return gauges[planGaugeSlot(scopeKey, owner)]?.gauge ?? null
+  }
+
+  const legacy = gauges[scopeKey]
+
+  if (legacy) {
+    return legacy.gauge
+  }
+
+  const scoped = Object.entries(gauges).filter(([key]) => key.startsWith(`${scopeKey}\u0000`))
+
+  return scoped.length === 1 ? scoped[0][1].gauge : null
 }
 
 /**
@@ -66,25 +103,35 @@ const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // at once — a monthly allowance used to expire the slot on the spot (and take the readout with it).
 const MAX_TIMER_MS = 2_147_483_647
 
-function clearExpiry(scopeKey: string): void {
-  const timer = expiryTimers.get(scopeKey)
+function clearExpiry(slotKey: string): void {
+  const timer = expiryTimers.get(slotKey)
 
   if (timer !== undefined) {
     clearTimeout(timer)
-    expiryTimers.delete(scopeKey)
+    expiryTimers.delete(slotKey)
   }
 }
 
-/** Drop the slot: the allowance window it describes has ended, so the number is no longer current
- *  (the gateway's own rule, `gateway/session_usage.py::plan_gauge`). */
-export function forgetPlanGauge(scopeKey: string): void {
-  clearExpiry(scopeKey)
-  const { [scopeKey]: _dropped, ...rest } = $planGauges.get()
+function forgetSlot(slotKey: string): void {
+  clearExpiry(slotKey)
+  const { [slotKey]: _dropped, ...rest } = $planGauges.get()
   $planGauges.set(rest)
 }
 
-function armExpiry(scopeKey: string, gauge: PlanGauge): void {
-  clearExpiry(scopeKey)
+/** Drop every slot of one source: its allowance windows ended, so the numbers are no longer current
+ *  (the gateway's own rule, `gateway/session_usage.py::plan_gauge`). */
+export function forgetPlanGauge(scopeKey: string): void {
+  const prefix = `${scopeKey}\u0000`
+
+  for (const key of Object.keys($planGauges.get())) {
+    if (key === scopeKey || key.startsWith(prefix)) {
+      forgetSlot(key)
+    }
+  }
+}
+
+function armExpiry(slotKey: string, gauge: PlanGauge): void {
+  clearExpiry(slotKey)
   const reset = gauge.resets_at_ms
 
   if (typeof reset !== 'number' || reset <= 0) {
@@ -94,21 +141,21 @@ function armExpiry(scopeKey: string, gauge: PlanGauge): void {
   const delay = reset - Date.now()
 
   if (delay <= 0) {
-    forgetPlanGauge(scopeKey)
+    forgetSlot(slotKey)
 
     return
   }
 
   expiryTimers.set(
-    scopeKey,
-    setTimeout(() => expireSlot(scopeKey), Math.min(delay + 1_000, MAX_TIMER_MS))
+    slotKey,
+    setTimeout(() => expireSlot(slotKey), Math.min(delay + 1_000, MAX_TIMER_MS))
   )
 }
 
 /** A timer fired: drop the slot if the CURRENT observation's window has ended, else re-arm (the cap). */
-function expireSlot(scopeKey: string): void {
-  expiryTimers.delete(scopeKey)
-  const current = $planGauges.get()[scopeKey]
+function expireSlot(slotKey: string): void {
+  expiryTimers.delete(slotKey)
+  const current = $planGauges.get()[slotKey]
   const reset = current?.gauge.resets_at_ms
 
   if (!current || typeof reset !== 'number' || reset <= 0) {
@@ -116,24 +163,25 @@ function expireSlot(scopeKey: string): void {
   }
 
   if (reset <= Date.now()) {
-    forgetPlanGauge(scopeKey)
+    forgetSlot(slotKey)
 
     return
   }
 
-  armExpiry(scopeKey, current.gauge)
+  armExpiry(slotKey, current.gauge)
 }
 
-/** Record one observation of the account's allowance. Newest wins within the rules of `supersedes`. */
+/** Record one observation of one account's allowance. Newest wins within the rules of `supersedes`. */
 export function notePlanGauge(scopeKey: string, gauge: PlanGauge, sessionId?: string): void {
-  const current = $planGauges.get()[scopeKey]
+  const slotKey = planGaugeSlot(scopeKey, gauge.provider)
+  const current = $planGauges.get()[slotKey]
 
   if (current && !supersedes(current.gauge, gauge)) {
     return
   }
 
-  $planGauges.set({ ...$planGauges.get(), [scopeKey]: { at: Date.now(), gauge, sessionId } })
-  armExpiry(scopeKey, gauge)
+  $planGauges.set({ ...$planGauges.get(), [slotKey]: { at: Date.now(), gauge, sessionId } })
+  armExpiry(slotKey, gauge)
 }
 
 /** Test/teardown reset; the app never clears the slots wholesale. */

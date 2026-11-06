@@ -27,6 +27,18 @@ def _exc_http_status(exc: Exception) -> Any:
             or _botocore_error(exc)[0])
 
 
+def _is_provider_unavailable_error(exc: Exception) -> bool:
+    """The provider answered 5xx: it cannot serve this request right now.
+
+    A 5xx is a capacity failure like a 402 or a 429-after-retries — routing falls over to the
+    configured fallback chain instead of surfacing the error to the caller. Live case: Nous
+    returns ``503 usage_window_unavailable`` while its usage meter is down; without this the
+    ladder has no reason to act, the primary error is raised, and every caller that fails
+    closed (the smart-approval guardian escalates to the user) prompts for a transient blip.
+    """
+    return _exc_http_status(exc) in {500, 502, 503, 504}
+
+
 def _is_invalid_aux_response_error(exc: Exception) -> bool:
     """HTTP-200 empty/malformed ChatCompletions — a capability failure routed like model incompatibility."""
     if not isinstance(exc, RuntimeError):

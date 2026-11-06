@@ -67,6 +67,10 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Outcomes that SUPERSEDE an older quota/auth failure string: the card ran again afterwards and the runtime wrote a
+# newer, more specific outcome. Kept beside the regex because the two are only meaningful together.
+_SUPERSEDED_OUTCOMES = ("blocked", "completed", "review_requested", "success")
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1620,7 +1624,13 @@ def check_respawn_guard(
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+        if latest_outcome in _SUPERSEDED_OUTCOMES:
+            # The text diagnoses an older run; this run superseded it. Clear it so it cannot park the card later
+            # (there was no CLI path out of a guarded `ready` row — see the 2026-11-05 stall).
+            with _kb.write_txn(conn):
+                conn.execute("UPDATE tasks SET last_failure_error = NULL WHERE id = ?", (task_id,))
+        else:
+            return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.

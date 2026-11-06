@@ -504,6 +504,37 @@ def test_respawn_guard_blocker_auth_curated_not_open_stem(
         assert kbd.check_respawn_guard(conn, tid) == expected
 
 
+def test_respawn_guard_ignores_quota_text_superseded_by_a_later_run(kanban_home):
+    """A stale quota string must not park a ready card whose latest run superseded it.
+
+    Measured 2026-11-05: two cards hit a provider quota wall at 11:36, were requeued, and kept `last_failure_error` =
+    "pid ... exited rate-limited (quota wall)". Every later dispatch returned `blocker_auth` for them, so they sat in
+    `ready` for hours while the quota window was long over. There was no CLI way out: `unblock` clears the field only for
+    blocked/scheduled rows, `promote` refuses `ready`, and `block`+`unblock` trips the unblock-loop detector into triage.
+    Once a later run ends blocked/completed/review_requested, the text is a diagnosis of an OLDER run: it must neither
+    guard the card nor survive to guard it later.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale quota", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='blocked', status='blocked', ended_at=? WHERE id=?",
+            (int(__import__("time").time()), run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, last_failure_error=? WHERE id=?",
+            ("pid 1442108 exited rate-limited (quota wall) — requeued without counting a failure", tid),
+        )
+        conn.commit()
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+        # And the dead text is gone, so it cannot guard a future dispatch either.
+        assert conn.execute(
+            "SELECT last_failure_error FROM tasks WHERE id=?", (tid,)
+        ).fetchone()[0] is None
+
+
 def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
     """A plain crash's captured stdout is context, not a diagnosis.
 

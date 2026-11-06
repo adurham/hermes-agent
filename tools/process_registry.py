@@ -1152,6 +1152,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
         gateway and its messaging control plane)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
+        # Battery: background jobs are the unattended work — nobody waits on
+        # them, so a third less energy per unit of work is worth the slower
+        # clock. Foreground tool calls never come through here.
+        try:
+            from hermes_cli.power_qos import battery_prefix
+
+            argv = battery_prefix() + argv
+        except Exception:  # never let a power tweak break a spawn
+            pass
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         if in_supervised_gateway and _systemd_run_user_scope_available():

@@ -71,6 +71,11 @@ class ConversationState:
     # turn — well before most conversation boundaries fire — so falling
     # back to it finds nothing far more often than "rare edge case".
     transport_a_participant_id: str = ""
+    # The pre-agent provider-switch line ("⚠️ Provider fallback: ...") was already shown to this
+    # conversation. It is durable session state — "this session is on the fallback provider" —
+    # not per-message chatter; the runner suppresses repeats until a session boundary clears it
+    # (owner rule, 2026-11-04).
+    fallback_notice_shown: bool = False
 
     def clear(self) -> None:
         """Reset every field to its default, so new fields are cleared automatically."""

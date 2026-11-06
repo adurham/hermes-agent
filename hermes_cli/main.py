@@ -3656,6 +3656,16 @@ def main():
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()
 
+    # On battery, put this backend under the darwin background policy so tool
+    # bursts land on E-cores; revert when plugged in. macOS only, and opt-out
+    # with ``power.battery_qos: false``. Never fatal.
+    try:
+        from hermes_cli import power_qos
+
+        power_qos.maybe_enable()
+    except Exception:
+        logger.debug("battery qos unavailable", exc_info=True)
+
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
         from hermes_cli.stdio import configure_windows_stdio
