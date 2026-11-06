@@ -78,7 +78,8 @@ _LARK_SDK_IMPORTS = (
 )
 lark = FeishuWSClient = GetApplicationRequest = CreateFileRequest = CreateFileRequestBody = CreateImageRequest = CreateImageRequestBody = None  # type: ignore[assignment]
 CreateMessageRequest = CreateMessageRequestBody = GetChatRequest = GetMessageRequest = DeleteMessageRequest = GetMessageResourceRequest = None
-P2ImMessageMessageReadV1 = ReplyMessageRequest = ReplyMessageRequestBody = UpdateMessageRequest = UpdateMessageRequestBody = AccessTokenType = None
+P2ImMessageMessageReadV1 = ReplyMessageRequest = ReplyMessageRequestBody = UpdateMessageRequest = UpdateMessageRequestBody = None
+PatchMessageRequest = PatchMessageRequestBody = AccessTokenType = None
 HttpMethod = FEISHU_DOMAIN = LARK_DOMAIN = BaseRequest = CallBackCard = P2CardActionTriggerResponse = EventDispatcherHandler = None
 FEISHU_AVAILABLE = False
 _lark_import_lock = threading.Lock()
