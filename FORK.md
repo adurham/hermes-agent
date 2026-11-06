@@ -4,6 +4,52 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-11-05 (upstream sync) — v0.23.0 merged
+
+**Range.** `v0.22.7..v0.23.0` (v0.23.0 = `2bd378ed1b8`): 777 first-parent / 808 total commits, 1,223
+files, +42,358/−11,117. Collision surface: the fork diverged on 1,285 files, upstream touched 1,223,
+**135 files both sides changed**. 16 conflicted paths (14 UU, 2 DU), 24 conflict blocks — the
+smallest collision set since v0.21.7 despite a full minor-version bump.
+
+**Resolution.** Parent-only this round (no resolver children): each conflict was one subsystem with
+an obvious owner, and the two generated artifacts were re-rendered instead of hand-merged. Notable:
+- **Desktop throttling: the fork's deletion REVERSED, upstream's v0.23.0 dial adopted** (owner call,
+  2026-11-05: "I prefer using upstream work; my fork based changes can and should go stale over
+  time"). Upstream now unthrottles only `isVisible() && !isMinimized()` windows while a turn runs, and
+  the native `stream-work-clock` commits hidden-window flushes without enabling painting — the shape
+  the 2026-10-30 entry argued for, minus the occluded-window case. Restored from the tag:
+  `stream-throttle.ts` (+test), `stream-work-clock.ts` (main, renderer, test), `preview-guest-ipc.ts`,
+  `preview-guest-throttle.ts` (+test) and the `preload` channel; the fork's `preview-guest-hidden`
+  handler moved back inside `registerPreviewGuestIpc`. **Revert recipe** if the pack draw returns
+  with the window parked behind another app: re-apply `7c61589695e` (delete the same six files and
+  their imports) — nothing else in this sync depends on the dial.
+- **Flush scheduler: the fork's per-session floors kept, upstream's clock underneath.** The merge
+  left `flushHandleRef` typed as upstream's cancel function while the fork's `armFlushTimer` still
+  called `window.setTimeout`; it now arms through `scheduleStreamWork(runFlush, delay)` and the
+  reveal path cancels through the same handle. tsc caught the split (three unknowns); no test did.
+- **Checkpoint staging:** upstream's `_unstage_store` → `_unstage_excluded` → size-preflight order
+  adopted, and the fork's unreadable-path retry folded into one shared `_add_all_excluding` helper
+  used by both `_stage_all` and `_stage_with_oversize_preflight`, so the fix runs on the real create
+  path instead of a dead sibling. An F821 `unreadable` on the first pass caught the fork's checkpoint
+  note still reading a variable upstream's replacement never bound.
+- **Compression feasibility:** upstream's route-aware `lazy_compression_feasibility_check` behind the
+  fork's lifecycle wrapper; the fork's local latch body (dead after the swap) delegates instead.
+- **cli.py:** upstream's new `CLIBacktrackMixin` added to the bases, the fork's attention-notifier
+  reaper kept. **tests.yml:** upstream's 3-slice split with the fork's fork-repo `if:` guard.
+- **feishu adapter:** upstream's import block (adds `PatchMessageRequest*`).
+- **config_defaults / web_server_config:** fork slots kept (`pet_dialogue`, `reasoning_effort_by_role`,
+  and the canonical aux-task list, a strict superset of upstream's).
+- **Generated:** `gateway-contract.openrpc.json` + `gateway-contract.generated.ts` re-rendered with
+  `scripts/gen_gateway_contracts.py` (the fork's `InflightTool` schema survives), the command-parity
+  doc with `scripts/gen_gateway_command_parity.py` (106 → 105 registry commands: one retired).
+
+**Verification.** Zero unmerged paths, zero real conflict markers (the known
+`test_audit_old_updater_imports.py` fixture only). AST parse clean on 465 changed `.py`; ruff
+F811/F821/F601 3-tree diff 0 findings new in merged; import resolver 0 new (py) and 0 unresolved
+(ts); `fork_symbol_sweep` 37 fork-only defs checked, both prod refs false positives (an XML element
+name and a local variable); `fork_line_sweep` 9 flagged rows, every one accounted for (7 the
+deliberate adoptions above, 2 generated files). Desktop `tsc --build` clean for both projects.
+
 ### 2026-11-03 (upstream sync) — v0.22.6 and v0.22.7 merged
 
 **Range.** `v0.22.5..v0.22.7` (v0.22.6 = `f0d94882e89`, v0.22.7 = `b200f5bc60e`): 3,475 first-parent
