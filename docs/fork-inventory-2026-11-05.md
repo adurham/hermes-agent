@@ -500,3 +500,56 @@ What actually stands, in order of value:
 The long tail is the real pool: 21,604 lines across 430 files. The sweep for it is mechanical — fork-only
 modules with zero incoming import edges and no config reference, quarantined a week before deletion.
 
+## H1. The Fable review (route recovered) and what it changes
+
+The first two long consult payloads died with `400 HERMES_MODEL_ADMISSION_CONSUMED` *inside* a broken
+stream (`status 200, capture incomplete, relay failure IncompleteRead, native retries denied: 1`). That
+is not a refusal and not quota — a one-sentence consult to the same route answered normally, and a
+compacted ~1.5k-char brief also answered, while the ~7k-char briefs failed twice. It is the relay's own
+retry being refused because the stream that consumed the admission never delivered.
+
+Fable's verdict reframes the whole exercise, and it is right: **fork-only modules cost zero conflict
+lines** (the 2,500-line cross-session stack is free at sync time), so the only number that matters is
+*fork lines inside upstream-owned files × how often upstream rewrites that file*. Almost nothing should
+be deleted; the lever is **moving code behind a seam** so the upstream file keeps a call site instead of
+an implementation.
+
+Ranked by lines evicted × churn (saving = fork lines out of the upstream file):
+
+| # | file | mechanism | saving | failure if still needed |
+|---|---|---|---|---|
+| 1 | `cli.py` (1,861) | `fork_hooks.py` extension points (commands, startup, turn-end, desktop bridge, persona) | ~1,750 | **silent** — assert every declared hook fired at startup |
+| 2 | `tools/memory_tool.py` (998) | register a fork tool under the same name; revert upstream's file | ~998 | loud (tool unresolved) |
+| 3 | `agent/anthropic_adapter.py` (1,313) | fork adapter subclass in the provider table | ~1,250 | loud (unknown provider raises) |
+| 4 | `agent/chat_completion_helpers.py` (684) | one `coerce_tool_calls(provider, response)` dispatch | ~650 | **silent and nasty** — deepseek stops calling tools; needs a canned-prompt smoke test |
+| 5 | `agent/auxiliary_client.py` (1,040) | one `resolve_aux_model(task_kind)` dispatch | ~1,000 | silent — aux failures are swallowed; needs a startup probe |
+| 6 | `tools/delegate_tool.py` (967) | `ROLES: dict[str, RoleSpec]` + `resolve_role()` (below) | ~940 | loud if the seam is closed |
+| 7 | `tools/browser_use_cli.py` (805) | fork lifecycle module (`start/stop/attach/health`) | ~780 | loud, but low churn |
+| 8 | `agent/curator.py` (479) | move last, once the hook pattern exists | ~470 | silent (audit stops, curation continues) |
+
+**Delete candidates: none blind.** The bar Fable set is: config flag off **and** grep shows zero call
+sites **and** a one-week run with the module stubbed to raise. Given three of the previous reviewer's
+top three claims were false, that bar is correct.
+
+**The `delegate_tool` seam, precisely:** eight roles is a table, not a program.
+`_resolve_role_credentials` + `_load_role_maps` collapse to a declarative `ROLES: dict[str, RoleSpec]`
+(~60 lines, provider/model/base_url env/key env/explicit fallback); `_resolve_task_routes` becomes a
+~40-line lookup; `_auto_route_batch` stays as the only real logic (~100 lines) because it is the single
+place silent misrouting can originate. The boundary:
+
+    resolve_role(name: str) -> ResolvedRoute      # total and closed
+
+It returns a fully bound `(provider, model_id, base_url, credential)` or raises `UnknownRole` /
+`UnboundCredential`. **No fallback policy inside it** — fallback is an explicit `with_fallback(route,
+alt_role)` the caller chooses and logs. Forbidden inside the seam, because each one is how a role
+silently resolves to the wrong model: defaulting unknown roles to the main model, fuzzy/prefix role-name
+matching, and credential chains that fall through to another provider's key. `_auto_route_batch` may pick
+a wrong *role name*, but it cannot invent a model, because every route passes through `resolve_role`.
+Locked by one test: enumerate all eight roles, assert the exact model string, fail CI on drift. Upstream's
+file keeps one line: `route = fork_roles.resolve_role(role)`.
+
+**First cut: `tools/delegate_tool.py`.** Not the biggest saving (`cli.py` is), but it is self-contained,
+has a decisive oracle (8 roles → 8 exact assertions), converts a silent failure class into a loud one,
+and removes the role-map duplication with the personas module — which proves the seam pattern before it
+is applied to `cli.py`, where the touch points are many and the failure mode is silent.
+
