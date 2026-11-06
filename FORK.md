@@ -73,6 +73,83 @@ F811/F821/F601 3-tree diff 0 findings new in merged; import resolver 0 new (py) 
 (ts); `fork_symbol_sweep` 37 fork-only defs checked, both prod refs false positives (an XML element
 name and a local variable); `fork_line_sweep` 9 flagged rows, every one accounted for (7 the
 deliberate adoptions above, 2 generated files). Desktop `tsc --build` clean for both projects.
+### 2026-11-04 (desktop status bar + gateway usage) — a manually switched chat kept showing Nous's spent plan
+
+**Symptom.** The owner, after starting a chat on Nous, hitting the plan's 100% week, and switching the
+conversation to Claude by hand: the bottom-right notice read `⚠ Nous Portal · Week 100% →
+claude-subscription-directsdk-experimental`. He put it plainly: "that notice ... isn't correct for that
+session ... I manually switched the conversation over from Nous/Ollama to Claude so it should be showing my
+claude usage for that session, Nous is no longer in the mix for that session until I manually switch it
+back."
+
+**Cause — two independent halves.**
+1. `gateway/session_usage.py::plan_gauge` treated a *spent* plan as proof of a fallback:
+   `_fallback_bound(agent) or payload['used_bp'] >= 10000` returned the Nous Portal gauge whenever the
+   answering provider was not Nous. `plan_route` then fabricated a route with
+   `primary_provider=GAUGE_PROVIDER` whenever `_primary_runtime` named the answering provider — which is
+   exactly what a deliberate `switch_model` leaves behind (`_finish_switch` clears `_fallback_activated`;
+   `switch_model` rebuilds `_primary_runtime` from the new route). A manual pick and a live fallback were
+   indistinguishable, so every manual switch away from a spent plan was painted as "Nous → X".
+2. The desktop store held ONE gauge per backend source (`$planGauges[scope]`), and `supersedes` only
+   raises a percentage within a window — the 100% Nous observation beat Claude's 42% forever, and the
+   statusbar read the slot by scope alone (not by provider). Even a correct gateway payload could not
+   displace it.
+
+**Fix.**
+- `_gauge_owner(agent)` = the chat's own route: `_primary_runtime.provider` only while a fallback is
+  genuinely active, else the answering provider. `plan_gauge` now returns the owner's own allowance —
+  Nous from `x-nous-credits-*`/Portal, any other provider from its account-usage windows
+  (`_account_window_gauge`, below) — and returns None when the owner publishes none. `plan_route` is
+  present only for a live fallback whose primary differs; the fabricated "from Nous" branch is gone.
+- `_account_window_gauge(provider)` reads `agent.account_usage_cache` (filled by the model picker,
+  `/usage`, and a throttled background refresh this tick starts), filters to account-scoped windows,
+  skips rolled-over resets, and picks the full (latest-resetting) else fullest window — the same
+  binding rule as `usage_gauges.binding_gauge`. Model-scoped windows (Anthropic's Opus/Sonnet weeks)
+  are excluded: they cannot block the account. Never fetches inline — this runs on every usage tick.
+- Desktop: `$planGauges` is keyed by `(source, provider)` (`planGaugeSlot`), `planGaugeFor` selects by
+  the focused session's provider (or the fallback's primary), and `useStatusbarItems` passes that owner.
+  `forgetPlanGauge` drops every provider slot of a source. `PROVIDER_DISPLAY_NAMES` gained the
+  `claude-subscription*` labels so the gauge reads "Claude Subscription · Week N%".
+- Plugin (`~/.hermes/plugins/claude-subscription-directsdk-experimental`, separate fork with its own
+  FORK.md entry): `ClaudeOAuthDirectSDKProfile.fetch_account_usage` now reads
+  `CLAUDE_SUBSCRIPTION_DIRECTSDK_OAUTH_TOKEN` — deliberately NOT the pooled `CLAUDE_CODE_OAUTH_TOKEN`,
+  which may be a different account — and returns the 5h/weekly windows, honouring a 429 `retry-after`
+  and a 401/403 scope refusal with a long cooldown (the endpoint throttles hard). Live probe of that
+  endpoint with the plugin's own token: 429 during the rate-limit window, then
+  `403 permission_error: OAuth token does not meet scope requirement user:profile` — a
+  `claude setup-token` credential is inference-only, so that endpoint alone could not paint this
+  account's plan. **Superseded same day (see the update at the end of this entry):** the same 5h/weekly
+  figures ride every inference reply as `anthropic-ratelimit-unified-*` headers, readable with the setup
+  token; the plugin's relay now captures them, so the gauge shows this account's real Claude numbers.
+
+**Tests.** `tests/gateway/test_local_viewer_usage.py`: `test_a_manual_switch_shows_the_new_providers_own_windows`
+(the reported scenario: spent Nous plan, Claude gauge, no route), `test_a_fallback_keeps_the_primaries_allowance_and_names_it`
+(a real fallback names the primary), plus the updated restart-bound assertions (a bound backup is the
+chat's route; a spent plan is not evidence of a swap). Desktop: `plan-gauge.test.ts` (two owners in one
+scope, provider selection, legacy/unknown-provider fallbacks) and the statusbar test "shows the focused
+session's own plan after a manual switch". Plugin: `tests/test_usage.py` (window parsing, 429 cooldown,
+403 scope rest, no token → no request).
+
+**Verified.** `pytest tests/gateway/test_local_viewer_usage.py` 20/20; `vitest run --project ui`,
+`tsc -p . --noEmit`, and eslint on the changed desktop files; plugin `tests/test_usage.py` 4/4. Fail-before
+proved on a clean `HEAD` worktree: 4 of the gateway tests fail there (including the manual-switch case),
+pass on the fix.
+
+**Update (same day, later) — the gauge now shows the real Claude numbers, not a hidden item.** The
+`/api/oauth/usage` 403 above is a property of *that endpoint*, not of the credential: every inference
+reply carries `anthropic-ratelimit-unified-5h-utilization/-5h-reset/-7d-utilization/-7d-reset` plus the
+overage state, and those are readable with the setup token. The plugin's relay (`admission.py`) now
+captures them per reply into `$HERMES_HOME/cache/claude-subscription-directsdk/unified-limits.json`, and
+its `fetch_account_usage` serves a `native_rate_limit_headers` snapshot from that capture before trying
+the endpoint (plugin FORK.md, entry 2026-11-04 (b)). Live-verified through the real relay against
+`api.anthropic.com`: 5h 65% / 7d 18%; the hook returned those two account windows, and
+`_account_window_gauge` picked `{'id': 'session', 'used_bp': 6500, 'provider':
+'claude-subscription-directsdk-experimental'}` — `Claude Subscription · Current session 65%`. So the
+end-to-end answer to the reported notice is this pair: the gateway/desktop half (below) follows the chat's
+own route, and the plugin half supplies that route's own allowance. **Live after the owner's `hermes
+update` (gateway restarted 15:08, code_sha `fedd8a7`):** `model.options` on the running gateway returned
+that provider's row with `windows: Current session 65% (reset 22:00 UTC), Current week 18%` — the plugin
+hook is live inside the gateway process, not just in a probe.
 
 ### 2026-11-03 (upstream sync) — v0.22.6 and v0.22.7 merged
 

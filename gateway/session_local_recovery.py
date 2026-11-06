@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from pathlib import Path
 
 from gateway.config import Platform
@@ -68,6 +69,27 @@ class _ReceiptRefused(RuntimeStoreError):
 
 class _CatchUpPending(RuntimeStoreError):
     """The receipt's compression catch-up is committing in a worker; this restore is refused."""
+
+
+# A REFUSED receipt is durable truth, not a transient fault: a sid whose row is missing must not be
+# re-read and re-logged on every poll. Measured 2026-11-04: three orphaned local sessions (no
+# state_meta receipt row) logged "receipt refused: storage_unavailable" ~3x/s for hours and buried the
+# gateway journal. Remember the refusal for a TTL so a repaired store is still picked up without a
+# restart, and log each sid once per TTL instead of once per caller.
+_REFUSAL_TTL_S = 600.0
+_refusals: dict = {}
+
+
+def _refusal_hit(sid):
+    hit = _refusals.get(sid)
+    if hit is not None and (time.monotonic() - hit[0]) < _REFUSAL_TTL_S:
+        return hit[1]
+    _refusals.pop(sid, None)
+    return None
+
+
+def _note_refusal(sid, reason):
+    _refusals[sid] = (time.monotonic(), reason)
 
 
 def _with_untracked_compression(authority, sid, receipt):
@@ -151,6 +173,9 @@ def _stray_route_target(authority, receipt, session_id):
 
 
 def restore_local_session(authority, sid):
+    cached = _refusal_hit(sid)
+    if cached is not None:
+        raise _ReceiptRefused(cached)
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
     from gateway.session_policy import restore_policy
@@ -171,6 +196,7 @@ def restore_local_session(authority, sid):
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         # The client only sees the bounded code: gateway.log names the check that refused (#140099).
         logging.getLogger(__name__).warning('Local session %s receipt refused: %s', sid, _refused_check(exc))
+        _note_refusal(sid, exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable')
         if isinstance(exc, RuntimeStoreError):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
@@ -223,6 +249,7 @@ def restore_local_session(authority, sid):
                 raise RuntimeStoreError('admission_conflict')
             else:
                 current.session_id = target
+    _refusals.pop(sid, None)
     return SessionRef(authority.profile_id, sid)
 
 

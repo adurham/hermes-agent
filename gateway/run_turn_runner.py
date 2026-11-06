@@ -62,6 +62,32 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
+def _fallback_notice_once_per_session(runner, session_key, notice):
+    """Return ``notice`` only the first time this conversation sees a pre-agent provider switch.
+
+    The line reports durable state — "this session is running on the fallback provider" — so repeating
+    it on every reply is noise (owner rule, 2026-11-04). Suppressed repeats are logged, not shown. The
+    flag lives on ``ConversationState`` so a session boundary (``/new``, reset) re-announces the switch.
+    """
+    if not notice:
+        return notice
+    state = None
+    try:
+        peek = getattr(runner, "_peek_session_state", None)
+        state = peek(session_key) if (peek and session_key) else None
+    except Exception:
+        state = None
+    convo = getattr(state, "conversation", None) if state is not None else None
+    if convo is None:
+        # No session state to dedupe against: keep the legacy per-turn behaviour rather than hide it.
+        return notice
+    if getattr(convo, "fallback_notice_shown", False):
+        logger.info("suppressed repeat pre-agent fallback notice for session %s", session_key or "")
+        return None
+    convo.fallback_notice_shown = True
+    return notice
+
+
 def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
@@ -1293,6 +1319,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # fallback was resolved before any agent exists (#74349); one-shot per turn.
             pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
             runner._pre_agent_fallback_notice = None
+            pending_fallback_notice = _fallback_notice_once_per_session(
+                runner, ctx.session_key, pending_fallback_notice)
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model and not pending_fallback_notice:
