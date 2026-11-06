@@ -12274,6 +12274,7 @@ function spawnSecondaryWindow({
 
   bindWindowChromeEvents(win, sendWindowStateChanged)
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
   // The preload asks for its skin before it can publish its own active route.
@@ -12368,6 +12369,7 @@ function spawnBrowserWindow(tabId) {
 
   bindWindowChromeEvents(win, sendWindowStateChanged)
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'browser-window', rememberLog)
 
@@ -12485,6 +12487,7 @@ function createInstanceWindow(
 
   bindWindowChromeEvents(win, sendWindowStateChanged)
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
@@ -13144,8 +13147,9 @@ function spawnHudWindow(sessionId, profile) {
   // sticky; releasing it assigns the HUD to KDE's then-current desktop.
 
   // Streaming into a window that is ALWAYS blurred (the user is in another
-  // app) is the entire feature; an on-screen overlay is not throttled by
-  // Chromium, and an occluded one has nothing to paint.
+  // app) is the entire feature, so it gets the same stream-aware unthrottling
+  // every chat window does.
+  streamThrottle.register(win)
   hudWindows.add(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
@@ -13763,6 +13767,7 @@ function createWindow() {
     }
   })
 
+  streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
