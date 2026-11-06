@@ -407,3 +407,38 @@ Recorded for history only — upstreaming is closed as of 2026-11-05.
 - 2026-10-04 — (#132889, carrier filter in the thinking-prefill gate; DRAFT filed)
 - 2026-10-02 — /03 (upstream sync-readiness audit + 5 upstream PRs filed from the fork)
 - — — legitimate candidates for a clean upstream PR
+
+## F. Which fixes are still needed — Fable review + reachability check
+
+Consulted Fable on the nine clusters, then checked every claim it made that could be settled from
+the tree. Fable's framing is the important part: **"present and passing" proves a fix still applies,
+not that its code path is reachable.** Reachability under the actual config (deepseek-v4.1-flash main,
+all auxiliaries on ollama-cloud/nous except `consult` and `vision`-fallback on Claude, holographic
+memory provider) is the real test for dead weight.
+
+| cluster | n | verdict | basis |
+|---|---:|---|---|
+| Desktop app | 36 | **KEEP** | fork-only, heavily used, lowest sync cost; guard with an event-contract test, not per-fix tests |
+| Models / providers | 32 | **KEEP, trim the dormant Anthropic-aux corner** | aux is ollama-cloud everywhere except `consult` (Claude) and `vision` fallback (Claude), so the Haiku-`context-1m` and single-provider cheap-pin fixes guard a path the config never takes. The Anthropic adapter itself is live for Claude roles — do not delete the adapter fixes |
+| Gateway / turns | 16 | **KEEP + drift guards** | highest churn surface; every one is silent loss of user input if dropped. Checked for promise-gate dependency: none — `promise_gate` was imported only by `turn_final_response.py`, so yesterday's deletion does not orphan any of them |
+| CLI / TUI | 17 | **CONSOLIDATE** | the `x-api-key` env leak and the process-global runtime-main race are must-keep and touch upstream files → pin with tests instead of hand-reapplying |
+| Tools / skills | 16 | **CONSOLIDATE after checking upstream** | upstream has grown its own bot-chain/loop-guard code; if it covers the fork's guardrail, take upstream's and keep only the regression test |
+| Memory | 9 | **KEEP — Fable's "likely drop" is wrong on reachability** | the staged confirm is `write_approval.MEMORY` (hot-tier `MEMORY.md` writes) and runs on every memory edit; the holographic provider only withdraws the *warm tool surface*. The warm-only part of the cluster is dormant, the hot-tier ordering/cost part is live |
+| Sessions / subagents | 5 | **KEEP** | lane workers are subagents; `send_to_parent` registration failure is silent result loss |
+| Git / checkpoint | 5 | **CONSOLIDATE** | merge-defect restores become one assertion each; the 2026-11-05 unreadable-path fix stays (verify it logs the skipped path) |
+| Other | 62 | **RE-TRIAGE** | not a cluster: test-order leaks → shared fixtures; merge restores → drift guards; approval-timeout and cost accounting stay (kanban workers and spend numbers depend on them) |
+
+**Concretely obsolete or dormant under this config** (safe to leave unmaintained, drop only with a test):
+
+- the Anthropic-aux Haiku `context-1m` 400 fix and the Sonnet-4-6 aux pinning — aux never runs on Anthropic here;
+- the single-provider "cheap pin falls back to the main model" fix — every aux task has an explicit provider;
+- the native-Claude web-search swap, unless a reviewer role actually searches (it does not today).
+
+**Never drop without a replacement test:** the three gateway/turn fixes (hard stop destroying an
+accepted correction, queued row deleted before send, completion landing on the running turn), the
+`x-api-key` leak fix, `send_to_parent` registration, and the memory end-of-session ordering — each
+fails silently rather than loudly.
+
+**Correction to Fable's evidence read:** the 18 `tests/providers` failures are not "dead weight from
+the fork" — they fail identically on the pre-merge baseline tree, i.e. they are upstream tests that
+are already red, not fork fixes whose tests rotted.
