@@ -97,6 +97,71 @@ checkpoint helper routes upstream's `_run_git(_stage_all_args(...))` through `_a
    `tests/gateway/test_feishu_sdk_name_binding.py` ties the spelled-out initialisers to
    `_LARK_SDK_IMPORTS` so the next upstream addition cannot drift again.
 
+### 2026-11-05 (sync close-out) — v0.23.0 landed on `main`, and the ledger behind it
+
+**Landed.** `sync/upstream-v0.23.0` fast-forwarded onto `main` and pushed (`925b5c2444d`; `v0.23.0` is
+an ancestor). Twelve commits on top of the merge, all signed. `origin/main` had moved 3 commits during
+the sync (kanban quota guard, aux 5xx fallover, E-cores/power) — merged in, the only conflict was this
+file's entry stack.
+
+**Three merge defects the markers never showed — all found by running the tags.**
+1. **feishu:** `AttributeError: PatchMessageRequestBody`. Upstream v0.23.0 added the name to
+   `_LARK_SDK_IMPORTS`; the fork spells the module-level `None` initialisers out where upstream uses
+   `globals().update(...)`, so the import-block merge left it unbound and upstream's new
+   `test_feishu_clarify_choice_cards.py` caught it. Fixed + `tests/gateway/test_feishu_sdk_name_binding.py`
+   now ties the two lists together.
+2. **Five `streamThrottle.register(win)` call sites were still deleted.** The 2026-10-30 deletion
+   (`7c61589695e`) removed them; upstream never touched those lines, so git auto-merged the deletion
+   alongside the dial we just adopted — no window was registered. Restored at all five factories.
+3. **`locales/_keys.desktop.json` was upstream's.** The fork's pet-voice and statusbar-fallback keys
+   were missing; `npm run i18n:keys` regenerated it (6 keys), and the electron catalog test passes.
+
+Test-side drift fixed instead of code: `test_profiles.py::test_clone_all_excludes_history_artifacts`
+demanded a cloned profile have no `backups/`, but upstream v0.23.0 writes a profile's own
+`backups/config/config.yaml.good.<stamp>`; the assertion now forbids the SOURCE archive and allows the
+clone's own writer, the same contract `sessions/` and `cron/` already had. Prompt-surface fixtures
+re-rendered (97 tool tokens were missing for the fork's warm-tier memory fields).
+
+**Verified.** Desktop: `tsc --build` clean on both projects; `vitest --project ui` 1,579 files /
+13,240 tests green; `web` 485/485; `ui-tui` 1,950/1,983 with 3 failures identical at
+`pre-upstream-sync-v0.23.0` and at `v0.23.0`. Electron project: 4,052/4,125 pass; of its 12 failures
+1 was the catalog above, the rest reproduce at the pre-merge tip (Electron binary absent, macOS
+sandbox/case-sensitivity fixtures, a Linux-only toolchain case). Python on amd-workstation (3.14,
+CI-shaped per-file env): checkpoint 190/190, feishu 8/8, compression 608, `auxiliary_client` 253,
+power_qos+kanban_db 69, prompt_surface 2/2 after the re-render.
+
+**Failure triage.** A first full pass reached 68% and reported 349 failures — but 87 `hermes_cli`
+files and the whole `tests/ci` lane were dying on `fatal: failed to write commit object`: this
+account has `commit.gpgsign=true` + `gpg.format=ssh`, and `scripts/run_tests.sh` re-execs under
+`env -i`, dropping `SSH_AUTH_SOCK`. Re-running those files directly with a signing-free
+`GIT_CONFIG_GLOBAL` turned 166 of 167 green. The second trap was `/tmp`: a 16 GB tmpfs with
+`usrquota`, exhausted by deleted-but-open suite files, after which every write fails
+`Disk quota exceeded` while `df` still shows space — which is why some files "errored" instead of
+failing. Both traps are now in the skill's pitfalls. The 1,911 files the first pass flagged or never
+reached went through a per-file pass with a CI-shaped env; **every failure it reported reproduced at
+`pre-upstream-sync-v0.23.0`** (hermes_cli plugins/login/fleet families, `tests/pm`, `tests/plugins`,
+`tests/ci`) — the merge-caused set is zero.
+
+**Silent-loss sweep.** For every file both sides changed, take the declarations and call sites
+upstream ADDED in `v0.22.7..v0.23.0` and ask whether each survives: 1,223 overlap files → 0
+upstream-new declarations missing; 2 files with upstream-new calls missing, both deliberate and
+documented (the fork's `armFlushTimer` arm, and `_add_all` behind upstream's `_stage_all_args`).
+`tests/known_failing.txt`: 97 entries, 0 dead. Vendor-string scan of the whole range: 0 hits. Repo
+workflows: `.github/workflows/windows-desktop-attach-e2e.yml` arrived enabled from upstream —
+disabled; the fork is back to 57/57 `disabled_manually`.
+
+**Not verified.** The pack-draw re-measure for the adopted throttle model (the owner's tripwire: if
+the machine heats with the window parked behind another app, re-apply `7c61589695e` — recipe in the
+2026-11-05 sync entry above). Deploy to the live install is the owner's call and has not run.
+
+**De-fork policy for the next round.** Owner, 2026-11-05: "I prefer using upstream work; my fork
+based changes can and should go stale over time." A fork divergence is therefore presumptively stale:
+adopt upstream when it ships a comparable or better implementation of the same behaviour, even when
+the fork's copy is documented, dated and working — record the reversal with a one-line revert recipe.
+Only a fix for a bug upstream STILL has (proved by repro on the current tag) outranks it. This round
+applied that rule during merge resolution (desktop throttling, aux-task slots); the next round should
+read this file entry by entry against v0.23.0 and retire what upstream now covers.
+
 ### 2026-11-04 (desktop status bar + gateway usage) — a manually switched chat kept showing Nous's spent plan
 
 **Symptom.** The owner, after starting a chat on Nous, hitting the plan's 100% week, and switching the
