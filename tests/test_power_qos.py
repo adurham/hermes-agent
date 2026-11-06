@@ -21,9 +21,11 @@ def test_parse_on_battery_is_tri_state():
     assert power_qos.parse_on_battery("Now drawing from 'UPS Power'") is None
 
 
-def test_taskpolicy_argv_picks_the_right_flag():
-    assert power_qos.taskpolicy_argv(True, pid=1234) == ["/usr/bin/taskpolicy", "-b", "-p", "1234"]
-    assert power_qos.taskpolicy_argv(False, pid=1234) == ["/usr/bin/taskpolicy", "-B", "-p", "1234"]
+def test_taskpolicy_argv_picks_the_right_flag(monkeypatch):
+    # taskpolicy ships in /usr/sbin; the path is resolved, never assumed.
+    monkeypatch.setattr(power_qos, "taskpolicy_path", lambda: "/usr/sbin/taskpolicy")
+    assert power_qos.taskpolicy_argv(True, pid=1234) == ["/usr/sbin/taskpolicy", "-b", "-p", "1234"]
+    assert power_qos.taskpolicy_argv(False, pid=1234) == ["/usr/sbin/taskpolicy", "-B", "-p", "1234"]
 
 
 def test_apply_reports_success_and_failure():
@@ -40,7 +42,8 @@ def test_apply_reports_success_and_failure():
         raise OSError("no taskpolicy")
 
     assert power_qos.apply(True, runner=ok, pid=7) is True
-    assert calls == [["/usr/bin/taskpolicy", "-b", "-p", "7"]]
+    assert calls[0][1:] == ["-b", "-p", "7"]
+    assert calls[0][0].endswith("taskpolicy")
     assert power_qos.apply(True, runner=bad, pid=7) is False
     assert power_qos.apply(True, runner=boom, pid=7) is False
 
@@ -157,9 +160,10 @@ def _clear_probe_cache():
 
 def test_battery_prefix_only_on_battery(monkeypatch):
     monkeypatch.setattr(power_qos.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(power_qos, "taskpolicy_path", lambda: "/usr/sbin/taskpolicy")
 
     _clear_probe_cache()
-    assert power_qos.battery_prefix(probe=lambda: True) == ["/usr/bin/taskpolicy", "-b"]
+    assert power_qos.battery_prefix(probe=lambda: True) == ["/usr/sbin/taskpolicy", "-b"]
 
     _clear_probe_cache()
     assert power_qos.battery_prefix(probe=lambda: False) == []
@@ -170,6 +174,14 @@ def test_battery_prefix_only_on_battery(monkeypatch):
 
 def test_battery_prefix_is_a_noop_off_macos(monkeypatch):
     monkeypatch.setattr(power_qos.platform, "system", lambda: "Linux")
+    _clear_probe_cache()
+    assert power_qos.battery_prefix(probe=lambda: True) == []
+
+
+def test_battery_prefix_skips_a_host_without_taskpolicy(monkeypatch):
+    """A missing binary must mean "no policy", not a failed spawn."""
+    monkeypatch.setattr(power_qos.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(power_qos, "taskpolicy_path", lambda: None)
     _clear_probe_cache()
     assert power_qos.battery_prefix(probe=lambda: True) == []
 

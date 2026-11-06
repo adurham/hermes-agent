@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import time
 from typing import Callable, Optional
@@ -39,7 +40,22 @@ CHECK_INTERVAL_SEC = 60.0
 FLIP_CONFIRMATIONS = 2
 
 PMSET = "/usr/bin/pmset"
-TASKPOLICY = "/usr/bin/taskpolicy"
+
+#: ``taskpolicy`` lives in /usr/sbin on macOS, not /usr/bin — resolve it instead
+#: of hardcoding, and treat "not installed" as "no policy" rather than as a
+#: spawn failure.
+_TASKPOLICY: list = []
+
+
+def taskpolicy_path() -> Optional[str]:
+    if not _TASKPOLICY:
+        found = shutil.which("taskpolicy") or (
+            "/usr/sbin/taskpolicy" if os.path.exists("/usr/sbin/taskpolicy") else None
+        )
+        if not found:
+            return None
+        _TASKPOLICY.append(found)
+    return _TASKPOLICY[0]
 
 Runner = Callable[[list], int]
 Probe = Callable[[], Optional[bool]]
@@ -114,14 +130,16 @@ def battery_prefix(probe: Optional[Probe] = None) -> list:
         return []
     if on_battery_cached(probe) is not True:
         return []
-    return [TASKPOLICY, "-b"]
+    tool = taskpolicy_path()
+    return [tool, "-b"] if tool else []
 
 
 
 def taskpolicy_argv(on_battery: bool, pid: Optional[int] = None) -> list:
     """The command that sets (on battery) or clears (AC) the policy."""
     target = os.getpid() if pid is None else pid
-    return [TASKPOLICY, "-b" if on_battery else "-B", "-p", str(target)]
+    tool = taskpolicy_path() or "taskpolicy"
+    return [tool, "-b" if on_battery else "-B", "-p", str(target)]
 
 
 def apply(on_battery: bool, runner: Optional[Runner] = None, pid: Optional[int] = None) -> bool:
