@@ -3509,6 +3509,11 @@ def _is_connection_error(exc: Exception) -> bool:
         "network is unreachable", "timed out", "connection reset",
         # httpcore/httpx premature stream close — transient, retry/reroute.
         "incomplete chunked read", "peer closed connection", "response ended prematurely",
+        # A relay that opened the stream and then died mid-capture. The embedded status is a red
+        # herring (it can read 200, or a 400 produced BY the relay's own failed retry), so the
+        # transfer signature has to win over the status code — otherwise a truncated stream is
+        # classified as a billing/request rejection and the healthy provider is abandoned.
+        "incomplete upstream response", "capture incomplete", "incompleteread", "relay failure",
         "unexpected eof", "remoteprotocolerror", "localprotocolerror",
     ))
 

@@ -390,3 +390,34 @@ class TestConsultToolEffortOverride:
         props = CONSULT_SCHEMA["parameters"]["properties"]
         assert "effort" in props
         assert CONSULT_SCHEMA["parameters"]["required"] == ["question"]
+
+
+class TestConsultTransportFault:
+    """A stream that dies mid-capture is a TRANSPORT fault, not a refusal.
+
+    Live shape from the Nous relay (2026-11-05): the response opens with status 200, the capture
+    breaks, and the relay's own retry is refused with ``400 HERMES_MODEL_ADMISSION_CONSUMED`` --
+    which reads exactly like a quota wall while the account sits at 17% usage. Reporting that as
+    "proceed on your own judgment" hides the only recovery that works: send a smaller brief.
+    """
+
+    ADMISSION_ERROR = RuntimeError(
+        "Incomplete upstream response (first upstream attempt: status 200, capture incomplete, "
+        "relay failure IncompleteRead, native retries denied: 1): "
+        "API Error: 400 HERMES_MODEL_ADMISSION_CONSUMED"
+    )
+
+    def test_admission_error_is_reported_as_transport(self):
+        with patch("agent.auxiliary_client.call_llm", side_effect=self.ADMISSION_ERROR):
+            result = json.loads(consult_tool("Is this plan sound?"))
+        assert result["unavailable"] is True
+        assert "transport fault" in result["reason"]
+        assert "not a refusal" in result["reason"]
+        assert "shorter question/context" in result["reason"]
+
+    def test_transport_fault_detector_matches_the_live_shape(self):
+        from tools.consult_tool import _transport_fault
+
+        assert _transport_fault(self.ADMISSION_ERROR) is True
+        assert _transport_fault(RuntimeError("Connection reset by peer")) is True
+        assert _transport_fault(RuntimeError("API Error: 400 invalid request")) is False

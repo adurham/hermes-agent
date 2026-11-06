@@ -136,6 +136,22 @@ _CONSULT_SYSTEM_PROMPT = (
 )
 
 
+def _transport_fault(exc: Exception) -> bool:
+    """True when ``exc`` is a broken transfer rather than a model/provider verdict.
+
+    Ordering matters: the relay embeds its own failed-retry status inside the message ("status 200,
+    capture incomplete ... API Error: 400 HERMES_MODEL_ADMISSION_CONSUMED"), so a status-code read
+    alone files this as a request rejection or a quota wall and the caller never learns the stream
+    was cut.
+    """
+    text = str(exc).lower()
+    return any(p in text for p in (
+        "incomplete upstream response", "capture incomplete", "incompleteread", "relay failure",
+        "incomplete chunked read", "peer closed connection", "response ended prematurely",
+        "connection reset", "timed out",
+    ))
+
+
 def consult_tool(
     question: str,
     context: Optional[str] = None,
@@ -257,11 +273,20 @@ def consult_tool(
             reasoning_config=reasoning_config,
         )
     except Exception as exc:
+        # A truncated stream is a TRANSPORT fault, not a refusal and not a quota verdict. Saying
+        # "proceed on your own judgment" for one hides the one recovery that works (a smaller
+        # brief), and reads to the caller as if the reference model declined the question.
+        transport = _transport_fault(exc)
         return json.dumps(
             {
                 "unavailable": True,
                 "answer": None,
                 "reason": (
+                    f"Consult call failed ({type(exc).__name__}: {exc}) -- the reference route "
+                    "dropped the stream mid-response; this is a transport fault, not a refusal "
+                    "or a quota verdict. A shorter question/context usually gets through -- "
+                    "retry once with a compact brief, or proceed on your own judgment."
+                    if transport else
                     f"Consult call failed ({type(exc).__name__}: {exc}) -- "
                     "no second opinion available this time. Proceed using "
                     "your own judgment."
