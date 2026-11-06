@@ -78,6 +78,13 @@ F811/F821/F601 3-tree diff 0 findings new in merged; import resolver 0 new (py) 
 name and a local variable); `fork_line_sweep` 9 flagged rows, every one accounted for (7 the
 deliberate adoptions above, 2 generated files). Desktop `tsc --build` clean for both projects.
 
+**Silent-loss sweep** (the class the throttle registrations belonged to): for every file both sides
+changed, take the declarations and call sites upstream ADDED in `v0.22.7..v0.23.0` and ask whether
+each one survives in the merged tree. 1,223 overlap files → **0 upstream-new declarations missing**,
+**2 files with upstream-new calls missing**, both deliberate and documented here: the fork's
+`armFlushTimer` replaces upstream's `flushHandleRef.current = scheduleStreamWork(...)` arm, and the
+checkpoint helper routes upstream's `_run_git(_stage_all_args(...))` through `_add_all`.
+
 **Two defects the merge introduced silently — found by running the tags, not by reading the diff.**
 1. **Five `streamThrottle.register(win)` call sites stayed deleted.** Adopting upstream's dial is only
    half of it: the fork's `7c61589695e` had also removed the registrations from `main.ts` (secondary,
