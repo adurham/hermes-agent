@@ -560,6 +560,22 @@ export function useMessageStream({
         return
       }
 
+      // Overdue work drains on the delta that arrives after the floor elapsed
+      // instead of waiting out a 0ms timer: an incoming delta is a delivery
+      // point, and a parked renderer may not run timers at all. Only when a
+      // wake-up is already armed — the first delta still rides the floor.
+      if (delay <= 0 && flushHandleRef.current !== null) {
+        if (flushHandleRef.current !== null) {
+          flushHandleRef.current()
+          flushHandleRef.current = null
+        }
+
+        flushDeadlineRef.current = null
+        runFlush()
+
+        return
+      }
+
       // A wake-up is already armed for the earliest moment the queue knew about.
       // A LATER deadline is not worth re-arming for; an EARLIER one is: a
       // visible chat's first delta must not inherit the 250ms wake-up that a

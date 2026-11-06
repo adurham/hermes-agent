@@ -14,6 +14,9 @@
 # check every nodeid's file exists, then actually run each one to confirm it still fails.
 # Cleaned up 2026-10-15 (v0.22.2 sync): re-verified every nodeid the same way (file exists AND
 # the test name (params ignored) still appears in that file's source). 98 entries kept, 0 dropped as unresolvable.
+# Cleaned up 2026-11-05 (v0.23.0 sync): re-verified every nodeid (file exists AND the test name still
+# appears in that file's source). 97 kept, 1 dropped (test_copilot_vision_sets_vision_header -- the
+# copilot provider plugin it covered was removed upstream).
 # ── Flaky under xdist, pass when run in isolation ──────────────────────
 # Both pass via ``pytest tests/agent/test_vision_resolved_args.py``
 # (~1s) and ``pytest tests/agent/lsp/`` (~1.5s). Under
@@ -23,7 +26,6 @@
 # tests/conftest.py doesn't clear ContextVars/registries owned by the
 # new upstream code paths (vision provider resolution; LSP client
 # eventlog publication). Tracked upstream; ignore here pending fix.
-tests/agent/test_auxiliary_main_first.py::TestResolveVisionMainFirst::test_copilot_vision_sets_vision_header
 tests/agent/test_auxiliary_main_first.py::TestResolveVisionMainFirst::test_explicit_provider_override_still_wins
 tests/agent/test_auxiliary_named_custom_providers.py::TestProvidersDictApiModeAnthropicMessages::test_resolve_provider_client_returns_anthropic_client
 tests/agent/test_auxiliary_named_custom_providers.py::TestResolveVisionProviderClientModelNormalization::test_vision_auto_strips_matching_main_provider_prefix

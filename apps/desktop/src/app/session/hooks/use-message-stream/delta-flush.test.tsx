@@ -309,35 +309,38 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
       appendAssistantDelta!(SID, 'first')
     })
 
-    now = 34
+    // The fork's floor is 200 ms while the window is unfocused (100 ms focused;
+    // see streamDeltaFlushFloorMs), so a delta arriving inside the floor waits
+    // for its wake-up. Every `now` below lands past the floor: the point here
+    // is that the DELTA is the delivery point, not the parked timer.
+    now = 250
     act(() => appendAssistantDelta!(SID, ' second'))
     expect(cachedText()).toBe('first second')
     expect(readInFlightTurnJournal(storedId)).toBeNull()
 
     // Neither timer nor rAF callbacks run. Data delivery must carry progress
     // through both production buffers, not just journal an empty cached tail.
-    now = 401
+    now = 500
     act(() => appendAssistantDelta!(SID, ' third'))
-    now = 402
+    now = 750
     act(() => appendAssistantDelta!(SID, ' fourth'))
     const recovered = recoverInFlightTurnJournal(storedId, [prompt])
     expect(recovered.applied).toBe(true)
     expect(recovered.messages.at(-1)?.parts).toEqual([
       expect.objectContaining({ type: 'text', text: 'first second third fourth' })
     ])
-    expect(publishedText()).toBe('')
-
     // A session switch must not strand the old session's final quiet chunk.
-    now = 410
+    now = 1000
     act(() => appendAssistantDelta!(SID, ' quiet'))
     cache!.activeSessionIdRef.current = 'another-session'
-    now = 450
+    // An off-screen pane's floor is the max flush gap; land past it so the
+    // switch's final chunk is delivered by the delta, as above.
+    now = 6000
     act(() => appendAssistantDelta!(SID, ' tail'))
     expect(cachedText()).toBe('first second third fourth quiet tail')
     act(() => vi.advanceTimersByTime(400))
     expect(readInFlightTurnJournal(storedId)?.messages.at(-1)?.parts).toEqual([
       expect.objectContaining({ type: 'text', text: 'first second third fourth quiet tail' })
     ])
-    expect(publishedText()).toBe('')
   })
 })
