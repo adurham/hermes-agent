@@ -477,6 +477,17 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     for name in (cmd.name, *cmd.aliases))
 
 
+# Built-ins the Desktop/TUI gateway dispatches itself in ``command.dispatch`` — the key set of
+# ``tui_gateway.methods_tools._SLASH_BUILTINS``. Every one is CLI-only and ungated, so
+# GATEWAY_KNOWN_COMMANDS excludes it and ``register_command``'s CLI-only carve-out would
+# otherwise accept a plugin that claims the name. But that surface runs its own handler ahead
+# of plugins, so the plugin's handler could never run anywhere: refuse the name instead of
+# letting the registration silently die. One list, read from both sides; a test pins them equal.
+TUI_DISPATCHED_BUILTINS: frozenset[str] = frozenset({
+    "queue", "q", "learn", "plan", "init", "moa", "focus", "retry", "steer", "goal",
+    "loop", "undo", "snapshot", "snap", "compress", "compact", "memory", "skills"})
+
+
 def is_gateway_known_command(name: str | None) -> bool:
     """True if ``name`` is a built-in or plugin gateway slash command (plugins looked
     up lazily); decides whether the gateway emits ``command:<name>`` hooks."""

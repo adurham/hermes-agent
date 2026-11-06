@@ -1013,6 +1013,8 @@ def _cmd_skills(rid, params, session, name, arg):
 
 
 _SLASH_BUILTINS = {
+    # Key set must equal ``hermes_cli.commands.TUI_DISPATCHED_BUILTINS`` — ``register_command``
+    # refuses those names and a test pins the two lists equal. Values stay here: handlers.
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
@@ -1025,9 +1027,9 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
 
     # Stage order is load-bearing: quick > this surface's own built-in > plugin > bundle > skill.
-    # The built-in stage sits ahead of plugins because `register_command` lets a plugin own the
-    # name of a CLI-only built-in (those never reach a gateway surface), and this surface still
-    # has to run its own handler where it has one (`/focus`, `/snapshot`, `/queue`, ...).
+    # Built-ins stay ahead of plugins as a second line of defence: `register_command` refuses the
+    # names in TUI_DISPATCHED_BUILTINS (this map's key set), but a plugin registered through any
+    # other path must still not shadow this surface's handler on /focus, /snapshot, /queue, ...
     # One home binding around the whole loop: the routing guard (``_profile_skill_command``) and the stages
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
     # not found (#110695).

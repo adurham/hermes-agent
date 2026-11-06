@@ -2373,6 +2373,27 @@ class TestPluginCommands:
 
         assert mgr._plugin_commands[cli_only.name]["description"] == "Plugin handler"
 
+    def test_register_command_refuses_a_tui_dispatched_builtin(self, caplog):
+        """``focus``/``snapshot`` are CLI-only and ungated, so the CLI-only carve-out alone
+        would accept them — but the Desktop/TUI gateway runs its own handler for them ahead
+        of plugins, so the plugin handler would never run on any surface. Refuse the name."""
+        from hermes_cli.commands import TUI_DISPATCHED_BUILTINS, resolve_command
+
+        covered = [n for n in ("focus", "snapshot", "snap") if n in TUI_DISPATCHED_BUILTINS]
+        assert covered == ["focus", "snapshot", "snap"]
+        for name in covered:
+            builtin = resolve_command(name)
+            assert builtin is not None and builtin.cli_only and not builtin.gateway_config_gate
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            for name in covered:
+                ctx.register_command(name, lambda a: a, description="Plugin handler")
+
+        assert mgr._plugin_commands == {}
+        assert len([r for r in caplog.records if "conflicts with a built-in" in r.getMessage()]) == len(covered)
+
     def test_register_command_still_rejects_a_gateway_visible_builtin(self, caplog):
         """A built-in the gateway can dispatch — always, or under a config gate — keeps the name."""
         from hermes_cli.commands import COMMAND_REGISTRY

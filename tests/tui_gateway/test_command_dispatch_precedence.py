@@ -57,6 +57,16 @@ def test_a_plugin_command_does_not_shadow_a_tui_builtin(monkeypatch):
     assert order == ["builtin"]
 
 
+def test_tui_builtin_map_matches_the_registration_constant():
+    """``register_command`` refuses exactly the names this surface dispatches itself."""
+    from hermes_cli.commands import TUI_DISPATCHED_BUILTINS
+
+    server = _server()
+    builtins = server._methods["command.dispatch"].__globals__["_SLASH_BUILTINS"]
+
+    assert set(builtins) == TUI_DISPATCHED_BUILTINS
+
+
 def test_a_plugin_command_still_runs_when_the_surface_has_no_builtin(monkeypatch):
     server = _server()
     globals_, builtins = _stages(server, monkeypatch)

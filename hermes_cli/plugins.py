@@ -658,13 +658,19 @@ class PluginContext(PluginCapabilityCtxMixin):
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
             return
         with suppress(Exception):  # reject if it conflicts with a built-in command
-            from hermes_cli.commands import resolve_command
+            from hermes_cli.commands import TUI_DISPATCHED_BUILTINS, resolve_command
             builtin = resolve_command(clean)
             # A CLI-only built-in never reaches a gateway surface (GATEWAY_KNOWN_COMMANDS
             # excludes it) and the CLI resolves built-ins before plugin commands, so a
             # plugin may own the name everywhere else. One that carries a gateway gate IS
-            # exposed on the gateway when the gate is on, so it still blocks.
-            if builtin is not None and not (builtin.cli_only and not builtin.gateway_config_gate):
+            # exposed on the gateway when the gate is on, so it still blocks. So does a name
+            # the Desktop/TUI gateway dispatches itself (``_SLASH_BUILTINS``): its built-in
+            # runs ahead of plugins there, so the plugin handler would never run anywhere.
+            tui_dispatched = clean in TUI_DISPATCHED_BUILTINS or (
+                builtin is not None and builtin.name in TUI_DISPATCHED_BUILTINS)
+            if builtin is not None and not (
+                builtin.cli_only and not builtin.gateway_config_gate and not tui_dispatched
+            ):
                 logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
                                "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
