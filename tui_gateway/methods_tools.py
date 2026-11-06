@@ -1024,11 +1024,14 @@ def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
-    # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
-    # around the whole loop: the routing guard (``_profile_skill_command``) and the stages
+    # Stage order is load-bearing: quick > this surface's own built-in > plugin > bundle > skill.
+    # The built-in stage sits ahead of plugins because `register_command` lets a plugin own the
+    # name of a CLI-only built-in (those never reach a gateway surface), and this surface still
+    # has to run its own handler where it has one (`/focus`, `/snapshot`, `/queue`, ...).
+    # One home binding around the whole loop: the routing guard (``_profile_skill_command``) and the stages
     # must resolve against the SAME profile or a secondary-only skill is routed here and then
     # not found (#110695).
-    stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
+    stages = (_dispatch_quick, _SLASH_BUILTINS.get(name), _dispatch_plugin, _dispatch_bundle, _dispatch_skill)
     with _session_home_scope(session):
         for stage in filter(None, stages):
             res = stage(rid, params, session, name, arg)

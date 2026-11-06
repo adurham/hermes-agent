@@ -2359,6 +2359,58 @@ class TestPluginCommands:
         assert mgr._plugin_commands["lcm"]["argument_mode"] == "text"
         assert mgr._plugin_commands["ping"]["argument_mode"] is None
 
+    def test_register_command_allows_a_cli_only_builtin_name(self):
+        """A CLI-only built-in is absent from every gateway surface, so a plugin may own the
+        name there. The CLI itself still runs its built-in first (``_process_unregistered_slash``
+        is only reached when no built-in handler exists), so nothing is shadowed on the CLI."""
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        cli_only = next(c for c in COMMAND_REGISTRY if c.cli_only and not c.gateway_config_gate)
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        ctx.register_command(cli_only.name, lambda a: a, description="Plugin handler")
+
+        assert mgr._plugin_commands[cli_only.name]["description"] == "Plugin handler"
+
+    def test_register_command_still_rejects_a_gateway_visible_builtin(self, caplog):
+        """A built-in the gateway can dispatch — always, or under a config gate — keeps the name."""
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        visible = next(c for c in COMMAND_REGISTRY if not c.cli_only)
+        gated = next(c for c in COMMAND_REGISTRY if c.cli_only and c.gateway_config_gate)
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_command(visible.name, lambda a: a)
+            ctx.register_command(gated.name, lambda a: a)
+
+        assert mgr._plugin_commands == {}
+        assert len([r for r in caplog.records if "conflicts with a built-in" in r.getMessage()]) == 2
+
+    def test_every_cli_only_builtin_keeps_a_cli_handler(self):
+        """The registration carve-out lets a plugin own a CLI-only built-in's name everywhere the
+        gateway can see, so the CLI must still dispatch every one of those built-ins itself."""
+        import cli
+        from hermes_cli.commands import COMMAND_REGISTRY, GATEWAY_KNOWN_COMMANDS
+
+        cli_only = [c for c in COMMAND_REGISTRY if c.cli_only and not c.gateway_config_gate]
+
+        # The carve-out predicate must be exactly the set the gateway cannot reach.
+        assert [c.name for c in cli_only if c.name in GATEWAY_KNOWN_COMMANDS] == []
+        # ...and the CLI must keep a handler for every one of them.
+        assert [c.name for c in cli_only if cli.HermesCLI._slash_handler(c.name) is None] == []
+
+        # Precedence on the CLI: a plugin may now register this name, and the CLI's own
+        # lookup must still resolve the built-in handler it would have run before.
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+        ctx.register_command("delegation", lambda a: a, description="Plugin handler")
+
+        assert "delegation" in mgr._plugin_commands
+        assert cli.HermesCLI._slash_handler("delegation") is not None
+
 
     def test_get_plugin_context_engine_discovers_plugins_lazily(self, tmp_path, monkeypatch):
         """Context engine lookup should work before any explicit discover_plugins() call."""

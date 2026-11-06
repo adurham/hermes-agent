@@ -659,7 +659,12 @@ class PluginContext(PluginCapabilityCtxMixin):
             return
         with suppress(Exception):  # reject if it conflicts with a built-in command
             from hermes_cli.commands import resolve_command
-            if resolve_command(clean) is not None:
+            builtin = resolve_command(clean)
+            # A CLI-only built-in never reaches a gateway surface (GATEWAY_KNOWN_COMMANDS
+            # excludes it) and the CLI resolves built-ins before plugin commands, so a
+            # plugin may own the name everywhere else. One that carries a gateway gate IS
+            # exposed on the gateway when the gate is on, so it still blocks.
+            if builtin is not None and not (builtin.cli_only and not builtin.gateway_config_gate):
                 logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
                                "with a built-in command. Skipping.", self.manifest.name, clean)
                 return
