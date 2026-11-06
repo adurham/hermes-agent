@@ -90,6 +90,88 @@ describe('renderer heap flags', () => {
     warn.mockRestore()
   })
 
+  it('stays quiet when the keys are explicitly set to their defaults', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    // What `hermes config` writes when the two knobs are untouched: an explicit
+    // empty list and 0 are the defaults, not a misconfiguration.
+    expect(
+      readDesktopLaunchConfig(
+        [
+          'desktop:',
+          '  font_family: ""',
+          '  electron_flags: []',
+          '  renderer_max_old_space_mb: 0',
+          'terminal:',
+          '  electron_flags: [--not-desktop]'
+        ].join('\n')
+      )
+    ).toEqual({ electronFlags: [], rendererMaxOldSpaceMb: 0 })
+    expect(warn).not.toHaveBeenCalled()
+
+    // A bare `electron_flags:` followed by another key is an explicit empty too.
+    readDesktopLaunchConfig('desktop:\n  electron_flags:\n  font_family: ""\n')
+    expect(warn).not.toHaveBeenCalled()
+
+    // Comments at column 0 and between items do not hide the list.
+    expect(
+      readDesktopLaunchConfig(
+        [
+          'desktop:',
+          '  electron_flags:',
+          '#    - --commented-out',
+          '    - --enable-logging',
+          '',
+          '    # between items',
+          '    - --disable-gpu',
+          '  font_family: ""'
+        ].join('\n')
+      ).electronFlags
+    ).toEqual(['--enable-logging', '--disable-gpu'])
+    expect(warn).not.toHaveBeenCalled()
+
+    // YAML allows an indentless (column 0) or two-space list; both are read as-is.
+    expect(readDesktopLaunchConfig('desktop:\n  electron_flags:\n- --a\n- --b\n').electronFlags).toEqual(['--a', '--b'])
+    expect(readDesktopLaunchConfig('desktop:\n  electron_flags:\n  - --a\n  - --b\n').electronFlags).toEqual([
+      '--a',
+      '--b'
+    ])
+    expect(warn).not.toHaveBeenCalled()
+
+    // `~` and an explicit 0 (with a trailing comment) are defaults too.
+    readDesktopLaunchConfig('desktop:\n  renderer_max_old_space_mb: ~\n  electron_flags: []\n')
+    readDesktopLaunchConfig('desktop:\n  renderer_max_old_space_mb: 0  # default\n')
+    expect(warn).not.toHaveBeenCalled()
+
+    warn.mockRestore()
+  })
+
+  it('warns for values it cannot read, without mistaking a later block for this one', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    // A ceiling that is not a positive integer.
+    readDesktopLaunchConfig('desktop:\n  renderer_max_old_space_mb: lots\n')
+    expect(warn).toHaveBeenCalledTimes(1)
+
+    // Four-space keys are valid YAML but outside the supported subset.
+    readDesktopLaunchConfig('desktop:\n  electron_flags: []\n    renderer_max_old_space_mb: 2048\n')
+    expect(warn).toHaveBeenCalledTimes(2)
+
+    // A list whose indent changes mid-way.
+    readDesktopLaunchConfig('desktop:\n  electron_flags:\n    - --a\n      - --b\n')
+    expect(warn).toHaveBeenCalledTimes(3)
+
+    // Indented content that is not a list item under the flags key.
+    readDesktopLaunchConfig('desktop:\n  electron_flags:\n    nested: x\n')
+    expect(warn).toHaveBeenCalledTimes(4)
+
+    // A list in the NEXT top-level block is not this block's misconfiguration.
+    readDesktopLaunchConfig('desktop:\n  electron_flags: []\nterminal:\n  something:\n    - x\n')
+    expect(warn).toHaveBeenCalledTimes(4)
+
+    warn.mockRestore()
+  })
+
   it('#103288: reads desktop.ssh_path as plain, single-quoted, and YAML double-quoted scalars', () => {
     const read = (value: string) =>
       readDesktopLaunchConfig(['desktop:', `  ssh_path: ${value}`, 'terminal:', '  ssh_path: nope'].join('\n')).sshPath

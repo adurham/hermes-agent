@@ -44,22 +44,32 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
 
   const unquote = (raw: string) => raw.trim().replace(/^(['"])(.*)\1$/, '$2')
 
-  const blockLines: string[] = []
-
   const splitFlow = (raw: string) => raw.slice(1, -1).split(',').map(unquote).filter(Boolean)
+
+  // A key this reader could not turn into a value (unsupported indentation, a
+  // non-integer ceiling) — as opposed to one explicitly set to its default
+  // (`electron_flags: []`, `renderer_max_old_space_mb: 0`), which config
+  // defaults write and which must stay quiet.
+  let unreadable = false
 
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i]
+
+    if (/^\s*#/.test(line)) {
+      continue // comment lines inside the mapping do not end it
+    }
 
     if (/^\S/.test(line)) {
       break // next top-level key
     }
 
-    blockLines.push(line)
-
     const keyed = /^ {2}([a-z_]+):\s*(.*?)\s*$/.exec(line)
 
     if (!keyed) {
+      if (/^\s+(electron_flags|renderer_max_old_space_mb)\s*:/.test(line)) {
+        unreadable = true
+      }
+
       continue
     }
 
@@ -84,8 +94,17 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
         out.rendererAccessibility = true
       }
     } else if (key === 'renderer_max_old_space_mb') {
-      const mb = Number.parseInt(unquote(value), 10)
-      out.rendererMaxOldSpaceMb = Number.isFinite(mb) && mb > 0 ? mb : 0
+      const raw = unquote(value)
+
+      if (raw !== '' && !/^(~|null)$/i.test(raw)) {
+        const numeric = Number(raw)
+
+        if (Number.isFinite(numeric) && numeric > 0) {
+          out.rendererMaxOldSpaceMb = Math.trunc(numeric)
+        } else if (numeric !== 0) {
+          unreadable = true // present, but not a positive integer (`0` is the explicit default)
+        }
+      }
     } else if (key === 'electron_flags') {
       if (value.startsWith('[') && value.endsWith(']')) {
         out.electronFlags = splitFlow(value)
@@ -93,37 +112,68 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
         out.electronFlags = unquote(value).split(/\s+/).filter(Boolean)
       } else {
         const items: string[] = []
+        let lastItem = i
+        let itemIndent: number | null = null
 
         for (let j = i + 1; j < lines.length; j += 1) {
-          const item = /^ {4}- (.*)$/.exec(lines[j])
+          if (/^\s*(#.*)?$/.test(lines[j])) {
+            continue // blank or comment line inside the list
+          }
+
+          const item = /^( *)- (.*)$/.exec(lines[j])
 
           if (!item) {
             break
           }
 
-          items.push(unquote(item[1]))
+          if (itemIndent === null) {
+            itemIndent = item[1].length // the list's own indent (0, 2 or 4); YAML allows all three
+          } else if (item[1].length !== itemIndent) {
+            unreadable = true // an item changing indent mid-list is not a list this reader follows
+
+            break
+          }
+
+          items.push(unquote(item[2]))
+          lastItem = j
         }
 
         out.electronFlags = items.filter(Boolean)
+
+        // Any remaining indented content this reader did not consume — another item, a
+        // nested map, a continuation line — is a shape it cannot follow: warn rather than
+        // drop it silently. A sibling key (same two-space mapping) or the next top-level
+        // block ends the value normally.
+        for (let j = lastItem + 1; j < lines.length; j += 1) {
+          const candidate = lines[j]
+
+          if (/^\s*(#.*)?$/.test(candidate)) {
+            continue
+          }
+
+          if (/^ {2}[a-z_]+:/.test(candidate) || /^\S/.test(candidate)) {
+            break
+          }
+
+          unreadable = true
+
+          break
+        }
       }
     }
   }
 
-  if (out.electronFlags.length === 0 && out.rendererMaxOldSpaceMb === 0) {
+  if (unreadable) {
     // The parser is a deliberate subset, so a valid-YAML-but-unsupported shape
     // (any indentation other than two-space keys / four-space `- ` items)
     // yields nothing at all. Silence there reads as "the knob does not work";
     // one line naming the supported shape is the difference between a five
-    // minute fix and a bug report.
-    const meantToSet = blockLines.some(line => /(electron_flags|renderer_max_old_space_mb)\s*:/.test(line))
-
-    if (meantToSet) {
-      console.warn(
-        '[hermes] config.yaml: desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored — ' +
-          'the launch reader supports only two-space-indented keys under a top-level `desktop:` with ' +
-          'four-space `- ` list items (see the Desktop docs). Launching with Chromium defaults.'
-      )
-    }
+    // minute fix and a bug report. An explicit default is NOT a misconfiguration.
+    console.warn(
+      '[hermes] config.yaml: desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored — ' +
+        'the launch reader supports only two-space-indented keys under a top-level `desktop:` with ' +
+        'four-space `- ` list items (see the Desktop docs). Launching with Chromium defaults.'
+    )
   }
 
   return out
