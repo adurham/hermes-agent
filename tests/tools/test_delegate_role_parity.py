@@ -95,7 +95,7 @@ def test_role_resolves_to_its_own_model_and_provider(harness, role):
     expected_model, expected_provider = ROLES[role]
     assert route["agent_type"] == role
     assert route["model"] == expected_model
-    assert route["provider"] == expected_provider
+    assert route["creds"]["provider"] == expected_provider
 
 
 def test_all_eight_roles_in_one_batch_resolve_independently(harness):
@@ -105,7 +105,7 @@ def test_all_eight_roles_in_one_batch_resolve_independently(harness):
     assert len(routes) == len(roles)
     for route, role in zip(routes, roles):
         expected_model, expected_provider = ROLES[role]
-        assert (route["agent_type"], route["model"], route["provider"]) == (
+        assert (route["agent_type"], route["model"], route["creds"]["provider"]) == (
             role, expected_model, expected_provider,
         )
 

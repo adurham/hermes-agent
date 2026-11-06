@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 import hermes_cli.personas as ruflo
 import tools.async_delegation as ad
 import tools.delegate_tool as dt
+import tools.delegate_tool_routing as dtr
 
 
 ROSTER_CFG = {
@@ -106,7 +107,7 @@ def _dispatch(tasks, *, routes=None, depth=0, entry_map=None, **kwargs):
     ), patch.object(
         ruflo, "get_role_model_map", return_value=_models
     ), patch.object(
-        dt, "_resolve_delegation_credentials", return_value=dict(ROSTER_CREDS)
+        dtr, "_resolve_delegation_credentials", return_value=dict(ROSTER_CREDS)
     ), patch.object(
         dt, "_build_child_preserving_parent_tools", side_effect=_fake_build
     ), patch.object(
@@ -379,7 +380,7 @@ def test_pinned_role_never_inherits_the_parent_fallback_chain():
     ), patch.object(
         ruflo, "get_role_model_map", return_value={"exo-dsv41": "dsv41"}
     ), patch.object(
-        dt, "_resolve_delegation_credentials", return_value=dict(ROSTER_CREDS)
+        dtr, "_resolve_delegation_credentials", return_value=dict(ROSTER_CREDS)
     ):
         routes, err = _resolve_task_routes(
             [{"goal": _G0, "agent_type": "exo-dsv41"}],

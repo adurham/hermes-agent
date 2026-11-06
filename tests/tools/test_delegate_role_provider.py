@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import tools.delegate_tool_routing as dtr
 from tools.delegate_tool import delegate_task
 
 
@@ -344,13 +345,13 @@ class TestRoleCredentialMemoization:
         import tools.delegate_tool as dt
 
         calls = []
-        real = dt._resolve_delegation_credentials
+        real = dtr._resolve_delegation_credentials
 
         def _counting(cfg, parent_agent):
             calls.append(dict(cfg))
             return real(cfg, parent_agent)
 
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", _counting)
+        monkeypatch.setattr(dtr, "_resolve_delegation_credentials", _counting)
 
         cache = {}
         entry = {"model": "qwen3-coder:480b-cloud", "provider": ROLE_PROVIDER}
@@ -382,7 +383,7 @@ class TestRoleCredentialMemoization:
                 "api_mode": None,
             }
 
-        with patch.object(dt, "_resolve_delegation_credentials", _fake):
+        with patch.object(dtr, "_resolve_delegation_credentials", _fake):
             out = dt._resolve_role_credentials(
                 {
                     "model": "m",
@@ -410,7 +411,7 @@ class TestRoleCredentialMemoization:
         def _boom(cfg, parent_agent):
             raise ValueError("nope")
 
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", _boom)
+        monkeypatch.setattr(dtr, "_resolve_delegation_credentials", _boom)
         with pytest.raises(ValueError):
             dt._resolve_role_credentials({"model": "m", "provider": "p"}, None, {})
 
