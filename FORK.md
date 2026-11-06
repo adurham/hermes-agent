@@ -138,9 +138,13 @@ account has `commit.gpgsign=true` + `gpg.format=ssh`, and `scripts/run_tests.sh`
 `usrquota`, exhausted by deleted-but-open suite files, after which every write fails
 `Disk quota exceeded` while `df` still shows space — which is why some files "errored" instead of
 failing. Both traps are now in the skill's pitfalls. The 1,911 files the first pass flagged or never
-reached went through a per-file pass with a CI-shaped env; **every failure it reported reproduced at
-`pre-upstream-sync-v0.23.0`** (hermes_cli plugins/login/fleet families, `tests/pm`, `tests/plugins`,
-`tests/ci`) — the merge-caused set is zero.
+reached then went through a CI-shaped sweep (per-file for `hermes_cli`, one process per directory for
+the other 17 roots). Result, checked both ways: **every failure reproduces at
+`pre-upstream-sync-v0.23.0`** — `tests/providers` 18 failed / 75 passed on BOTH trees (identical
+counts), `tests/pm` 836 passed + 166 errors on both, `tests/plugins` 2,063 passed with one
+`telegram_update_admission` failure on both and one `a2a_plugin` case that only fails inside a
+shared-home directory run and passes standalone on the merged tree, `tests/hermes_cli`
+plugins/login/fleet/commit-build families, `tests/ci`. **The merge-caused set is zero.**
 
 **Silent-loss sweep.** For every file both sides changed, take the declarations and call sites
 upstream ADDED in `v0.22.7..v0.23.0` and ask whether each survives: 1,223 overlap files → 0
