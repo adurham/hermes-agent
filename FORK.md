@@ -26,14 +26,17 @@ information to filter was already in the payload; nothing consumed it.
 
 **Fix.** `filterCronJobsByProfileScope` in `chat/sidebar/profile-scope.ts` (jobs mirror of the session
 filter; unannotated jobs from older backends are kept so the section never empties). The sidebar memoizes
-`visibleCronJobs` and uses it for the section gate, the `hasSessionArea` metric, and the rendered rows. In
-the unified view (`showAllProfiles`) each non-default job now wears the same `ProfileTag` chip the session
-rows do, so the mixed list is explicit rather than misread as leakage.
+`visibleCronJobs` and uses it for the section gate, the `hasSessionArea` metric, and the rendered rows. The
+filter is keyed on `$activeGatewayProfile` — the profile the CONNECTED GATEWAY runs — not on the session
+list's scope: cron jobs are a per-profile store on the backend that schedules them, and this section is that
+backend's readout. Keying it on `$profileScope` (the first cut of this fix) still mixed the gateway's own
+default jobs with its `ps5-pm` and `switch-pm` jobs whenever the sidebar sat in the unified "All profiles"
+view, which is exactly the state the owner was in and reported next. The Cron page keeps its own explicit
+profile selector for the cross-profile picture.
 
 **Tests.** `profile-scope.test.ts` +3 (drop foreign jobs, ALL returns the list identity, keep unstamped
-jobs); `cron-jobs-section.test.tsx` +2 (tag only with `showProfileTags`, no chips in a single-profile
-scope). `vitest run` on the two files plus the sidebar integration suite: 34 tests passed; `tsc -p .
---noEmit` and eslint clean.
+jobs). `vitest run` on that file plus `cron-jobs-section.test.tsx` and the sidebar integration suite:
+tests passed; `tsc -p . --noEmit` and eslint clean.
 
 ### 2026-11-07 (desktop sidebar) — returning to Sessions from Bots kept showing every gateway
 

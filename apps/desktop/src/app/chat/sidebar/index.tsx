@@ -77,6 +77,7 @@ import {
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $activeGatewayProfile,
   $newChatProfile,
   $profileColors,
   $profiles,
@@ -678,13 +679,18 @@ export function ChatSidebar({
     [cronSessions, profileScope]
   )
 
-  // Jobs are scoped the same way at render time, not only by which list the last
-  // fetch returned: a snapshot taken under "All profiles" (or under the gateway
-  // the user just left) must not render under the chosen gateway's pill while
-  // the scope's own refresh is in flight or after it failed.
+  // Jobs are scoped to the profile the CONNECTED GATEWAY runs, not to the
+  // session list's scope: cron jobs are a per-profile store on the backend that
+  // schedules them, and this section is that backend's readout. The unified
+  // "All profiles" session view must not turn it into a cross-profile list —
+  // that mixed `default`'s jobs with `ps5-pm`'s and `switch-pm`'s under one
+  // heading (the jobs the session view was asked to keep out). The Cron page
+  // keeps its own explicit profile selector for the cross-profile picture.
+  const gatewayProfile = useStore($activeGatewayProfile)
+
   const visibleCronJobs = useMemo(
-    () => filterCronJobsByProfileScope(cronJobs, profileScope),
-    [cronJobs, profileScope]
+    () => filterCronJobsByProfileScope(cronJobs, gatewayProfile),
+    [cronJobs, gatewayProfile]
   )
 
   const visibleMessagingSessions = useMemo(
@@ -2057,7 +2063,6 @@ export function ChatSidebar({
                 onToggle={() => setSidebarCronOpen(!cronOpen)}
                 onTriggerJob={onTriggerCronJob}
                 open={cronOpen}
-                showProfileTags={showAllProfiles}
               />
             )}
           </div>
