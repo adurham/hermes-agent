@@ -364,6 +364,20 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 # (a local copy shadows upstream's THINK_TAG_NAMES binding and drops the CJK reasoning tags).
 
 
+def _normalized_model_id(model: str) -> str:
+    """FORK: normalize a model id for by-model map lookup — lowercase, drop a
+    ``provider/`` prefix, drop trailing build markers (``-1017``, ``-20240229``,
+    ``-latest``, ``:free``). A map key like ``deepseek-v4.1-flash`` then matches the
+    served id ``deepseek/deepseek-v4.1-flash-1017`` instead of silently falling back
+    to the global effort. Version segments inside the id (``v4.1``, ``5-3``) and
+    single-digit tails (``sonnet-5-5``, ``gpt-5``) are preserved.
+    """
+    s = (model or "").strip().lower()
+    if "/" in s:
+        s = s.rsplit("/", 1)[1]
+    return re.sub(r"(?:-latest|:[^:/]*|-\d{3,})*$", "", s)
+
+
 def _resolve_reasoning_for_model(
     model: str,
     by_model_map: dict | None,
@@ -373,13 +387,21 @@ def _resolve_reasoning_for_model(
 
     ``by_model_map`` is a dict of model name → effort string (e.g.
     ``{"deepseek-v4-flash": "xhigh", "claude-sonnet-4-6": "high"}``).
-    Model names are matched case-insensitively. Falls back to ``global_effort``
-    when no per-model entry exists.
+    Model names are matched case-insensitively — exact first, then with both sides
+    normalized through :func:`_normalized_model_id` so provider-prefixed and
+    build-suffixed served ids still hit their map key. Falls back to
+    ``global_effort`` when no per-model entry exists.
     """
     if by_model_map and model:
         model_lower = model.strip().lower()
+        model_normalized = None
         for saved_model, saved_effort in by_model_map.items():
-            if saved_model.strip().lower() == model_lower:
+            saved_lower = saved_model.strip().lower()
+            if saved_lower == model_lower:
+                return _parse_reasoning_config(str(saved_effort))
+            if model_normalized is None:
+                model_normalized = _normalized_model_id(model_lower)
+            if model_normalized and model_normalized == _normalized_model_id(saved_lower):
                 return _parse_reasoning_config(str(saved_effort))
     return _parse_reasoning_config(global_effort)
 

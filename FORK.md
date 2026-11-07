@@ -9,6 +9,41 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### 2026-11-07 (reasoning effort) — the by-model effort map never matched, and Nous relayed `ultra` verbatim
+
+**Symptom.** Owner: DeepSeek v4.1 Flash and GLM 5.3 Flash had been "acting WAY dumber lately … ending
+without any output, or telling me to run a line above but doesn't print anything." Upstream has the same
+lateness open as #140239/#96838 (GLM-5.3 rejects off-vocab `reasoning_effort`, the main path falls back
+instead of clamping) and #140686 (DeepSeek V4 vocabulary), none fixed in the ~634 upstream commits since
+the v0.23.0 sync.
+
+**Cause.** Two compounding bugs, both silent. (1) `agent.reasoning_effort_by_model` keys are matched by
+exact string only (`cli.py::_resolve_reasoning_for_model`), so the config's `deepseek-v4.1-flash` key
+never matched the served id `deepseek/deepseek-v4.1-flash-1017` — every session fell through to the
+global effort, which the owner runs at `ultra`. (2) The Nous Portal profile forwards `reasoning`
+verbatim (`build_api_kwargs_extras`) — unlike the zai/deepseek profiles it has no `clamp_effort` step —
+so `ultra` (a Hermes-internal ladder name) reached the Portal untouched and was rejected/dropped by the
+upstream route, leaving the flash models at the server's default thinking tier: low effort, short
+intention statements, empty turns (the #66429 degradation).
+
+**Fix.** (1) `cli.py` gains `_normalized_model_id` (lowercase, drop a `provider/` prefix, drop trailing
+`-1017`/`-20240229`/`-latest`/`:free` build markers) and `_resolve_reasoning_for_model` now matches
+exact-first, then normalized — so the existing bare-key config entries hit the served ids without a
+config migration. (2) `plugins/model-providers/nous/__init__.py` gains `_wire_effort_for_model`, which
+clamps the effort the same order the direct provider profiles do: the Portal catalog's advertised
+`supported_efforts` first, then the model family's vocabulary (DeepSeek V4, GLM 5.2/5.3), then the
+generic OpenAI-compat wire. `none` and unset pass through untouched (an explicit disable is never
+upgraded to thinking), the caller's config dict is never mutated, and a clamp result lands in a copy.
+
+**Tests.** `tests/plugins/model_providers/test_nous_profile.py` — the no-config default test now asserts
+the clamp (medium → the cataloged route's floor `high`), plus `TestNousEffortClamp`: ultra→max on
+GLM-5.3, xhigh→max on the DeepSeek family, ultra→max on unlisted routes, catalog efforts beating family
+vocab, `none` never upgraded, verbatim pass for supported levels, no caller mutation.
+`tests/hermes_cli/test_reasoning_effort_by_model_match.py` (new) — `_normalized_model_id` keeps
+`v4.1`/`5-3`/`sonnet-5-5` tails and internal build markers while stripping trailing ones;
+`_resolve_reasoning_for_model` exact-beats-normalized, unmatched falls back to global. Both files green
+plus the existing `test_nous_profile.py`, provider and reasoning suites: 359 passed.
+
 ### 2026-11-07 (desktop sidebar) — the Cron jobs section outlived its gateway
 
 **Symptom.** Owner, right after the Sessions scope fix: "the cron jobs section is doing the same thing" — the
