@@ -9,6 +9,32 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### 2026-11-07 (desktop sidebar) — returning to Sessions from Bots kept showing every gateway
+
+**Symptom.** Owner: "when you switch back from the Bots tab to the Sessions tab, it shows ALL sessions
+over all gateways, not the sessions for the gateway currently chosen." The profile pill still named the
+chosen gateway (`ps5-pm`) while the list mixed the other profiles' sessions into the same view.
+
+**Cause.** Opening a Bot Chat goes through `host.openSession`, which publishes `keepAllProfilesScope`;
+`planPluginOpenSession` answers `showAllProfiles: true` for it, and that is `$showAllProfiles` — the exact
+flag `$profileScope` derives `ALL_PROFILES` from. Leaving Bot Mode only reset the workspace surface
+(`hermes-bots/plugin.tsx` → `host.setWorkspaceScope('sessions')`); nothing put the sidebar scope back. The
+flag is persisted too (`hermes.desktop.showAllProfiles`), so a single Bot Chat visit left Sessions on the
+unified list for every later launch.
+
+**Fix.** New `apps/desktop/src/app/chat/sidebar/use-sessions-scope-after-bots.ts`: listens to
+`$workspaceMode`, snapshots `$showAllProfiles` on the one real `sessions → bots` transition (Bot Mode
+re-publishes its scope for every selected bot, and re-capturing after our own flip would remember `true`),
+and writes the snapshot back on `bots → sessions`. Mounted once in `ContribWiring`
+(`app/contrib/wiring.tsx`), so every exit path is covered — the Sessions tab click, dismissing the Bots
+pane, ⌘N/new-session and the keybind paths — not just the plugin's own visibility listener. A user who
+deliberately had "Show all profiles" on keeps it on.
+
+**Tests.** `use-sessions-scope-after-bots.test.ts` (6): restore after the SDK flip, keep a user-chosen
+unified list, the capture is spent once, no write when Bot Mode was never entered, cleanup, and one case
+driving the real `$showAllProfiles` store. `vitest run src/app/chat/sidebar src/sdk`: 513 tests in 63 files
+passed; `tsc -p . --noEmit` and eslint clean on the new files.
+
 ### 2026-11-05 (sweep) — FORK.md audited against the tree
 
 Read every one of the 345 entries and checked its claims against `main` at `3b8709639` plus upstream

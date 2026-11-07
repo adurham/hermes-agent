@@ -101,6 +101,7 @@ import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
+import { useSessionsScopeAfterBots } from '../chat/sidebar/use-sessions-scope-after-bots'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -110,7 +111,7 @@ import { useKeybinds } from '../hooks/use-keybinds'
 import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
-import { mainChatOccupied, type OpenSessionIntent, openSession, openSessionFromPicker } from '../open-session'
+import { mainChatOccupied, openSession, openSessionFromPicker, type OpenSessionIntent } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
@@ -338,6 +339,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useRouteRequestNavigation(navigate)
   useRecoveryRequestToasts()
+  // Bot Mode flips the Sessions sidebar to every-profile mode; leaving it must
+  // put the chosen gateway's scope back (see the hook's contract).
+  useSessionsScopeAfterBots()
 
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
