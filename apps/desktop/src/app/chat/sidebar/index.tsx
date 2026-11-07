@@ -157,7 +157,7 @@ import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
-import { filterSessionsByProfileScope } from './profile-scope'
+import { filterCronJobsByProfileScope, filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
@@ -676,6 +676,15 @@ export function ChatSidebar({
   const visibleCronSessions = useMemo(
     () => filterSessionsByProfileScope(cronSessions, profileScope),
     [cronSessions, profileScope]
+  )
+
+  // Jobs are scoped the same way at render time, not only by which list the last
+  // fetch returned: a snapshot taken under "All profiles" (or under the gateway
+  // the user just left) must not render under the chosen gateway's pill while
+  // the scope's own refresh is in flight or after it failed.
+  const visibleCronJobs = useMemo(
+    () => filterCronJobsByProfileScope(cronJobs, profileScope),
+    [cronJobs, profileScope]
   )
 
   const visibleMessagingSessions = useMemo(
@@ -1511,7 +1520,7 @@ export function ChatSidebar({
   const showSessionSkeletons = sessionsLoading && scopedSessions.length === 0
 
   const showSessionSections = hasSessionArea({
-    cronJobs: showsAdvancedChrome ? cronJobs.length : 0,
+    cronJobs: showsAdvancedChrome ? visibleCronJobs.length : 0,
     loading: showSessionSkeletons || Boolean(sessionsLoadError) || filtersActive,
     messaging: messagingGroups.length,
     profileGroups: profileGroups?.length ?? 0,
@@ -2039,15 +2048,16 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && cronJobs.length > 0 && (
+            {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && visibleCronJobs.length > 0 && (
               <SidebarCronJobsSection
-                jobs={cronJobs}
+                jobs={visibleCronJobs}
                 label={s.cronJobs}
                 onManageJob={onManageCronJob}
                 onOpenRun={onResumeSession}
                 onToggle={() => setSidebarCronOpen(!cronOpen)}
                 onTriggerJob={onTriggerCronJob}
                 open={cronOpen}
+                showProfileTags={showAllProfiles}
               />
             )}
           </div>

@@ -9,6 +9,32 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### 2026-11-07 (desktop sidebar) — the Cron jobs section outlived its gateway
+
+**Symptom.** Owner, right after the Sessions scope fix: "the cron jobs section is doing the same thing" — the
+sidebar's Cron jobs section listed jobs from profiles other than the one the pill named, and in the unified
+view (Bot Chat, or "Show all profiles") its rows carried no owner at all, so a `ps5-pm` job read as the
+current gateway's.
+
+**Cause.** `$cronJobs` is a single atom holding whichever scope's fetch landed last (`cronRequestScope` =
+connection + profile), and the section rendered it raw. The session list beside it has always been scoped at
+render time (`filterSessionsByProfileScope`), but there was no jobs counterpart: after a unified fetch — Bot
+Mode's `keepAllProfilesScope` flip, or a gateway switch — a concrete pill kept rendering the other profiles'
+jobs until that scope's own refresh landed, and forever if that refresh was skipped or failed. The backend
+stamps every job with `profile` (`_annotate_cron_job`, including the `?profile=all` aggregate), so the
+information to filter was already in the payload; nothing consumed it.
+
+**Fix.** `filterCronJobsByProfileScope` in `chat/sidebar/profile-scope.ts` (jobs mirror of the session
+filter; unannotated jobs from older backends are kept so the section never empties). The sidebar memoizes
+`visibleCronJobs` and uses it for the section gate, the `hasSessionArea` metric, and the rendered rows. In
+the unified view (`showAllProfiles`) each non-default job now wears the same `ProfileTag` chip the session
+rows do, so the mixed list is explicit rather than misread as leakage.
+
+**Tests.** `profile-scope.test.ts` +3 (drop foreign jobs, ALL returns the list identity, keep unstamped
+jobs); `cron-jobs-section.test.tsx` +2 (tag only with `showProfileTags`, no chips in a single-profile
+scope). `vitest run` on the two files plus the sidebar integration suite: 34 tests passed; `tsc -p .
+--noEmit` and eslint clean.
+
 ### 2026-11-07 (desktop sidebar) — returning to Sessions from Bots kept showing every gateway
 
 **Symptom.** Owner: "when you switch back from the Bots tab to the Sessions tab, it shows ALL sessions

@@ -111,6 +111,48 @@ describe('SidebarCronJobsSection ordering', () => {
   })
 })
 
+describe('SidebarCronJobsSection profile tags', () => {
+  // Unified list: jobs from several profiles share one section, so each row
+  // says whose it is — the same chip the session rows wear in that mode.
+  it('marks a non-default job with its owning profile when tags are on', () => {
+    render(
+      <SidebarCronJobsSection
+        jobs={[
+          { enabled: true, id: 'own', name: 'default digest', profile: 'default' },
+          { enabled: true, id: 'other', name: 'switch digest', profile: 'switch-pm' }
+        ]}
+        label="Cron Jobs"
+        onManageJob={vi.fn()}
+        onOpenRun={vi.fn()}
+        onToggle={vi.fn()}
+        onTriggerJob={vi.fn()}
+        open
+        showProfileTags
+      />
+    )
+
+    expect(screen.getByRole('img', { name: 'Profile: switch-pm' })).toBeTruthy()
+    // The default profile carries no chip (its glyph would be noise).
+    expect(screen.queryByRole('img', { name: 'Profile: default' })).toBeNull()
+  })
+
+  it('renders no chips in a single-profile scope', () => {
+    render(
+      <SidebarCronJobsSection
+        jobs={[{ enabled: true, id: 'other', name: 'switch digest', profile: 'switch-pm' }]}
+        label="Cron Jobs"
+        onManageJob={vi.fn()}
+        onOpenRun={vi.fn()}
+        onToggle={vi.fn()}
+        onTriggerJob={vi.fn()}
+        open
+      />
+    )
+
+    expect(screen.queryByRole('img', { name: 'Profile: switch-pm' })).toBeNull()
+  })
+})
+
 describe('SidebarCronJobsSection run rows', () => {
   // Contract (#82527): clicking a run must hand the open path the run ROW, not
   // its bare id. The row carries the owning (connection, profile); without it

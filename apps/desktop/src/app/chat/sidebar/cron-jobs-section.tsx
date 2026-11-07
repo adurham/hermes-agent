@@ -2,6 +2,7 @@ import { createCronTriggerController, type CronTriggerController } from '@hermes
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { ProfileTag } from '@/app/chat/profile-tag'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -17,6 +18,7 @@ import { confirm } from '@/store/confirm'
 import { updateCronJobs } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
+import { normalizeProfileKey } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
@@ -82,6 +84,9 @@ interface SidebarCronJobsSectionProps {
   onTriggerJob: (jobId: string) => Promise<void>
   onToggle: () => void
   open: boolean
+  // Unified list: the section shows jobs from several profiles at once, so each
+  // row must say whose it is — same chip the session rows wear in that mode.
+  showProfileTags?: boolean
 }
 
 export function SidebarCronJobsSection({
@@ -92,7 +97,8 @@ export function SidebarCronJobsSection({
   onOpenRun,
   onTriggerJob,
   onToggle,
-  open
+  open,
+  showProfileTags = false
 }: SidebarCronJobsSectionProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
@@ -220,6 +226,7 @@ export function SidebarCronJobsSection({
               onOpenRun={onOpenRun}
               onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
               onTrigger={() => triggerJob(job.id)}
+              showProfileTag={showProfileTags}
             />
           ))}
           {hiddenCount > 0 && (
@@ -242,7 +249,8 @@ function CronJobSidebarRow({
   onManage,
   onOpenRun,
   onTogglePeek,
-  onTrigger
+  onTrigger,
+  showProfileTag
 }: {
   busy: boolean
   expanded: boolean
@@ -252,6 +260,7 @@ function CronJobSidebarRow({
   onOpenRun: (sessionId: string, session?: SessionInfo) => void
   onTogglePeek: () => void
   onTrigger: () => void
+  showProfileTag: boolean
 }) {
   const { t } = useI18n()
   const c = t.cron
@@ -334,6 +343,9 @@ function CronJobSidebarRow({
           actions={
             /* Trailing cluster: countdown by default, quick actions on hover. */
             <div className="flex items-center gap-0.5">
+              {showProfileTag && normalizeProfileKey(job.profile) !== 'default' && (
+                <ProfileTag profile={job.profile} />
+              )}
               <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
                 {meta}
               </span>
