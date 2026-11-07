@@ -14,6 +14,7 @@ import {
   setThreadAtBottom,
   shouldApplyThreadScrollAnchor,
   shouldDisarmThreadFollow,
+  THREAD_SCROLL_DISARM_EPSILON_PX,
   threadScrollStateFromMetrics
 } from './thread-scroll'
 
@@ -190,14 +191,28 @@ describe('threadScrollStateFromMetrics', () => {
 })
 
 describe('shouldDisarmThreadFollow', () => {
-  it('disarms on the transition that leaves the bottom band, not on every event', () => {
-    const bottom = { kind: 'bottom' } as const
+  it('disarms when an armed reader moves the viewport up out of the bottom band', () => {
     const offset = { fromBottom: 800, kind: 'offset' } as const
 
-    expect(shouldDisarmThreadFollow(bottom, offset)).toBe(true)
-    expect(shouldDisarmThreadFollow(offset, offset)).toBe(false)
-    expect(shouldDisarmThreadFollow(offset, bottom)).toBe(false)
-    expect(shouldDisarmThreadFollow(bottom, bottom)).toBe(false)
+    expect(shouldDisarmThreadFollow({ armed: true, movedUpPx: -120, next: offset })).toBe(true)
+    // Already parked: no second disarm, so a scroll event cannot churn the latch.
+    expect(shouldDisarmThreadFollow({ armed: false, movedUpPx: -120, next: offset })).toBe(false)
+  })
+
+  it('keeps the follow armed when growth leaves the viewport off the bottom without moving it', () => {
+    // A streamed chunk landing while the follow is a frame behind, and the composer clearance
+    // growing under a keystroke, both classify `offset` with scrollTop unchanged. The reader did not
+    // move, so the follow must stay armed — disarming here is the "it doesn't stay pinned" report.
+    const offset = { fromBottom: 800, kind: 'offset' } as const
+
+    expect(shouldDisarmThreadFollow({ armed: true, movedUpPx: 0, next: offset })).toBe(false)
+    expect(shouldDisarmThreadFollow({ armed: true, movedUpPx: THREAD_SCROLL_DISARM_EPSILON_PX, next: offset })).toBe(
+      false
+    )
+    // The library's stale-target follow only ever raises scrollTop; it is not the reader either.
+    expect(shouldDisarmThreadFollow({ armed: true, movedUpPx: 64, next: offset })).toBe(false)
+    // And a move that lands back inside the band never disarms.
+    expect(shouldDisarmThreadFollow({ armed: true, movedUpPx: -120, next: { kind: 'bottom' } })).toBe(false)
   })
 })
 

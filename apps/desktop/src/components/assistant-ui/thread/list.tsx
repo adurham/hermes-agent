@@ -647,10 +647,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const windowCommitRef = useRef<string | null>(null)
   const jumpRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
-  // Read by the resize-pin callback so a turn boundary doesn't rebuild its
-  // scroll listener and ResizeObserver.
-  const isRunningRef = useRef(isRunning)
-  isRunningRef.current = isRunning
   const clearanceRef = useRef<HTMLDivElement>(null)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
@@ -877,12 +873,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onThreadEditOpen(beginEditHold), [beginEditHold])
   useEffect(() => onThreadEditClose(endEditHold), [endEditHold])
   useEffect(() => () => endEditHold(), [endEditHold])
-  // New run → snap to the latest turn only when already near the bottom.
+  // New run → snap to the latest turn. A reader who never left the bottom (the
+  // follow is still armed — a transient layout gap is not reading intent) is
+  // brought back to the tail even if a frame of growth left them a screen above
+  // it; a reader who scrolled away deliberately stays where they are.
   useAuiEvent('thread.runStart', () => {
     cancelRestoreRef.current?.()
     const el = scrollRef.current
 
-    if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
+    if (
+      el &&
+      (followArmedRef.current || shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight))
+    ) {
       scrollToBottomUnlessSelecting()
     }
   })
@@ -909,6 +911,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const restoredStorageKeyRef = useRef(scrollStorageKey)
 
   const liveScrollStateRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
+
+  // The sticky follow's armed state, owned by this pane.
+  //
+  // A live POSITION SAMPLE (liveScrollStateRef) can sit outside the bottom band
+  // for a frame or two while the follow is a step behind: a streamed chunk that
+  // lands before the re-pin, the composer clearance growing under a keystroke, a
+  // row re-measuring under content-visibility. Deriving the follow from that
+  // sample parked live turns a message above their tail, pill showing, for the
+  // rest of the session — the "it doesn't stay pinned to the bottom" report —
+  // and the library's own latch then suppresses its resize follow, so nothing
+  // ever re-armed it. Only reader input disarms the follow here; anything that
+  // lands back inside the band arms it again.
+  const followArmedRef = useRef(true)
 
   // Key the restore loop has already applied to the current transcript — the
   // record gate: an instance records only the state it actually showed under
@@ -937,16 +952,28 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // can't leave a stale gap that makes a mid-stream resize look like growth.
     let previousResizeMetrics = resizeMetrics()
 
+    // Last scrollTop this pane observed, for the disarm predicate: an offset
+    // sample only counts as the reader leaving the bottom when the viewport
+    // actually moved up. Growth, the composer clearance and the library's
+    // one-frame-stale follow all classify `offset` without moving it.
+    let lastScrollTop = el.scrollTop
+
     const update = () => {
       previousResizeMetrics = resizeMetrics()
       const nextState = threadScrollStateFromMetrics(el)
+      const movedUpPx = el.scrollTop - lastScrollTop
+
+      lastScrollTop = el.scrollTop
 
       // The reader left the bottom band: disarm the sticky follow from the app's own classifier
       // rather than trusting the library's escape heuristic — see shouldDisarmThreadFollow. Without
       // this, a scrollbar drag / keyboard page / find-in-page jump during a live turn is re-pinned
       // to the bottom by the next growth, and the position recorded for the session is that bottom.
-      if (shouldDisarmThreadFollow(liveScrollStateRef.current, nextState)) {
+      if (shouldDisarmThreadFollow({ armed: followArmedRef.current, movedUpPx, next: nextState })) {
+        followArmedRef.current = false
         stopScroll()
+      } else if (nextState.kind === 'bottom') {
+        followArmedRef.current = true
       }
 
       liveScrollStateRef.current = nextState
@@ -963,17 +990,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // An open inline edit holds the viewport (beginEditHold), so its growing
       // bubble is never followed.
       if (
-        isRunningRef.current &&
+        followArmedRef.current &&
         !el.hasAttribute('data-editing') &&
         shouldReapplyFrozenThreadScrollOffset(THREAD_SCROLL_BOTTOM, true, previousResizeMetrics, nextResizeMetrics) &&
-        threadScrollStateFromMetrics({ ...previousResizeMetrics, scrollTop: el.scrollTop }).kind === 'bottom' &&
         !hasTranscriptTextSelection(el)
       ) {
         el.scrollTop = threadScrollTargetTop(THREAD_SCROLL_BOTTOM, nextResizeMetrics)
       }
 
       previousResizeMetrics = nextResizeMetrics
+      // The synchronous pin above is this pane's own write: adopt it as the
+      // reference so the scroll event it fires cannot read as a reader move.
+      lastScrollTop = el.scrollTop
+
       const nextState = threadScrollStateFromMetrics(el)
+
+      if (nextState.kind === 'bottom') {
+        followArmedRef.current = true
+      }
 
       liveScrollStateRef.current = nextState
     }
@@ -1110,6 +1144,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // here every scroll/RO event describes the restored session.
     liveScrollStateRef.current = target
     loadTargetRef.current = target
+    // A remembered offset is the reader's own position, so the follow stays
+    // disarmed until they come back to the bottom; a bottom target follows.
+    followArmedRef.current = target.kind === 'bottom'
 
     stopScroll()
 
@@ -1248,7 +1285,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // Input wins even at a clamped top, where no scroll event fires.
       stopScroll()
       loadSettledRef.current = true
-      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      const cancelled = threadScrollStateFromMetrics(el)
+
+      liveScrollStateRef.current = cancelled
+      followArmedRef.current = cancelled.kind === 'bottom'
       restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
       // The reader's own position, captured: only good while they are still at it.
       parkedOffsetRef.current = false
@@ -1309,6 +1349,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       target = THREAD_SCROLL_BOTTOM
       restoreFromBottomRef.current = null
       liveScrollStateRef.current = target
+      followArmedRef.current = true
 
       applyRestoreRef.current = () => {
         applyTarget(el)
@@ -1392,6 +1433,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // position gets — so the reader always ends where they can scroll from.
       void scrollToBottomUnlessSelecting('instant')
       liveScrollStateRef.current = THREAD_SCROLL_BOTTOM
+      followArmedRef.current = true
       loadSettledRef.current = true
     }
   }, [scrollToBottomUnlessSelecting])

@@ -490,6 +490,91 @@ describe('list session-scroll restore', () => {
     }
   })
 
+  it('re-pins a live turn that one unpinnable frame left above the tail, with no reader intent', async () => {
+    // The follow used to be keyed on the PREVIOUS frame's distance from the bottom. A frame that
+    // could not be pinned — an inline edit holding the viewport, a composer-only resize moving the
+    // reference — left that sample outside the band, so every later chunk of the same turn skipped
+    // the re-pin and the view stayed a message above the tail until the pill was clicked. That is
+    // the "it doesn't stay pinned to the bottom" report; the follow's intent, not a stale position
+    // sample, has to decide.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const { container, unmount } = render(
+      <ScrollHarness isRunning messages={sessionMessages('parked', 4)} sessionKey="parked" />
+    )
+
+    const vp = viewportEl(container)
+
+    const deliverContentResize = () => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    try {
+      await settleScroll(10)
+      expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+      const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => 0)
+
+      try {
+        // An inline edit holds the viewport while its bubble grows: this frame is deliberately
+        // not followed, so the position sample ends up outside the bottom band.
+        vp.setAttribute('data-editing', 'true')
+
+        act(() => {
+          scrollHeightValue += 400
+          deliverContentResize()
+        })
+
+        expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+        // The edit closes and the turn streams on. The reader never moved, so the next chunk must
+        // return them to the tail instead of leaving them a screen above it.
+        vp.removeAttribute('data-editing')
+
+        act(() => {
+          scrollHeightValue += 300
+          deliverContentResize()
+        })
+
+        expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
+      } finally {
+        raf.mockRestore()
+      }
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('lets a reader escape bottom-follow when a running transcript grows during the scroll gesture', async () => {
     // #116273: a pending clarify keeps the turn running while the transcript
     // can still resize. If that resize lands in the same frame as scroll-up,

@@ -325,8 +325,21 @@ export function shouldApplyThreadScrollAnchor(args: {
  * already stops the follow before it moves the viewport, and re-running this on every scroll event
  * would be a no-op anyway — but keeping it a transition means the disarm costs one call per escape.
  */
-export function shouldDisarmThreadFollow(previous: ThreadScrollState, next: ThreadScrollState): boolean {
-  return previous.kind !== 'offset' && next.kind === 'offset'
+export const THREAD_SCROLL_DISARM_EPSILON_PX = 0.5
+
+export function shouldDisarmThreadFollow(args: {
+  armed: boolean
+  movedUpPx: number
+  next: ThreadScrollState
+}): boolean {
+  // The reader must actually have moved the viewport UP, out of the bottom band. Growth, the
+  // composer clearance changing under a keystroke, and the library's one-frame-stale follow all
+  // classify `offset` without moving scrollTop; disarming on those left a live turn parked a
+  // message above its tail with the follow switched off for the rest of the session — the "it
+  // doesn't stay pinned to the bottom" report — because the library's escape latch (which
+  // `stopScroll` sets) suppresses its resize follow entirely. Direction, not a position sample: a
+  // sample can already be out of the band from a frame that landed before the reader arrived.
+  return args.armed && args.next.kind === 'offset' && args.movedUpPx < -THREAD_SCROLL_DISARM_EPSILON_PX
 }
 
 // Composer metrics write --composer-measured-height onto the chat surface,
