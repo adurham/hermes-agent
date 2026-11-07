@@ -27,12 +27,26 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+#: The Desktop's remote "session token" connection presents the deployment credential in the same
+#: header the loopback SPA uses (``web_server._SESSION_HEADER_NAME``). Gated mode reads bearer or
+#: cookie only, so without this leg a token-only remote's plain REST calls 401'd ("no_cookie")
+#: while its ``/api/ws?token=`` upgrade — verified through the same provider stack — succeeded.
+_SESSION_TOKEN_HEADER = "x-hermes-session-token"
+
+
 def extract_bearer(request: Request) -> str:
-    """``Authorization: Bearer <token>`` value (scheme case-insensitive), or ``""``."""
+    """The request's bearer credential: ``Authorization: Bearer`` scheme value, the Desktop's
+    ``X-Hermes-Session-Token`` header, or ``""``.
+
+    Both headers carry a credential the gate verifies through the provider stack
+    (``middleware._verify_access_token``), so an unrecognised value is still refused. The header
+    fallback only lets a remote Desktop's token connection name the same secret its ``/api/ws``
+    upgrade already presents as ``?token=``; it is not a second authentication path.
+    """
     parts = request.headers.get("authorization", "").split(" ", 1)
     if len(parts) == 2 and parts[0].strip().lower() == "bearer":
         return parts[1].strip()
-    return ""
+    return request.headers.get(_SESSION_TOKEN_HEADER, "").strip()
 
 
 def _http_origin(value: str) -> tuple[str, str, int] | None:
