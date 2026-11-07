@@ -35,6 +35,25 @@ unified list, the capture is spent once, no write when Bot Mode was never entere
 driving the real `$showAllProfiles` store. `vitest run src/app/chat/sidebar src/sdk`: 513 tests in 63 files
 passed; `tsc -p . --noEmit` and eslint clean on the new files.
 
+### 2026-11-07 (identity) — every commit email is now amdnative@gmail.com
+
+**Trigger.** GitHub reported `verified: false, reason: "no_user"` for signed commits: the fork's identity was
+`adam.durham@tanium.com`, an address that is not linked to the `adurham` account (public email
+`amdnative@gmail.com`). Owner: "we need to pull ALL instances of that email from EVERYTHING in this fork".
+
+**What ran.** Global `user.email` → `amdnative@gmail.com`; `git filter-repo --email-callback` rewrote author
+and committer on every ref (six commits carried the address — four of them main's tip, one on 2026-11-05,
+and one 2026-07 commit reachable only through the `backup/pre-squash-2026-07-19` tag). The stale
+`sync/upstream-v0.23.0` branch, the only ref still holding an old-SHA copy, was deleted on origin. The four
+tip commits were re-signed after the rewrite (filter-repo drops signatures); GitHub now reports
+`verified: true, reason: valid`, and `git log --all` has zero occurrences of the old address.
+
+**Consequence.** Every SHA from `7e980ef112` onward changed, including upstream commits merged between
+2026-11-05 and 2026-11-07. The merge base for future upstream syncs is unchanged only before that commit, so
+the next `upstream-release-merge` run can surface conflicts where the rewritten copies and upstream's
+originals touch the same lines. Pre-rewrite mirror kept for recovery at
+`~/.hermes/cache/scratch/hermes-agent-pre-rewrite.git` (outside the repo).
+
 ### 2026-11-05 (sweep) — FORK.md audited against the tree
 
 Read every one of the 345 entries and checked its claims against `main` at `3b8709639` plus upstream
