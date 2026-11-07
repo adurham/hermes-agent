@@ -153,10 +153,22 @@ export function SidebarCronJobsSection({
     return () => window.clearInterval(id)
   }, [open, visible])
 
-  // Upcoming first (soonest next run), jobs with no next run sink to the bottom,
-  // then alphabetical for stability.
+  // Live jobs first, upcoming soonest; paused/completed/errored ones sink below them
+  // (a dead job keeps its stale past next_run_at, so timestamp order alone ranks it
+  // above a live job that runs later — and the section only renders three rows up
+  // front, which hid a freshly created job behind "load more"). No next run sinks
+  // to the bottom, then alphabetical for stability.
   const sorted = useMemo(() => {
+    const rank = (job: CronJob) => (INACTIVE_STATES.has(jobState(job)) ? 1 : 0)
+
     return [...jobs].sort((a, b) => {
+      const ar = rank(a)
+      const br = rank(b)
+
+      if (ar !== br) {
+        return ar - br
+      }
+
       const an = nextRunMs(a)
       const bn = nextRunMs(b)
 

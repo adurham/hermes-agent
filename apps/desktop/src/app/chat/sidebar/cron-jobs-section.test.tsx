@@ -70,6 +70,47 @@ async function renderRunsPeek(rows: SessionInfo[]) {
   return { onOpenRun }
 }
 
+describe('SidebarCronJobsSection ordering', () => {
+  // A paused job keeps its stale next_run_at, so plain timestamp order ranks it above a
+  // live job that runs later — and only INITIAL_VISIBLE_JOBS rows render up front, so a
+  // freshly created job could sit behind "load more" and never appear (reported live).
+  it('keeps live jobs above paused ones parked on a past next_run_at', () => {
+    const paused = (id: string, name: string, next: string): CronJob => ({
+      enabled: false,
+      id,
+      name,
+      next_run_at: next,
+      state: 'paused'
+    })
+
+    render(
+      <SidebarCronJobsSection
+        jobs={[
+          paused('shark', 'shark-board-keeper', '2026-11-05T10:49:30.791292-06:00'),
+          paused('nest', 'nest-board-keeper', '2026-11-05T10:49:30.859610-06:00'),
+          paused('ps5', 'ps5-board-keeper', '2026-11-07T01:21:06.303985-06:00'),
+          {
+            enabled: true,
+            id: 'upstream',
+            name: 'upstream-release-merge',
+            next_run_at: '2026-11-07T06:00:00-06:00',
+            state: 'scheduled'
+          }
+        ]}
+        label="Cron Jobs"
+        onManageJob={vi.fn()}
+        onOpenRun={vi.fn()}
+        onToggle={vi.fn()}
+        onTriggerJob={vi.fn()}
+        open
+      />
+    )
+
+    expect(screen.getByText('upstream-release-merge')).toBeTruthy()
+    expect(screen.queryByText('ps5-board-keeper')).toBeNull()
+  })
+})
+
 describe('SidebarCronJobsSection run rows', () => {
   // Contract (#82527): clicking a run must hand the open path the run ROW, not
   // its bare id. The row carries the owning (connection, profile); without it
