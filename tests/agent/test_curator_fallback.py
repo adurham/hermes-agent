@@ -130,6 +130,19 @@ def test_normal_completion_does_not_touch_the_fallback(monkeypatch):
     assert meta["summary"] == "nothing to do"
 
 
+def test_text_response_stop_exit_reason_is_a_completed_review(monkeypatch):
+    """The exit reason a plain-text final answer really carries must not read as a failure."""
+    seen = _install(monkeypatch, [({"final_response": "nothing to do", "api_calls": 6,
+                                    "turn_exit_reason": "text_response(finish_reason=stop)"}, [])])
+    monkeypatch.setattr(curator, "_resolve_review_fallback_binding", _fallback)
+
+    meta = curator._run_llm_review("prompt")
+
+    assert len(seen) == 1
+    assert meta["error"] is None
+    assert meta["summary"] == "nothing to do"
+
+
 def test_budget_exhausted_skips_the_retry(monkeypatch):
     seen = _install(monkeypatch, [(_empty_result(), [])])
     monkeypatch.setattr(curator, "_resolve_review_fallback_binding", _fallback)

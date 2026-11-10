@@ -1453,8 +1453,9 @@ def _run_review_attempt(prompt: str, route: Optional[_ReviewRuntimeBinding] = No
 # ``final_response`` on the empty path is the user-facing explainer, not model output.
 _NO_REPLY_MARKERS = ("didn't produce a reply",)
 # Turn exit reasons that still count as a usable pass. Anything else (empty_response_exhausted,
-# context_compression_*, iteration/budget limits, …) is a failure.
-_CURATOR_OK_EXIT_REASONS = frozenset({"", "unknown", "completed", "normal", "stop"})
+# context_compression_*, iteration/budget limits, …) is a failure. ``text_response(finish_reason=stop)``
+# is what a turn that ends on a plain-text answer actually reports (agent/turn_final_response.py).
+_CURATOR_OK_EXIT_REASONS = frozenset({"", "unknown", "completed", "normal", "stop", "text_response(finish_reason=stop)"})
 # A weekly slot has no job-level timeout; a second 10-25 minute pass must not push a run past this.
 _CURATOR_REVIEW_BUDGET_SECONDS = 2700.0
 
