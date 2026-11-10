@@ -4,7 +4,9 @@ The bridge at tools/bridges/cc_proxy_mcp.py translates between
 Hermes MCP tool calls and Claude Code's proxy protocol.
 """
 
+import json
 import subprocess
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -234,6 +236,46 @@ class TestCredStoreKeychainBackend:
             store = cc_proxy_mcp.CredStore(missing_file)
 
         assert store._backend == "file"
+
+
+class TestForcedRefreshKeepsValidToken:
+    """A 401 must not rotate a refresh token that the clock still calls valid.
+
+    ``tanium-provisioner`` is a connector this login never authorized, so every
+    start got a 401 and force-refreshed, rotating the single-use refresh token
+    several times per cycle on the chain the Claude CLI shares. One of those
+    rotations raced the CLI and Anthropic revoked the whole token family.
+    """
+
+    def _store(self, tmp_path, expires_in_s):
+        creds = tmp_path / ".credentials.json"
+        creds.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "old-access",
+            "refreshToken": "old-refresh",
+            "expiresAt": int((time.time() + expires_in_s) * 1000),
+        }}))
+        return cc_proxy_mcp.CredStore(creds), creds
+
+    def test_forced_refresh_leaves_a_valid_token_alone(self, tmp_path):
+        store, creds = self._store(tmp_path, expires_in_s=3600)
+        with patch.object(cc_proxy_mcp.httpx, "Client") as client:
+            token = store._get_locked(force_refresh=True)
+        assert token == "old-access"
+        client.assert_not_called()
+        assert json.loads(creds.read_text())["claudeAiOauth"]["refreshToken"] == "old-refresh"
+
+    def test_expired_token_still_refreshes(self, tmp_path):
+        store, creds = self._store(tmp_path, expires_in_s=-10)
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            "access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 28800,
+        }
+        with patch.object(cc_proxy_mcp.httpx, "Client") as client:
+            client.return_value.__enter__.return_value.post.return_value = resp
+            token = store._get_locked(force_refresh=True)
+        assert token == "new-access"
+        saved = json.loads(creds.read_text())["claudeAiOauth"]
+        assert saved["refreshToken"] == "new-refresh"
 
 
 class TestSDKCompat:

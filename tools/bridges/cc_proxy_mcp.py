@@ -344,7 +344,15 @@ class CredStore:
                     and expires_at
                     and (expires_at - now_ms) > REFRESH_SKEW_SECS * 1000
                 )
-                if fresh_enough and not force_refresh:
+                if fresh_enough:
+                    if force_refresh:
+                        # A 401 on a token the clock still calls valid is not an expiry, and rotating
+                        # the single-use refresh token cannot fix it. An unauthorized connector 401s on
+                        # every start; forcing a refresh each time raced the Claude CLI sharing this
+                        # login and got the whole token family revoked.
+                        log.warning(
+                            "Upstream 401 on an unexpired token; not rotating the refresh token"
+                        )
                     return access
                 if not refresh:
                     if access and not force_refresh:
