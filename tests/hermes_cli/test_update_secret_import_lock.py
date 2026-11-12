@@ -57,7 +57,17 @@ secrets:
         text=True,
         timeout=120,
         cwd=REPO_ROOT,
-        env={**os.environ, "HERMES_HOME": str(home), "BWS_ACCESS_TOKEN": ""},
+        # PYTHONPATH pins the probe to THIS checkout: without it, ``hermes update`` sees a
+        # venv that belongs to a different install and re-execs that install's updater
+        # (``update_owning_install.retarget_to_owning_install``), so the probe would report
+        # on someone else's tree. Naming this root is the documented "a wrapper chose this
+        # tree on purpose" case, and it is a no-op for the normal in-tree venv.
+        env={
+            **os.environ,
+            "HERMES_HOME": str(home),
+            "BWS_ACCESS_TOKEN": "",
+            "PYTHONPATH": str(REPO_ROOT),
+        },
         check=False,
     )
     assert result.returncode == 0, result.stderr

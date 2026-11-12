@@ -1937,10 +1937,14 @@ class TestConcurrentToolExecution:
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("model_tools.handle_function_call", return_value="result") as mock_hfc:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+            from agent.inline_tool_executors import conversation_id as _conversation_id
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                # Upstream's dispatch contract carries the durable conversation id to the
+                # tool hooks/middleware alongside task/session/turn ids (hook_ids).
+                conversation_id=_conversation_id(agent),
                 turn_id="",
                 api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
@@ -3222,7 +3226,7 @@ class TestRunConversation:
 
         assert result["final_response"] == "Recovered on fallback"
         assert result["completed"] is True
-        mock_try_activate_fallback.assert_called_once_with()
+        mock_try_activate_fallback.assert_called_once_with(reason=FailoverReason.content_policy_blocked)
         assert mock_run_codex_stream.call_count == 2
         assert hook_events[0]["error_type"] == "ContentPolicyBlocked"
         assert hook_events[0]["retryable"] is False

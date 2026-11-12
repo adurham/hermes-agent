@@ -3,10 +3,8 @@
 
 import asyncio
 import logging
-import importlib.util
 import json
 import os
-import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -175,7 +173,7 @@ def mount_spa(application: FastAPI):
             # Webapp's bundle is built by `hermes webapp`, not by the dashboard's web project.
             webapp = getattr(application.state, "ui_surface", "dashboard") == "webapp"
             missing = ("The Webapp is not built. Run: hermes webapp" if webapp
-                       else "Frontend not built. Run: cd web && npm run build")
+                       else "Frontend not built. Run: pnpm --dir web run build")
             return JSONResponse({"error": missing}, status_code=404)
         if getattr(application.state, "ui_surface", "dashboard") == "webapp":
             # A bundle `hermes update` could not rebuild was built for the code before the update:
@@ -512,7 +510,7 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     original string when the resolved path stays under ``dashboard_dir``, else ``None`` so
     the plugin still loads its static JS/CSS but its backend ``api`` is rejected.
 
-    The web server later imports this file as a Python module via ``importlib.util.spec_from_file_location``
+    The web server later imports this file as a Python module via ``plugin_isolation.import_user_code``
     (arbitrary code execution by design — that's how plugins extend the backend). Pre-#29156 the field was
     used as-is, which meant:
     """
@@ -1129,6 +1127,32 @@ def _try_hot_mount_plugin_api(name: str) -> bool:
         return True
 
 
+def _route_paths(route) -> list[str]:
+    """The concrete paths ``route`` serves, seeing through a lazily included router.
+
+    ``app.include_router`` may keep the child router as one wrapper entry in
+    ``app.router.routes`` and resolve its routes per request (FastAPI's ``_IncludedRouter``),
+    instead of copying them into the table; the wrapper exposes its resolved routes as
+    effective candidates. Asking it is what makes the route-table read below honest.
+    """
+    path = getattr(route, "path", None)
+    if isinstance(path, str):
+        return [path]
+    paths: list[str] = []
+    for attribute in ("effective_candidates", "effective_low_priority_routes"):
+        resolve = getattr(route, attribute, None)
+        if not callable(resolve):
+            continue
+        candidates = resolve()
+        if not isinstance(candidates, (list, tuple)):
+            continue
+        for candidate in candidates:
+            candidate_path = getattr(candidate, "path", None)
+            if isinstance(candidate_path, str):
+                paths.append(candidate_path)
+    return paths
+
+
 def _plugin_api_mounted(app, name: str) -> bool:
     """Whether ``app`` already serves ``/api/plugins/<name>/`` — read from the route table itself,
     so anything that rebuilds the routes (a test restoring its snapshot) cannot leave a stale
@@ -1136,7 +1160,7 @@ def _plugin_api_mounted(app, name: str) -> bool:
     prefix = f"/api/plugins/{name}"
     return any(
         getattr(r, "endpoint", None) is not _plugin_api_hot_mount
-        and (getattr(r, "path", "") == prefix or getattr(r, "path", "").startswith(prefix + "/"))
+        and any(path == prefix or path.startswith(prefix + "/") for path in _route_paths(r))
         for r in app.router.routes
     )
 
@@ -1223,19 +1247,12 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
         return False
     try:
-        module_name = f"hermes_dashboard_plugin_{plugin['name']}"
-        spec = importlib.util.spec_from_file_location(module_name, api_path)
-        if spec is None or spec.loader is None:
-            return False
-        mod = importlib.util.module_from_spec(spec)
-        # Register in sys.modules BEFORE exec_module so pydantic/FastAPI can resolve
+        from hermes_cli.plugin_isolation import import_user_code
+        # Registered in sys.modules while the body runs so pydantic/FastAPI can resolve
         # string annotations (``from __future__ import annotations``) by module name.
-        sys.modules[module_name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except Exception:
-            sys.modules.pop(module_name, None)
-            raise
+        mod = import_user_code(api_path, f"hermes_dashboard_plugin_{plugin['name']}")
+        if mod is None:
+            return False
         router = getattr(mod, "router", None)
         if router is None:
             _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])

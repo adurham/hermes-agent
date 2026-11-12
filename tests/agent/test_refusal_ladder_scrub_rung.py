@@ -57,7 +57,9 @@ def _agent(*, has_fallback: bool):
         log_prefix="", _refusal_sanitize_attempted=False,
         _is_anthropic_oauth=False, thinking_callback=None,
         _has_pending_fallback=lambda: has_fallback,
-        _try_activate_fallback=lambda: has_fallback,
+        # try_activate_fallback takes a FailoverReason (labels the switch notice with
+        # the cause); the handler passes reason=FailoverReason.content_policy_blocked.
+        _try_activate_fallback=lambda *a, **k: has_fallback,
         _buffer_status=lambda s="", *a, **k: statuses.append(s),
         _emit_status=lambda s="", *a, **k: statuses.append(s),
         _buffer_diagnostic_status=lambda s="", *a, **k: statuses.append(s),

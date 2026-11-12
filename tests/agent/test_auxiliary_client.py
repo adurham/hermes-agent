@@ -21,11 +21,6 @@ from agent.auxiliary_client import (
     async_call_llm,
     _build_call_kwargs,
     _resolve_codex_credential_and_base,
-    _is_payment_error,
-    _is_rate_limit_error,
-    _is_model_not_found_error,
-    _is_model_incompatible_error,
-    _is_statusless_structured_provider_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -670,7 +665,7 @@ class TestAnthropicOAuthFlag:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         with (
@@ -773,7 +768,7 @@ class TestBuildCodexClient:
             def peek(self):
                 return self.entry
 
-            def select(self):
+            def select(self, model=None):
                 return self.entry
 
         pool = _Pool()
@@ -1136,7 +1131,7 @@ class TestGetTextAuxiliaryClient:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         with (
@@ -1370,157 +1365,6 @@ class TestAuxiliaryPoolAwareness:
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 
 
-class TestIsPaymentError:
-    """_is_payment_error detects 402 and credit-related errors."""
-
-    def test_402_status_code(self):
-        exc = Exception("Payment Required")
-        exc.status_code = 402
-        assert _is_payment_error(exc) is True
-
-
-
-
-    @pytest.mark.parametrize("spelling", ["RESOURCE_EXHAUSTED", "ResourceExhausted", "resource-exhausted"])
-    @pytest.mark.parametrize("status", [None, 429])
-    def test_resource_exhausted_separator_variants_are_payment(self, spelling, status):
-        """NIM / gRPC wrappers serialize the quota signal without the space; the fallback gate
-        must read every spelling like the literal ``resource exhausted`` (#85649)."""
-        exc = Exception(f"{spelling}: Worker local total request limit reached (32/32)")
-        if status is not None:
-            exc.status_code = status
-        assert _is_payment_error(exc) is True
-
-    def test_403_subscription_required_is_payment(self):
-        exc = Exception(
-            "this model requires a subscription, upgrade for access: "
-            "https://ollama.com/upgrade"
-        )
-        exc.status_code = 403
-        assert _is_payment_error(exc) is True
-
-    def test_403_anthropic_oauth_org_block_is_payment(self):
-        """The live incident (2026-09-23): a paused Claude Max subscription
-        makes every Anthropic call fail with HTTP 403
-        ``oauth_not_allowed_for_organization``. The provider cannot serve
-        the request until the subscription is restored, so this must
-        classify as a payment/entitlement failure or the configured aux
-        fallback chain never engages (the consult call died on the bare
-        403 instead of falling back to GLM)."""
-        exc = Exception(
-            "Error code: 403 - {'type': 'error', 'error': {'type': "
-            "'permission_error', 'message': 'OAuth authentication is "
-            "currently not allowed for this organization.', 'details': "
-            "{'error_code': 'oauth_not_allowed_for_organization'}}}"
-        )
-        exc.status_code = 403
-        assert _is_payment_error(exc) is True
-
-    def test_403_subscription_lapsed_keywords_are_payment(self):
-        for msg in (
-            "Your subscription has been paused at this time.",
-            "This subscription is inactive.",
-            "subscription lapsed — please renew",
-        ):
-            exc = Exception(msg)
-            exc.status_code = 403
-            assert _is_payment_error(exc) is True, msg
-
-    def test_403_generic_permission_denied_is_not_payment(self):
-        """A genuine permission 403 (no entitlement/subscription signal) must
-        NOT be reclassified — it is not a capacity error and should not
-        silently burn a fallback hop."""
-        exc = Exception(
-            "Error code: 403 - {'type': 'error', 'error': {'type': "
-            "'permission_error', 'message': 'You do not have permission to "
-            "access this resource.'}}"
-        )
-        exc.status_code = 403
-        assert _is_payment_error(exc) is False
-
-
-    def test_404_generic_not_found_is_not_payment(self):
-        exc = Exception("Not Found")
-        exc.status_code = 404
-        assert _is_payment_error(exc) is False
-
-
-
-
-
-    # ── Daily / monthly quota exhaustion (#26803) ────────────────────────────
-
-
-class TestIsModelNotFoundError:
-    """_is_model_not_found_error detects stale/invalid model 404s, distinct
-    from payment errors."""
-
-    def test_nous_openrouter_catalog_404(self):
-        """The exact incident error: a Portal-recommended model dropped from
-        the Nous → OpenRouter catalog."""
-        exc = Exception(
-            "Model 'gpt-5.4-mini' not found. The requested model does not "
-            "exist in our configuration or OpenRouter catalog."
-        )
-        exc.status_code = 404
-        assert _is_model_not_found_error(exc) is True
-
-
-
-
-    def test_billing_404_is_not_model_not_found(self):
-        """Free-tier / credit 404s belong to _is_payment_error, not here —
-        the two predicates must not overlap."""
-        exc = Exception(
-            "Model 'gpt-5' is not available on the free tier. Upgrade."
-        )
-        exc.status_code = 404
-        assert _is_model_not_found_error(exc) is False
-        assert _is_payment_error(exc) is True
-
-    def test_out_of_funds_404_is_not_model_not_found(self):
-        exc = Exception(
-            "Your API key is blocked or out of funds. model_not_found"
-        )
-        exc.status_code = 404
-        # billing keyword wins — payment owns it
-        assert _is_model_not_found_error(exc) is False
-
-
-class TestIsModelIncompatibleError:
-    """_is_model_incompatible_error detects 400s where the route cannot run
-    the model at all (capability mismatch), distinct from not-found and
-    payment errors."""
-
-    def test_codex_chatgpt_account_model_gating(self):
-        """The exact incident: an openai-codex/ChatGPT-account fallback asked
-        to compress a glm-5.2 conversation."""
-        exc = Exception(
-            "Error code: 400 - {'detail': \"The 'glm-5.2' model is not "
-            "supported when using Codex with a ChatGPT account.\"}"
-        )
-        exc.status_code = 400
-        assert _is_model_incompatible_error(exc) is True
-
-
-
-    def test_not_found_is_not_incompatible(self):
-        """A model-does-not-exist 400 belongs to _is_model_not_found_error —
-        the two predicates must not overlap."""
-        exc = Exception("openrouter/foo/bar is not a valid model ID")
-        exc.status_code = 400
-        assert _is_model_incompatible_error(exc) is False
-        assert _is_model_not_found_error(exc) is True
-
-    def test_payment_400_is_not_incompatible(self):
-        """A billing 400 that also contains capability-ish phrasing must be
-        rejected here — billing keywords win so the payment path owns it and
-        the two buckets don't overlap."""
-        exc = Exception("insufficient credits: model is not supported on free tier")
-        exc.status_code = 400
-        assert _is_model_incompatible_error(exc) is False
-
-
 class TestRefreshNousRecommendedModel:
     """_refresh_nous_recommended_model picks a fresh model after a stale 404."""
 
@@ -1545,30 +1389,6 @@ class TestRefreshNousRecommendedModel:
         out = _refresh_nous_recommended_model(
             vision=False, stale_model=_NOUS_MODEL)
         assert out is None
-
-
-class TestIsRateLimitError:
-    """_is_rate_limit_error detects 429 rate-limit errors warranting fallback."""
-
-    def test_429_with_rate_limit_message(self):
-        exc = Exception("Rate limit exceeded, try again in 2 seconds")
-        exc.status_code = 429
-        assert _is_rate_limit_error(exc) is True
-
-
-
-
-
-
-
-
-    def test_openai_ratelimiterror_classname(self):
-        """OpenAI SDK RateLimitError may omit .status_code — detect by class name."""
-        class RateLimitError(Exception):
-            pass
-        exc = RateLimitError("rate limit exceeded")
-        # No status_code set, but class name matches
-        assert _is_rate_limit_error(exc) is True
 
 
 class TestTryPaymentFallback:
@@ -1645,20 +1465,6 @@ class TestCallLlmPaymentFallback:
                     model="m", messages=[{"role": "user", "content": "hi"}], stream=True):
                 pass
         return caught.value
-
-    def test_statusless_structured_error_detection(self):
-        """A status-less SDK stream error with a non-empty structured body counts (#101538)."""
-        assert _is_statusless_structured_provider_error(
-            self._sdk_stream_error({"type": "server_error", "code": "overloaded", "message": "busy"}))
-        assert _is_statusless_structured_provider_error(self._sdk_stream_error("service unavailable"))
-        assert not _is_statusless_structured_provider_error(self._sdk_stream_error({"metadata": {}}))
-        assert not _is_statusless_structured_provider_error(Exception("stream_error: mid_stream_failure"))
-
-        class _StatusCoded(Exception):
-            status_code = 503
-            body = {"type": "server_error"}
-
-        assert not _is_statusless_structured_provider_error(_StatusCoded("unavailable"))
 
     def test_statusless_structured_error_after_param_strip_triggers_configured_fallback(self):
         """An in-stream error event on an explicit relay reaches the fallback chain, also when it
@@ -1760,8 +1566,8 @@ class TestStaleFallbackCandidateSkip:
     """
 
     def _timeout_err(self):
-        # Class name carries "Timeout" — matches _is_connection_error's
-        # type-name detection, like the real Codex stream-deadline error.
+        # Class name carries "Timeout": the classifier's type-name timeout
+        # detection, like the real Codex stream-deadline error.
         class _AuxStreamTimeoutError(Exception):
             pass
         return _AuxStreamTimeoutError(
@@ -2274,7 +2080,7 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _is_connection_error coverage
+# transient transport retry coverage
 # ---------------------------------------------------------------------------
 
 
@@ -2285,8 +2091,8 @@ class TestTransientTransportRetry:
     Salvaged from PR #16587 (@ARegalado1). The original fixed only the
     context-compression caller; this lives in call_llm so every auxiliary
     task (compression, memory flush, title-gen, session-search, vision)
-    gets the same same-target retry, and the gate reuses the canonical
-    _is_connection_error detector.
+    gets the same same-target retry, and the gate reads the shared
+    classifier's transport verdict.
     """
 
     def _patches(self, client):
@@ -2547,40 +2353,6 @@ class TestAuxClientNoSdkRetries:
              patch.object(ac, "_openai_http_client_kwargs", return_value={}):
             ac._create_openai_client(api_key="k", base_url="https://x/v1")
         assert captured.get("max_retries") == 0
-
-
-class TestIsTimeoutError:
-    """_is_timeout_error distinguishes a full-budget timeout from a fast
-    connection drop."""
-
-    def test_timed_out_string(self):
-        from agent.auxiliary_client import _is_timeout_error
-        assert _is_timeout_error(Exception("Request timed out.")) is True
-
-    def test_timeout_typename(self):
-        from agent.auxiliary_client import _is_timeout_error
-
-        class ReadTimeout(Exception):
-            pass
-
-        assert _is_timeout_error(ReadTimeout("slow")) is True
-
-
-class TestIsConnectionError:
-    """Tests for _is_connection_error detection."""
-
-    def test_connection_refused(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Connection refused")
-        assert _is_connection_error(err) is True
-
-
-
-    def test_normal_api_error_not_connection(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Bad Request: invalid model")
-        err.status_code = 400
-        assert _is_connection_error(err) is False
 
 
 class TestKimiTemperatureOmitted:
@@ -3239,7 +3011,8 @@ class TestAuxiliaryPoolRotationRetry:
             )
 
         assert resp.choices[0].message.content == "rotated-sync"
-        assert stale_client.chat.completions.create.call_count == 2
+        # A bare "usage limit reached" 429 is a spent plan window (billing): no same-key backoff retry.
+        assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
@@ -5452,6 +5225,7 @@ class TestAsynchronousFallbackCachePlans:
             effective_timeout=30.0,
             effective_extra_body={},
             reasoning_config=None,
+            classify_as="anthropic",
         )
 
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]

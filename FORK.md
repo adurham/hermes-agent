@@ -9,6 +9,62 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### 2026-11-12 (upstream sync) — v0.23.1 merged, and why the cron job could not do it
+
+**Range.** `v0.23.0..v0.23.1` (v0.23.1 = `3b421578588`): 2,604 commits, 2,781 files, +151,690/−62,595.
+The fork carried 884 of its own commits since the last sync and both sides touched 198 files, but the
+real collision surface was **36 conflicted paths** (32 `UU`, 4 `DU`) in 46 blocks.
+
+**Why `upstream-release-merge` failed every six hours for two days.** The 2026-11-07 commit-email
+rewrite gave every pre-rewrite upstream commit a new SHA, so `git merge-base main v0.23.1` fell back to
+`10b4cfeace2` (2025-07-26) and git reported 2,308 phantom add/add conflicts — every upstream file
+looked new. The histories are bridgeable because the fork's rewritten v0.23.0 tip `cbdf0949111` and
+upstream's real v0.23.0 `2bd378ed1b8` have the **same tree** (`675b4cea2d2a`):
+`git replace --graft 2bd378ed1b8 cbdf0949111` makes the real v0.23.1 descend from the fork's copy,
+which shrinks the conflict set to the 36 genuine ones. The replace ref is deleted after the merge
+commit: this merge gives the two histories real shared ancestry, so the next release tag merges with
+no graft at all.
+
+**Resolution** (four resolver lanes, then reviewed, compile-checked and swept):
+
+- **Error classification moved upstream.** v0.23.1 retired the fork's local `_is_payment_error` /
+  `_is_rate_limit_error` / `_is_connection_error` family and the fork's `agent/auxiliary_error_shapes.py`
+  in favour of `agent/error_classifier.py` + `agent/auxiliary_error_policy.py`. Both fork rules were
+  re-ported onto that classifier and proved by probe: a relay that dies mid-capture
+  (`capture incomplete`, `relay failure`, `incomplete upstream response`, 400 embedded in the message)
+  classifies as transport/retryable rather than `format_error` — `_FORK_RELAY_TRANSFER_PATTERNS`
+  returns before `_by_status` — and 5xx / lapsed-subscription 403s still reach the fallback chain.
+- **Dashboard auth:** restored v0.23.1's bearer-only `extract_bearer`. Upstream already carries the
+  fork's own *later* refinements of the session-token header (7b4499…, 9bf07b…), so the fork's broader
+  fallback in `hermes_cli/dashboard_auth/request_utils.py` was a superseded intermediate step, not intent.
+- **Plugins:** `PluginContext` moved to `hermes_cli/plugins_context.py`; the fork's `register_command`
+  name-dispatch fix was ported onto the moved class.
+- **Yuanbao left core** with the plugin-catalog move: `plugins/platforms/yuanbao/` and
+  `tools/yuanbao_tools.py` deleted (take-their-delete), together with the fork test that imported them.
+- **npm → pnpm:** the root `package-lock.json` is gone. The fork's pins were re-expressed in
+  `pnpm-workspace.yaml` (`minimumReleaseAgeExclude` + `overrides`: `yauzl`, `shell-quote`,
+  `@electron/asar@^4>glob`, `minimatch@^10`, `jsdom>undici`), `pnpm-lock.yaml` was regenerated
+  (apps/desktop now resolves `resedit`, no `rcedit`), and `pnpm install --frozen-lockfile
+  --lockfile-only` exits 0.
+- **Generated artifacts re-rendered, not hand-merged:** the gateway contracts were already
+  byte-identical to the render; `surfaces.json` and its tool fixtures were re-rendered
+  (`browser_vault` gained `target`, `drive_preview` gained vault guidance); `serve_handler_ledger.json`
+  was regenerated after teaching the generator to see through FastAPI 0.142's lazy `_IncludedRouter`
+  wrappers (+1 row, `POST /api/pet/dialogue`, the fork's own).
+
+**Defects found by running the tree, not by reading the diff.** A 1,757-result sweep across
+`tests/{agent,hermes_cli,gateway,tools,tui_gateway,acp_adapter,ci}` classified every failure against the
+pre-merge baseline: 1,057 pre-existing, 69 environment-blocked, **43 merge-caused**, then fixed in four
+lanes and re-verified. Three were real production gaps: the fork's base-url-scoped legacy wire flags
+(`is_nous`, `is_qwen_portal`, `is_custom_provider`) had dropped out of `_build_chat_completions_kwargs`'s
+legacy branch, taking `extra_body.tags` (Nous Portal attribution) and `extra_body.vl_high_resolution_images`
+with them; the ledger generator assumed eager `app.routes`; and the dashboard `extract_bearer` above.
+The rest were stale test contracts after upstream-intentional changes — `reason=` on
+`_try_activate_fallback`, `conversation_id` in the tool-dispatch kwargs, `_pnpm_argv`,
+`notices` on `_make_tui_argv`, `SessionState.conversation.reasoning_override` — plus the new `external`
+code-root dimension in fleet rows, where the fixtures now pin `_gateway_code_root` the way upstream's
+own fixtures do.
+
 ### 2026-11-07 (reasoning effort) — the by-model effort map never matched, and Nous relayed `ultra` verbatim
 
 **Symptom.** Owner: DeepSeek v4.1 Flash and GLM 5.3 Flash had been "acting WAY dumber lately … ending

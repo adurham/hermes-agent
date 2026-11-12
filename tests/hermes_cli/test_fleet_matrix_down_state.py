@@ -27,6 +27,10 @@ def _setup(monkeypatch, tmp_path, record: dict):
         "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
+    # The synthetic record carries no argv and the pid under test is pytest itself, so
+    # code-root probing would resolve the TEST VENV's checkout (which can live outside
+    # this tree) and classify the row `external` purely as an artifact of the fixture.
+    monkeypatch.setattr(ur, "_gateway_code_root", lambda pid, home: None)
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     return home
 

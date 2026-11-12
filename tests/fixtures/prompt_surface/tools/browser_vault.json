@@ -28,6 +28,14 @@
       "label": {
         "description": "save_login only: short site name (default: the host).",
         "type": "string"
+      },
+      "target": {
+        "description": "fill / save_login / enter_code: 'preview' = the Desktop in-app browser page beside the chat, 'browser' = the managed automation browser.",
+        "enum": [
+          "browser",
+          "preview"
+        ],
+        "type": "string"
       }
     },
     "required": [

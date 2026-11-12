@@ -52,6 +52,11 @@ def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProce
             "https_proxy": "http://127.0.0.1:9",
             "NO_PROXY": "",
             "no_proxy": "",
+            # Pin the child to THIS checkout: otherwise ``hermes update`` detects a venv that
+            # belongs to another install and re-execs that install's updater
+            # (update_owning_install.retarget_to_owning_install), so the E2E assertions would
+            # exercise a foreign tree instead of the merged one.
+            "PYTHONPATH": str(repo_root),
         }
     )
     return subprocess.run(
@@ -215,6 +220,9 @@ sys.exit(0)
                 cwd=str(repo_root),
                 timeout=60,
                 check=False,
+                # Pin the probe to THIS checkout so ``hermes update`` does not re-exec the
+                # owning install's updater (update_owning_install) and report on another tree.
+                env={**os.environ, "PYTHONPATH": str(repo_root)},
             )
             assert result.returncode == 0, (
                 f"Decisive main()-level probe failed:\n"

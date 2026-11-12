@@ -460,6 +460,10 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway", lambda h, **kw: None
     )
+    # Synthesised record: no argv to probe, and the pid under test is pytest itself, whose
+    # venv may live in a DIFFERENT checkout from this tree — that would make code-root
+    # resolution report the row `external` for a fixture reason, not a real one.
+    monkeypatch.setattr(ur, "_gateway_code_root", lambda pid, home: None)
     (home / "gateway_state.json").write_text(
         json.dumps(
             {

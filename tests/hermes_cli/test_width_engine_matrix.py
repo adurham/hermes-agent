@@ -28,6 +28,7 @@ Engines:
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import pathlib
 import unicodedata
@@ -38,6 +39,8 @@ from hermes_cli.portable_glyphs import ACCEPTED_RISK_SET, PORTABLE_EXTRA_CODEPOI
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _FIXTURE = _REPO_ROOT / "tests" / "hermes_cli" / "fixtures" / "xterm_unicode11_widths.json"
+_LOCKFILE = _REPO_ROOT / "pnpm-lock.yaml"
+_LOCKFILE_DIFF = _REPO_ROOT / "scripts" / "ci" / "lockfile_diff.py"
 
 _CHROME_FILES = [
     "hermes_cli/cli_status_bar_mixin.py",
@@ -143,22 +146,35 @@ def _kitty_class_width(cp: int, ambiguous_wide: bool = False) -> int:
     return 1
 
 
+def _locked_versions(package: str) -> set[str]:
+    """Every version the committed ``pnpm-lock.yaml`` resolves ``package`` to.
+
+    The repo's own lockfile reader (``scripts/ci/lockfile_diff.py``) is the
+    canonical "what does the commit lock" implementation, so this test asks it
+    rather than re-parsing pnpm's format. pnpm keys packages ``name@version``
+    with no install path, so a package locked at several versions yields one
+    entry per version — all of which this test then demands the fixture match.
+    """
+    spec = importlib.util.spec_from_file_location("_lockfile_diff", _LOCKFILE_DIFF)
+    if spec is None or spec.loader is None:  # pragma: no cover - repo layout
+        raise ImportError(f"cannot load {_LOCKFILE_DIFF}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    locked = mod.parse_pnpm_lockfile(_LOCKFILE.read_text(encoding="utf-8"))
+    return set(locked[package].split(", ")) if locked.get(package) else set()
+
+
 def test_fixture_is_pinned_to_shipped_xterm_version():
     """The committed fixture must name the addon version it was generated from.
 
-    The shipped version is the committed lockfile's resolution, not an installed
-    node_modules tree: the Python test environment never runs npm.
+    The shipped version is the committed pnpm lockfile's resolution, not an
+    installed node_modules tree: the Python test environment never runs pnpm.
     """
     data = json.loads(_FIXTURE.read_text())
     assert data["source"] == "@xterm/addon-unicode11"
     assert data.get("addon_version"), "fixture must record the addon version"
-    lock = json.loads((_REPO_ROOT / "package-lock.json").read_text(encoding="utf-8"))
-    shipped = {
-        entry["version"]
-        for path, entry in lock["packages"].items()
-        if path.endswith("node_modules/@xterm/addon-unicode11")
-    }
-    assert shipped, "package-lock.json no longer resolves @xterm/addon-unicode11"
+    shipped = _locked_versions("@xterm/addon-unicode11")
+    assert shipped, "pnpm-lock.yaml no longer resolves @xterm/addon-unicode11"
     assert shipped == {data["addon_version"]}, (
         "@xterm/addon-unicode11 version changed — regenerate the fixture: "
         "node scripts/gen_xterm_width_fixture.js"
