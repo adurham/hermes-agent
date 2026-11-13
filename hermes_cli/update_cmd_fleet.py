@@ -33,7 +33,7 @@ _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = [
-    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*",
+    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*", "hermes-desktop-serve*",
     "--plain", "--no-legend", "--no-pager",
 ]
 
