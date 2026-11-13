@@ -1755,20 +1755,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> tuple[dict, set]:
-    """Remove dotted leaf keys from *cfg* in place -> ``(cfg, keys_actually_present)``.
-    ``save_config`` drops managed-scope leaves this way so a bulk write never persists a user
-    value that would lose to the managed layer on the next load."""
-    stripped: set = set()
-    for dotted in dotted_keys:
-        *parents, leaf = dotted.split(".")
-        node = cfg_get(cfg, *parents)
-        if isinstance(node, dict) and leaf in node:
-            del node[leaf]
-            stripped.add(dotted)
-    return cfg, stripped
-
-
 _ENV_REF_RE = re.compile(r"\${([^}]+)}")
 
 
@@ -2702,20 +2688,6 @@ _FALLBACK_COMMENT = """
 """
 
 
-def _strip_managed_keys_for_save(config: dict[str, Any]) -> dict[str, Any]:
-    """Drop every leaf the managed layer pins (bulk safety net; single-key ``config set``
-    hard-rejects) and tell the user what was not saved."""
-    managed_keys = managed_scope.managed_config_keys()
-    if not managed_keys:
-        return config
-    config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
-    if _stripped:
-        print(
-            f"Note: {len(_stripped)} managed setting(s) were not saved "
-            f"(managed by your administrator): {', '.join(sorted(_stripped))}", file=sys.stderr)
-    return config
-
-
 def _commented_sections_for_save(normalized: dict[str, Any]) -> Optional[str]:
     """Commented-out example blocks for features that are off/unconfigured."""
     parts = []
@@ -2743,7 +2715,6 @@ def save_config(
 
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
-        config = _strip_managed_keys_for_save(config)
 
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -2755,6 +2726,8 @@ def save_config(
         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
+        from hermes_cli.config_managed_save import keep_managed_leaves_as_on_disk  # managed leaves: as on disk
+        config = keep_managed_leaves_as_on_disk(config, _raw_for_paths)
 
         # Drop task-key pollution that the DEFAULT_CONFIG deep-merge injects on
         # top of a provider-first ``auxiliary`` block, so no write path (migrate,
