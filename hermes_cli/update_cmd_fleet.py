@@ -745,6 +745,11 @@ def _is_serve_or_dashboard_unit(unit: str) -> bool:
         # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
         or unit == "hermes-dashboard.service"
         or unit.startswith("hermes-dashboard-")
+        # A hand-managed loopback dashboard backend — on Linux, the desktop app's own serve
+        # process — is the runtime the GUI is attached to. Leaving it out of the fleet left the
+        # app talking to pre-update code after a successful update.
+        or unit == "hermes-desktop-serve.service"
+        or unit.startswith("hermes-desktop-serve-")
     )
 
 

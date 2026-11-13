@@ -146,6 +146,15 @@ def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, b
         **_uc()._no_prompt_git_kwargs())
 
 
+def _origin_is_fork(git_cmd: list[str], root: Path) -> bool:
+    """True when ``origin`` points at a fork or mirror rather than the official repository."""
+    probe = _git(git_cmd, root, ["remote", "get-url", "origin"])
+    if probe.returncode != 0:
+        return False
+    from hermes_cli.update_cmd_git import _is_fork
+    return _is_fork((probe.stdout or "").strip())
+
+
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
     """Fetch only ``branch`` and return ``(fetch_result, compare_ref)``.
 
@@ -155,7 +164,10 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
     """
     if branch == "main":
         # A local probe (~6 ms) spares non-fork installs a failed network fetch (~0.3-1 s).
-        if _git(git_cmd, root, ["remote", "get-url", "upstream"]).returncode == 0:
+        # A fork's own ``main`` is the canonical reference when ``origin`` is a fork: the apply
+        # path only ever fetches origin, so comparing against upstream/main there reports an
+        # update available that the updater can never install — on every check, forever.
+        if not _origin_is_fork(git_cmd, root) and _git(git_cmd, root, ["remote", "get-url", "upstream"]).returncode == 0:
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
