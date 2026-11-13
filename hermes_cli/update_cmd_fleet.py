@@ -1241,6 +1241,38 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     )
 
 
+def _inside_unit(pid: int) -> bool:
+    """True when *pid* is this process or one of its ancestors — i.e. we run inside that unit."""
+    from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+    return pid == os.getpid() or _is_pid_ancestor_of_current_process(pid)
+
+
+def _schedule_deferred_unit_restart(scope: str, scope_cmd: list, svc_name: str) -> bool:
+    """Bounce *svc_name* from OUTSIDE its own cgroup, a few seconds from now.
+
+    A GUI update is spawned by the desktop's own serve process, so it is a child of the unit it
+    has to restart. A blunt ``systemctl restart`` SIGTERMs the whole cgroup, which kills the
+    updater mid-restart-phase: the code lands, the unit bounces, but the run never reports.
+    A transient timer (``systemd-run --on-active``) is owned by the user manager instead, so it
+    survives this process and restarts the unit right after it exits. User scope only — a
+    system-scope restart already needs root, which this process does not have.
+
+    Returns True when the timer was accepted (the restart WILL happen), False to fall back.
+    """
+    if scope != "user":
+        return False
+    unit = f"hermes-update-restart-{svc_name}-{os.getpid()}"
+    try:
+        done = subprocess.run(
+            ["systemd-run", "--user", "--on-active=5", "--collect", f"--unit={unit}",
+             *scope_cmd, "restart", svc_name],
+            capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
     restarted_services: list, failed_or_stale_units: list, self_restart_pending: set | None = None,
@@ -1318,6 +1350,14 @@ def _restart_one_systemd_gateway_unit(
 
     # Blunt restart — only when the graceful path failed (no SIGUSR1 wiring, drain over
     # budget, restart-policy mismatch). Mirrors `hermes gateway restart` (`systemd_restart()`).
+    # ...unless we run INSIDE this unit: a GUI update is spawned by the desktop's own serve
+    # process, so a blunt restart SIGTERMs the updater mid-phase and the update lands with its
+    # report cut off. Hand that restart to a transient timer and let this process finish first.
+    _own_unit_pid = _unit_main_pid(scope_cmd, svc_name)
+    if _own_unit_pid > 0 and _inside_unit(_own_unit_pid) and _schedule_deferred_unit_restart(scope, scope_cmd, svc_name):
+        restarted_services.append(svc_name)
+        print(f"  → {svc_name}: restart handed to a timer; this updater runs inside that unit")
+        return
     restart = _systemctl_reset_and_restart(_manage_cmd, svc_name, scope_cmd=scope_cmd)
     if restart.returncode != 0:
         failed_or_stale_units.append(svc_name)
