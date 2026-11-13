@@ -218,3 +218,71 @@ def test_reopen_is_bounded_per_tick(conn):
     )
     assert len(reopened) == kbd.INFRA_REOPEN_PER_TICK
     assert len([i for i in ids if _status(conn, i) == "ready"]) == kbd.INFRA_REOPEN_PER_TICK
+
+
+# ---------------------------------------------------------------------------
+# 4. The ambiguous string and the strike-free cap
+# ---------------------------------------------------------------------------
+
+HELLO_TIMEOUT = "pid 42 exited with code 1 managed_worker_hello_timeout after 120s"
+
+
+def test_hello_timeout_alone_is_the_cards_own_failure(conn, monkeypatch):
+    """A hello timeout also fires when ONE worker wedges, so a healthy host must charge it."""
+    monkeypatch.setattr(kbd, "_host_precondition_broken", lambda: False)
+    tid = kb.create_task(conn, title="wedged worker", assignee="w")
+    assert kb.claim_task(conn, tid) is not None
+
+    kbd._account_crashes(conn, [(tid, 999999, "test", _dead(HELLO_TIMEOUT))])
+
+    assert _failures(conn, tid) == 1, "a healthy host means the card's own worker wedged"
+
+
+def test_hello_timeout_counts_as_infrastructure_while_the_host_is_down(conn, monkeypatch):
+    monkeypatch.setattr(kbd, "_host_precondition_broken", lambda: True)
+    tid = kb.create_task(conn, title="host down at handshake", assignee="w")
+    assert kb.claim_task(conn, tid) is not None
+
+    kbd._account_crashes(conn, [(tid, 999999, "test", _dead(HELLO_TIMEOUT))])
+
+    assert _failures(conn, tid) == 0
+    assert not _events(conn, tid, "gave_up")
+
+
+def test_strike_free_retries_are_capped_per_card(conn):
+    """A wedged card must not reclaim forever on a host-flavoured message."""
+    tid = kb.create_task(conn, title="retry sink", assignee="w")
+    assert kb.claim_task(conn, tid) is not None
+
+    def crash_once():
+        # Emulate the reclaim sweep: it stamps the verdict and writes the `crashed` event
+        # (the crash/count path's caller owns that event), then _account_crashes charges it.
+        dead = _dead(OWNER_SILENT)
+        kbd._stamp_infrastructure(dead)
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, dead.event_kind, dead.event_payload)
+        kbd._account_crashes(conn, [(tid, 999999, "test", dead)])
+
+    for _ in range(kbd.INFRA_STRIKE_FREE_LIMIT):
+        crash_once()
+    assert _failures(conn, tid) == 0, "the first runs are the host's"
+
+    crash_once()
+    assert _failures(conn, tid) == 1, "past the cap the failure counts like the card's own"
+
+
+def test_a_draining_gateway_is_not_serving(monkeypatch):
+    from hermes_cli import gateway_runtime
+
+    class _Draining:
+        state = "draining"
+
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda *a, **k: _Draining())
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    assert kbd._board_owner_serving() is False, "a draining owner would only churn the card"
+
+    class _Running:
+        state = "running"
+
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda *a, **k: _Running())
+    assert kbd._board_owner_serving() is True

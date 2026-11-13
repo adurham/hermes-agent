@@ -2421,7 +2421,7 @@ def release_stale_claims(
             outcome="reclaimed", failure_limit=failure_limit,
             release_claim=False, end_run=False,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
-            infrastructure=_infrastructure_failure(error),
+            infrastructure=_infrastructure_verdict(conn, row["id"], error),
         )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
@@ -4226,7 +4226,7 @@ from hermes_cli.kanban_db_dispatch import (
     DispatchResult,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
-    _infrastructure_failure,
+    _infrastructure_verdict,
     _pid_alive,
     _record_task_failure,
     _terminate_reclaimed_worker,

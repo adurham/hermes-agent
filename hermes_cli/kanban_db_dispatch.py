@@ -105,19 +105,71 @@ _INFRA_FAILURE_RE = re.compile(
     r"|gateway draining"
     r"|systemd-run --user --scope is unavailable"
     r"|cannot create restart-safe systemd scope"
-    r"|no reachable user d-bus session"
-    r"|managed[_ ]worker[_ ]hello[_ ]timeout",
+    r"|no reachable user d-bus session",
     re.IGNORECASE,
 )
+#: Ambiguous on purpose: a managed-worker hello timeout ALSO fires when one card's worker wedges at
+#: startup (bad per-card config, deadlock). It counts as the host's fault only while the host
+#: precondition is actually broken, or a wedged card would retry strike-free forever.
+_INFRA_AMBIGUOUS_RE = re.compile(r"managed[_ ]worker[_ ]hello[_ ]timeout", re.IGNORECASE)
+#: Strike-free retries a card may take back to back before its failures count like its own.
+INFRA_STRIKE_FREE_LIMIT = 3
 
 
-def _infrastructure_failure(text: Optional[str]) -> bool:
+def _host_precondition_broken() -> bool:
+    """Whether the restart-safe spawn precondition is unavailable right now (60 s cached probe)."""
+    try:
+        from tools.process_registry import restart_safe_scope_available
+        return not restart_safe_scope_available()
+    except Exception:
+        return False
+
+
+def _infrastructure_failure(text: Optional[str], *, host_broken: Optional[bool] = None) -> bool:
     """True when ``text`` describes a host failure that says nothing about the card.
 
     Deliberately a closed set of measured strings: a broad "timeout"/"unavailable" match would
-    absorb genuine worker bugs and make the breaker unreachable.
+    absorb genuine worker bugs and make the breaker unreachable. The one ambiguous string (see
+    ``_INFRA_AMBIGUOUS_RE``) needs the host precondition to be down as well.
     """
-    return bool(text) and bool(_INFRA_FAILURE_RE.search(_kb._lossy_text(text) or ""))
+    body = _kb._lossy_text(text or "")
+    if not body:
+        return False
+    if _INFRA_FAILURE_RE.search(body):
+        return True
+    if _INFRA_AMBIGUOUS_RE.search(body):
+        return _host_precondition_broken() if host_broken is None else bool(host_broken)
+    return False
+
+
+def _strike_free_exhausted(conn: sqlite3.Connection, task_id: str, limit: int = INFRA_STRIKE_FREE_LIMIT) -> bool:
+    """True when *task_id* already took *limit* strike-free retries back to back.
+
+    The current attempt's ``crashed`` event is already written when its failure is accounted, so
+    the window is ``limit + 1``: *limit* free retries, then the next one is charged like the
+    card's own. Without this a card whose worker wedges at startup (a host-flavoured failure
+    text, but its own bug) reclaims on every tick and never trips the breaker — a spawn-budget sink.
+    """
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind IN ('crashed', 'reclaimed') "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, int(limit) + 1),
+    ).fetchall()
+    if len(rows) < int(limit) + 1:
+        return False
+    for row in rows:
+        data = _kb._json_or(row["payload"], {})
+        if not (isinstance(data, dict) and data.get("infrastructure")):
+            return False
+    return True
+
+
+def _infrastructure_verdict(conn: sqlite3.Connection, task_id: str, text: Optional[str], *,
+                            host_broken: Optional[bool] = None) -> bool:
+    """Host-failure verdict for *task_id*, capped so one card cannot retry strike-free forever."""
+    if not _infrastructure_failure(text, host_broken=host_broken):
+        return False
+    return not _strike_free_exhausted(conn, task_id)
 
 
 @dataclass
@@ -1360,7 +1412,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
             # A host failure (owner handshake silence, gateway drain, no systemd scope) is not the
             # card's attempt failing: book it as infrastructure so it spends no crash strike and a
             # lane-wide outage cannot `gave_up` every card in flight (measured 2026-11-11).
-            infrastructure = bool(getattr(dead, "infrastructure", False)) or _infrastructure_failure(error_text)
+            infrastructure = (
+                bool(getattr(dead, "infrastructure", False)) or _infrastructure_failure(error_text)
+            ) and not _strike_free_exhausted(conn, tid)
             if infrastructure:
                 extra["infrastructure"] = True
                 is_systemic = False        # 3 cards failing on ONE host fault is not 3 card bugs
@@ -1747,7 +1801,16 @@ def _board_owner_serving() -> bool:
 
     Inside the gateway this tick IS the owner's event loop, so reaching here proves it is serving.
     A separate ``hermes kanban dispatch`` process has to ask the gateway's own identity files.
+    A DRAINING owner answers False either way: it is on its way out by itself, and a drain was one
+    of the host faults this recovery exists for — re-opening cards into it just churns them.
     """
+    try:
+        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+        from hermes_constants import get_default_hermes_root
+        if getattr(discover_gateway_endpoint(get_default_hermes_root(), timeout=1.0), "state", "") == "draining":
+            return False
+    except Exception:
+        pass
     if os.environ.get("HERMES_SUPERVISED_CHILD") == "1" or os.environ.get("_HERMES_GATEWAY") == "1":
         return True
     try:
