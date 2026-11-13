@@ -185,6 +185,7 @@ plugins:
     - disk-cleanup
   disabled:       # optional deny-list — always wins if a name appears in both
     - noisy-plugin
+    - platforms/*  # entries with * ? [ are fnmatch patterns: every platform plugin, present or future
   # Optional: deadline (seconds) for each Git clone, fetch or checkout
   # during plugin installation, including automatic memory-provider migration.
   # Default 300; values above 3600 are clamped. A subdirectory install

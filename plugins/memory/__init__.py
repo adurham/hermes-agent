@@ -571,9 +571,10 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
         return False
     if not isinstance(disabled, list):
         return False
+    from hermes_cli.plugins_discovery import disabled_match
     from pm.plugins_state import plugin_spellings
 
-    return bool(plugin_spellings(provider_dir, name) & {v for v in disabled if isinstance(v, str)})
+    return disabled_match(plugin_spellings(provider_dir, name), disabled)  # exact or fnmatch, as gate_manifest
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:

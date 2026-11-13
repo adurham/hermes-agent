@@ -613,12 +613,13 @@ def _plugin_disabled(plugin_dir: Path) -> bool:
     """Whether ``plugins.disabled`` names this plugin, so its import-time code never runs (#137671).
     Names mirror ``gate_manifest``: the manifest name, the dir, and ``model-providers/<dir>``."""
     from hermes_cli.plugins import _get_disabled_plugins
+    from hermes_cli.plugins_discovery import disabled_match
 
     disabled = _get_disabled_plugins()
     if not disabled:
         return False
     names = {plugin_dir.name, f"model-providers/{plugin_dir.name}", _manifest_field(plugin_dir, "name")}
-    if not names & disabled:
+    if not disabled_match(names, disabled):  # exact names or fnmatch patterns, as gate_manifest
         return False
     layer = _REGISTRATION_TARGET.get()
     if layer is not None:

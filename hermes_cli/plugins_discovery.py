@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import fnmatch
 import importlib.metadata
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
@@ -131,6 +132,21 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled) if isinstance(enabled, list) else None
     except Exception:
         return None
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def disabled_match(names: Iterable[Optional[str]], disabled: Iterable[Any]) -> bool:
+    """Whether ``plugins.disabled`` names any of *names* (a plugin's key, manifest name, aliases): an entry
+    matches exactly, or as an ``fnmatch`` pattern when it holds ``*``, ``?`` or ``[`` (``platforms/*``
+    disables every platform plugin, including ones a later release adds)."""
+    present = {n for n in names if n}
+    entries = {e for e in disabled if isinstance(e, str)}
+    if present & entries:
+        return True
+    patterns = [entry for entry in entries if _GLOB_CHARS & set(entry)]
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns for name in present)
 
 
 def _user_dir_policy() -> tuple[bool, frozenset[str]]:
@@ -336,7 +352,7 @@ def gate_manifest(
     refusal = user_plugin_dir_refusal(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
     if refusal:
         return _placeholder(refusal, logging.INFO, "Skipping '%s': %s", refusal)
-    if names & disabled:
+    if disabled_match(names, disabled):
         if enabled and names & enabled:
             # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
             # conflict — the plugin "loads nowhere" while plugins.enabled still lists it. Fail loud.

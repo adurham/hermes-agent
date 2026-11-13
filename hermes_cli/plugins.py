@@ -41,8 +41,8 @@ from hermes_cli.plugins_manifest import (
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
-    discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
-    scan_directory,
+    disabled_match, discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed,
+    resolve_manifest_winners, scan_directory,
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
@@ -610,7 +610,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             return False
         for lookup_key, manifest in {manifest_key(m): m for m in self._collect_directory_manifests()}.items():
             names = {lookup_key, manifest.name}
-            if not manifest.portable or names & disabled or not names & enabled:
+            if not manifest.portable or disabled_match(names, disabled) or not names & enabled:
                 continue
             try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
                 from hermes_cli.agent_plugins import _discover_mcp
