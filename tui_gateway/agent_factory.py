@@ -368,9 +368,10 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     if not unresolved:
         return built_in
     try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
+        from hermes_cli import managed_scope
         from hermes_cli.config import read_raw_config
         from tools.mcp_tool_common import mcp_server_enabled
-        raw_cfg = read_raw_config()
+        raw_cfg = managed_scope.apply_managed_overlay(read_raw_config())  # managed enable/disable wins
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
         mcp_names, mcp_disabled = set(), set()
         for name, server_cfg in mcp_servers.items():

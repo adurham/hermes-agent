@@ -216,10 +216,12 @@ def selection_config_keys() -> frozenset[str]:
 
 
 def _raw_section(section: str) -> dict[str, Any] | None:
-    """The RAW (unmerged) config.yaml mapping for ``section``, or None."""
+    """The RAW (unmerged) config.yaml mapping for ``section``, or None. No defaults, but the managed
+    overlay applies: an administrator's pinned selection is an explicit selection too."""
     try:
+        from hermes_cli import managed_scope
         from hermes_cli.config import read_raw_config_readonly
-        cfg = read_raw_config_readonly() or {}
+        cfg = managed_scope.apply_managed_overlay(read_raw_config_readonly() or {})
         raw = cfg.get(section) if isinstance(cfg, dict) else None
         return raw if isinstance(raw, dict) else None
     except Exception:

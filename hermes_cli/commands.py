@@ -531,8 +531,9 @@ def _resolve_config_gates() -> set[str]:
     if not gated:
         return set()
     try:
+        from hermes_cli import managed_scope
         from hermes_cli.config import cfg_get, read_raw_config
-        cfg = read_raw_config()
+        cfg = managed_scope.apply_managed_overlay(read_raw_config())  # an administrator's gate value wins
     except Exception:
         return set()
     return {cmd.name for cmd in gated

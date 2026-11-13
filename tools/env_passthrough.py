@@ -108,7 +108,8 @@ def _load_config_passthrough() -> frozenset[str]:
         return cached
     result: set[str] = set()
     try:
-        passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
+        from hermes_cli import managed_scope  # an administrator's terminal.env_passthrough pin wins
+        passthrough = cfg_get(managed_scope.apply_managed_overlay(read_raw_config()), "terminal", "env_passthrough")
         items = passthrough if isinstance(passthrough, list) else ()
         result.update(_accepted((i.strip() for i in items if isinstance(i, str)), (
             "env passthrough: refusing to register Hermes "

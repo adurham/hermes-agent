@@ -136,8 +136,9 @@ def _resolve_allow_private_urls() -> bool:
     if env_val in {"false", "0", "no"}:
         return False  # explicit false does not fall through to config
     try:
+        from hermes_cli import managed_scope
         from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
+        cfg = managed_scope.apply_managed_overlay(read_raw_config())  # an administrator's pin wins
         for section in ("security", "browser"):  # preferred, then legacy
             block = cfg.get(section, {})
             if isinstance(block, dict) and is_truthy_value(block.get("allow_private_urls"), default=False):
@@ -164,8 +165,9 @@ def _resolve_fake_ip_ranges() -> tuple:
     declares one, and the sentinel range keeps the ordinary private-address verdict otherwise.
     """
     try:
+        from hermes_cli import managed_scope
         from hermes_cli.config import read_raw_config
-        block = read_raw_config().get("security", {})
+        block = managed_scope.apply_managed_overlay(read_raw_config()).get("security", {})  # admin pin wins
         raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
     except Exception:
         return ()  # config unavailable (tests, early import) — keep the secure default

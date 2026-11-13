@@ -78,22 +78,25 @@ def _require_mapping(value: Any, label: str) -> dict[str, Any]:
 
 
 def _load_policy_config(config_path: Path) -> dict[str, Any]:
+    from hermes_cli import managed_scope
     from hermes_cli.config_backend import config_exists, read_config_doc
-    if not config_exists(config_path):
-        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
-    try:
-        import hermes_yaml as yaml
-    except ImportError:
-        logger.debug("ruamel.yaml not installed — website blocklist disabled")
-        return dict(_DEFAULT_WEBSITE_BLOCKLIST)
-    try:
-        config = read_config_doc(config_path) or {}
-    except yaml.YAMLError as exc:
-        raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
-    except OSError as exc:
-        raise WebsitePolicyError(f"Failed to read config file {config_path}: {exc}") from exc
-    if not isinstance(config, dict):
-        raise WebsitePolicyError("config root must be a mapping")
+    config: Any = {}
+    if config_exists(config_path):
+        try:
+            import hermes_yaml as yaml
+        except ImportError:
+            logger.debug("ruamel.yaml not installed — website blocklist disabled")
+            return dict(_DEFAULT_WEBSITE_BLOCKLIST)
+        try:
+            config = read_config_doc(config_path) or {}
+        except yaml.YAMLError as exc:
+            raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
+        except OSError as exc:
+            raise WebsitePolicyError(f"Failed to read config file {config_path}: {exc}") from exc
+        if not isinstance(config, dict):
+            raise WebsitePolicyError("config root must be a mapping")
+    # An administrator's security.website_blocklist pins win over the user's file (or its absence).
+    config = managed_scope.apply_managed_overlay(config)
     security = _require_mapping(config.get("security", {}), "security")
     website_blocklist = _require_mapping(security.get("website_blocklist", {}), "security.website_blocklist")
     return {**_DEFAULT_WEBSITE_BLOCKLIST, **website_blocklist}

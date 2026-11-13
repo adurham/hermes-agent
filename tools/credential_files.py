@@ -132,9 +132,11 @@ def _load_config_files() -> list[dict[str, str]]:
 
     result: list[dict[str, str]] = []
     try:
+        from hermes_cli import managed_scope
         from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
-        cred_files = cfg_get(read_raw_config(), "terminal", "credential_files")
+        # An administrator's terminal.credential_files pin wins over the user's list.
+        cred_files = cfg_get(managed_scope.apply_managed_overlay(read_raw_config()), "terminal", "credential_files")
         for item in cred_files if isinstance(cred_files, list) else []:
             rel = item.strip() if isinstance(item, str) else ""
             if not rel:

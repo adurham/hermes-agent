@@ -54,9 +54,10 @@ def get_mcp_server_filter() -> Optional[list[str]]:
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
+        from hermes_cli import managed_scope
         from hermes_cli.config import read_raw_config
 
-        raw_config = read_raw_config() or {}
+        raw_config = managed_scope.apply_managed_overlay(read_raw_config() or {})  # managed servers count
         if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
             return True
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp

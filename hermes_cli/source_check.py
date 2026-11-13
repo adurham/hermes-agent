@@ -553,6 +553,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     Only the default (running installation) may use HERMES_REVISION. An explicit
     target must never inherit the host process's embedded revision or stamp.
     """
+    from hermes_cli import managed_scope
     from hermes_cli.config import get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
     from hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
@@ -566,7 +567,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
                                       explicit_root=install_root is not None, embedded=embedded)
     if unsupported:
         return {**result, **unsupported}
-    config = require_readable_config_before_write(home / "config.yaml")
+    # The user file read fails closed; the managed overlay then pins updates.* / the channel on top.
+    config = managed_scope.apply_managed_overlay(require_readable_config_before_write(home / "config.yaml"))
     if passive and (config.get("updates") or {}).get("check") is False:
         return {**result, "reason": "disabled"}
     channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)

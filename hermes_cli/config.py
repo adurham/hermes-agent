@@ -2417,11 +2417,11 @@ def apply_terminal_config_to_env(
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
     ``tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
     dashboard PTY, gateway workers); this gives those launch paths the same bridge as the CLI
-    without importing ``cli.py``. Explicit keys in the user's raw ``terminal`` section override
-    matching env values; merged defaults only backfill missing env vars."""
+    without importing ``cli.py``. Explicit keys (the user file's ``terminal`` section plus every key
+    the managed scope pins) override matching env values; merged defaults only backfill missing env vars."""
     target = os.environ if env is None else env
 
-    raw_terminal_cfg = read_raw_config().get("terminal")
+    raw_terminal_cfg = managed_scope.apply_managed_overlay(read_raw_config()).get("terminal")
     file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
     raw_terminal_cfg = raw_terminal_cfg if file_has_terminal_config else {}
     should_override = file_has_terminal_config if override is None else override

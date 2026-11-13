@@ -151,9 +151,10 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
         # Warn-on-load, never blocks: surfaces root / weak-SSH / unauthenticated-listener exposure.
         from hermes_cli.security_audit_startup import log_startup_security_warnings
 
-        def _raw_cfg():
+        def _raw_cfg():  # what this process runs on: the managed overlay included
+            from hermes_cli import managed_scope
             from hermes_cli.config import read_raw_config
-            return read_raw_config()
+            return managed_scope.apply_managed_overlay(read_raw_config())
 
         log_startup_security_warnings(hermes_home=_hermes_home, config=_best_effort(_raw_cfg))
 
