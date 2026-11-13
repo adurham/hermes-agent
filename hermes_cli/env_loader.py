@@ -798,10 +798,13 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
 
 def _apply_managed_env(*, load_pass: int | None = None) -> None:
     """Apply the managed-scope .env last, with override, so it beats user/shell. Does NOT stop the agent
-    from later mutating os.environ (v1 relies on filesystem permissions). Fail-open: never blocks startup."""
+    from later mutating os.environ (v1 relies on filesystem permissions). Fail-open: never blocks startup,
+    except under HERMES_MANAGED_STRICT, where a broken managed scope exits here (``check_strict`` raises
+    ``ManagedScopeError``, a SystemExit, which the ``except Exception`` below does not catch)."""
     try:
         from hermes_cli import managed_scope
 
+        managed_scope.check_strict()
         managed_dir = managed_scope.get_managed_dir()
     except Exception:
         return

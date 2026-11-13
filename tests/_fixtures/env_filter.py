@@ -168,6 +168,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_TUI_PROVIDER",
     "HERMES_MANAGED",
     "HERMES_MANAGED_DIR",
+    "HERMES_MANAGED_STRICT",
     # A Nix-wrapped `hermes` on the developer's host exports the store's read-only plugins
     # tree; tests must discover the checkout's plugins/ (get_bundled_plugins_dir), not a
     # different release's.

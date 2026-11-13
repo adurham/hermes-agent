@@ -139,6 +139,33 @@ Changes take effect on the next Hermes start (a malformed managed file is logged
 loudly and ignored — it never blocks startup, but the admin should check
 `hermes doctor` to confirm the policy is being applied).
 
+### Strict mode (fail closed)
+
+Set `HERMES_MANAGED_STRICT=1` (a deployment knob, like `HERMES_MANAGED_DIR`) to
+make Hermes refuse to run instead of ignoring a broken managed scope. Every
+entry point (CLI, gateway, TUI, cron, ACP) then exits with status 1 and names
+the problem when:
+
+- no managed directory resolves (`HERMES_MANAGED_DIR` unset and `/etc/hermes`
+  absent), or `HERMES_MANAGED_DIR` is set but is not a directory;
+- the managed `config.yaml` is missing, unreadable, fails to parse, or its root
+  is not a mapping — an empty file counts as "not a mapping" (write `{}` for an
+  intentionally empty policy);
+- a managed `.env` exists but cannot be read or decoded (a missing `.env` is
+  fine: it is optional).
+
+```bash
+$ HERMES_MANAGED_STRICT=1 hermes
+hermes: refusing to run: managed file /etc/hermes/config.yaml failed to parse: ...
+HERMES_MANAGED_STRICT=1 requires the administrator's managed scope to load in full.
+```
+
+A breakage that appears *after* a process loaded the scope (the file is edited
+into broken YAML or deleted while a gateway runs) never drops the policy and
+never kills the thread that happened to read it: the last successfully loaded
+managed values stay in force and a `CRITICAL` log line names the problem. Fix
+the file; valid edits keep taking effect as usual.
+
 ## Security model and limitations (v1)
 
 - **Enforcement is filesystem permissions only.** If a user has write access to
