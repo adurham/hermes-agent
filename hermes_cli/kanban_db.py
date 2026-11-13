@@ -2413,11 +2413,15 @@ def release_stale_claims(
         # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
         # the run ended without a verdict, so it counts toward the breaker and a
         # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
+        # Exception: a reclaim whose text names a HOST failure (owner handshake silence, gateway
+        # drain, lost managed worker) is booked as infrastructure — it spends no strike (2026-11-11:
+        # one hello-timeout reclaim plus one owner-silent crash gave up a healthy card).
         _record_task_failure(
             conn, row["id"], error,
             outcome="reclaimed", failure_limit=failure_limit,
             release_claim=False, end_run=False,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+            infrastructure=_infrastructure_failure(error),
         )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
@@ -4222,6 +4226,7 @@ from hermes_cli.kanban_db_dispatch import (
     DispatchResult,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
+    _infrastructure_failure,
     _pid_alive,
     _record_task_failure,
     _terminate_reclaimed_worker,

@@ -341,6 +341,19 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
+def restart_safe_scope_available(*, fresh: bool = False) -> bool:
+    """Public verdict for the restart-safe spawn precondition (``systemd-run --user --scope``).
+
+    ``fresh=True`` discards the 60 s cache first, which is what a recovery probe wants: the
+    dispatcher may be asking whether a host outage that already happened has cleared, and a
+    cached False from inside the outage would answer for the wrong moment.
+    """
+    global _SYSTEMD_SCOPE_AVAILABLE
+    if fresh:
+        _SYSTEMD_SCOPE_AVAILABLE = None
+    return _systemd_run_user_scope_available()
+
+
 def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and

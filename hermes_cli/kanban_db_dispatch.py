@@ -88,6 +88,37 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Host/infrastructure failures (not the card's fault)
+# ---------------------------------------------------------------------------
+
+# A card's attempt can die because the HOST could not run it, not because the card is bad. Measured
+# 2026-11-11 on the ps5 board: `spawn_failed` on a missing user D-Bus / systemd scope, then three
+# cards crashed with "Kanban owner refused: Kanban owner silent for 180s: TimeoutError" and
+# "Gateway draining: update_paused" while the gateway thrashed its Discord/HA adapters. Two crash
+# strikes (`effective_limit: 2`) turned each card into `gave_up` and the lane sat dead for ~6 h with
+# nothing wrong on the console. These strings name the host conditions, so an attempt that failed on
+# one of them must not spend the card's retry budget (same rule as #114720's spawn refusal).
+_INFRA_FAILURE_RE = re.compile(
+    r"kanban owner silent for"
+    r"|kanban owner refused"
+    r"|gateway draining"
+    r"|systemd-run --user --scope is unavailable"
+    r"|cannot create restart-safe systemd scope"
+    r"|no reachable user d-bus session"
+    r"|managed[_ ]worker[_ ]hello[_ ]timeout",
+    re.IGNORECASE,
+)
+
+
+def _infrastructure_failure(text: Optional[str]) -> bool:
+    """True when ``text`` describes a host failure that says nothing about the card.
+
+    Deliberately a closed set of measured strings: a broad "timeout"/"unavailable" match would
+    absorb genuine worker bugs and make the breaker unreachable.
+    """
+    return bool(text) and bool(_INFRA_FAILURE_RE.search(_kb._lossy_text(text) or ""))
+
 
 @dataclass
 class DispatchResult:
@@ -142,6 +173,9 @@ class DispatchResult:
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    infrastructure_reopened: list[str] = field(default_factory=list)
+    """Task ids re-opened this tick because their give-up was a HOST failure and the
+    host probes healthy again (``reopen_infrastructure_gave_ups``)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -1053,6 +1087,10 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    infrastructure: bool = False
+    """The host could not run the attempt (owner handshake silence, gateway drain, no
+    systemd scope). Set by ``_reclaim_dead_workers`` and stamped into the ``crashed``
+    event payload so the board and the keeper can see a host outage as such."""
 
     @property
     def run_outcome(self) -> str:
@@ -1165,6 +1203,15 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
+def _stamp_infrastructure(dead: "_DeadWorker") -> bool:
+    """Mark ``dead`` as a host failure when its text says so, for the event that reaches the board."""
+    if not _infrastructure_failure(dead.error_text):
+        return False
+    dead.infrastructure = True
+    dead.event_payload["infrastructure"] = True
+    return True
+
+
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
@@ -1197,6 +1244,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
             dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
             apply_attempt_note(conn, row["id"], pid, dead)
+            # Stamp the host-failure verdict on the record that actually reaches the board: the
+            # `crashed` event and the run metadata are written below from `event_payload`, and a
+            # host fault must be visible there (the keeper files its HOST card off this marker).
+            _stamp_infrastructure(dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1306,7 +1357,14 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
             extra = {"pid": pid, "claimer": claimer}
-            if is_systemic:
+            # A host failure (owner handshake silence, gateway drain, no systemd scope) is not the
+            # card's attempt failing: book it as infrastructure so it spends no crash strike and a
+            # lane-wide outage cannot `gave_up` every card in flight (measured 2026-11-11).
+            infrastructure = bool(getattr(dead, "infrastructure", False)) or _infrastructure_failure(error_text)
+            if infrastructure:
+                extra["infrastructure"] = True
+                is_systemic = False        # 3 cards failing on ONE host fault is not 3 card bugs
+            elif is_systemic:
                 # Trips at 1, below any ``failure_limit``: hold it for an operator.
                 extra["sticky"] = True
             tripped = _record_task_failure(
@@ -1317,6 +1375,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 release_claim=False,
                 end_run=False,
                 event_payload_extra=extra,
+                infrastructure=infrastructure,
             )
         if tripped:
             auto_blocked.append(tid)
@@ -1665,6 +1724,133 @@ def check_respawn_guard(
         return "active_pr"
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Recovery from an infrastructure give-up
+# ---------------------------------------------------------------------------
+
+#: Let an outage settle before retrying: a card re-opened in the same breath as the fault that
+#: gave it up just re-runs into it.
+INFRA_REOPEN_MIN_AGE_S = 45
+#: Only a FRESH give-up may be undone automatically. An older one has had a human's chance to look
+#: at it and its context has moved on; resurrecting week-old cards after an unrelated host blip is
+#: not recovery (measured 2026-11-12: the ps5 board holds ten blocked cards whose give-up text names
+#: an old owner-silence outage).
+INFRA_REOPEN_MAX_AGE_S = 24 * 3600
+#: Bound one tick's recovery fan-out (a lane-wide outage can leave many cards `gave_up`).
+INFRA_REOPEN_PER_TICK = 3
+
+
+def _board_owner_serving() -> bool:
+    """Whether the profile's board owner is answering (the other half of the recovery probe).
+
+    Inside the gateway this tick IS the owner's event loop, so reaching here proves it is serving.
+    A separate ``hermes kanban dispatch`` process has to ask the gateway's own identity files.
+    """
+    if os.environ.get("HERMES_SUPERVISED_CHILD") == "1" or os.environ.get("_HERMES_GATEWAY") == "1":
+        return True
+    try:
+        from gateway.status import get_running_pid
+        from hermes_constants import get_default_hermes_root
+        return get_running_pid(Path(get_default_hermes_root()) / "gateway.pid",
+                               cleanup_stale=False) is not None
+    except Exception:
+        return False
+
+
+def _infrastructure_recovered() -> bool:
+    """Both preconditions for retrying a host-failed card: a usable scope, and a live owner."""
+    try:
+        from tools.process_registry import restart_safe_scope_available
+        if not restart_safe_scope_available(fresh=True):
+            return False
+    except Exception:
+        return False
+    return _board_owner_serving()
+
+
+def _gave_up_was_infrastructure(payload, last_failure_error: Optional[str]) -> bool:
+    """Whether a ``gave_up`` payload names a HOST failure rather than the card's own crash."""
+    data = _kb._json_or(payload, {})
+    if not isinstance(data, dict):
+        return False
+    if data.get("infrastructure"):
+        return True
+    return _infrastructure_failure(data.get("error") or last_failure_error)
+
+
+def reopen_infrastructure_gave_ups(
+    conn: sqlite3.Connection, *, probe_fn=None, limit: int = INFRA_REOPEN_PER_TICK,
+    now: Optional[int] = None,
+) -> list[str]:
+    """Re-open cards whose breaker trip was a host fault, once the host is healthy again.
+
+    A ``gave_up`` is normally an operator decision (two real strikes, or a sticky systemic trip) and
+    must stay put. It is NOT a decision when the strikes were the host's: measured 2026-11-11, three
+    ps5 cards gave up on a D-Bus scope refusal plus owner-handshake silence, and because a given-up
+    card also *gates its todo successors* the whole ladder sat dead for ~6 h until a human noticed.
+
+    Only cards whose latest ``gave_up`` names an infrastructure failure are considered; they are
+    re-opened through :func:`hermes_cli.kanban_db.unblock_task`, i.e. exactly an operator unblock
+    (source phase restored, parent re-gating, dangling run closed, retry budget reset), and only
+    after BOTH host preconditions probe green. ``probe_fn`` is a test hook.
+    """
+    now = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        "SELECT t.id, t.last_failure_error, e.payload, e.created_at AS gave_up_at "
+        "FROM tasks t JOIN task_events e ON e.task_id = t.id AND e.kind = 'gave_up' "
+        "WHERE t.status = 'blocked' "
+        "  AND e.created_at = (SELECT MAX(e2.created_at) FROM task_events e2 "
+        "                      WHERE e2.task_id = t.id AND e2.kind = 'gave_up') "
+        "  AND NOT EXISTS (SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "                  WHERE l.child_id = t.id AND p.status != 'done') "
+        # The give-up must still be the card's LAST word: a `blocked`/`completed` event after it
+        # is a later decision (the card blocked itself again for its own reason), and undoing that
+        # would overrule a worker or an operator.
+        "  AND NOT EXISTS (SELECT 1 FROM task_events e3 WHERE e3.task_id = t.id "
+        "                  AND e3.kind IN ('blocked', 'completed', 'review_requested') "
+        "                  AND (e3.created_at > e.created_at "
+        "                       OR (e3.created_at = e.created_at AND e3.id > e.id))) "
+        "ORDER BY e.created_at ASC"
+    ).fetchall()
+
+    candidates: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for row in rows:
+        tid = row["id"]
+        if tid in seen:
+            continue
+        seen.add(tid)
+        gave_up_at = _kb._to_epoch(row["gave_up_at"])
+        if gave_up_at is None or (now - gave_up_at) < INFRA_REOPEN_MIN_AGE_S:
+            continue
+        if (now - gave_up_at) > INFRA_REOPEN_MAX_AGE_S:
+            continue
+        if not _gave_up_was_infrastructure(row["payload"], row["last_failure_error"]):
+            continue
+        candidates.append((tid, gave_up_at))
+    if not candidates:
+        return []
+
+    probe = probe_fn or _infrastructure_recovered
+    if not probe():
+        return []
+
+    reopened: list[str] = []
+    for tid, gave_up_at in candidates[:max(1, int(limit))]:
+        if not _kb.unblock_task(conn, tid):
+            continue
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, tid, "infrastructure_recovered",
+                {"reason": "host recovered", "gave_up_at": gave_up_at,
+                 "probe": "systemd-run --user --scope + board owner"},
+            )
+        _kb._log.warning("kanban dispatcher: re-opened %s — its give-up was a host failure and "
+                         "the host probes healthy again", tid)
+        reopened.append(tid)
+    return reopened
 
 
 _GUARD_TIME_COLS = {"task_runs": "ended_at", "task_events": "created_at", "task_comments": "created_at"}
@@ -2387,6 +2573,14 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    # Recovery before spawning: a card that gave up on a HOST fault (no D-Bus scope, silent board
+    # owner) goes back to its runnable phase as soon as the host probes healthy, so the ladder
+    # resumes without a human noticing it stopped (measured 2026-11-11: ~6 h dead lane).
+    if not dry_run:
+        try:
+            result.infrastructure_reopened = reopen_infrastructure_gave_ups(conn)
+        except Exception as exc:      # a recovery probe must never cost the tick
+            _kb._log.warning("kanban dispatcher: infrastructure reopen failed: %s", exc)
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
