@@ -53,12 +53,13 @@ class ManagedScopeError(SystemExit):
 
 
 def strict_mode() -> bool:
-    """``HERMES_MANAGED_STRICT`` is truthy: never run on a partial or missing managed scope.
+    """``HERMES_MANAGED_STRICT`` is truthy: never run on a partially applied managed scope.
 
-    Startup refuses (``ManagedScopeError``) when no managed directory resolves, when
-    ``HERMES_MANAGED_DIR`` is set but is not a directory, when the managed ``config.yaml`` is
-    missing, unreadable, unparseable or not a mapping (an empty file included; write ``{}`` for an
-    intentionally empty policy), or when a managed ``.env`` that exists cannot be read. A breakage
+    Startup refuses (``ManagedScopeError``) when ``HERMES_MANAGED_DIR`` is set but is not a
+    directory, when a managed directory's ``config.yaml`` is missing, unreadable, unparseable or not
+    a mapping (an empty file included; write ``{}`` for an intentionally empty policy), or when a
+    managed ``.env`` that exists cannot be read. With no managed scope configured at all (variable
+    unset, ``/etc/hermes`` absent) there is nothing to enforce and nothing refuses. A breakage
     that appears after this process loaded the scope keeps the last good policy in force (logged at
     CRITICAL) rather than dropping it or killing whichever thread read it next.
     """
@@ -109,8 +110,6 @@ def _resolve_managed_dirs() -> tuple[tuple[Path, ...], str]:
         if dirs and _same_dir(dirs[0], _DEFAULT_MANAGED_DIR):
             dirs.clear()  # one directory named twice: read it once, at system precedence
         dirs.append(_DEFAULT_MANAGED_DIR)
-    if not dirs and not problem:
-        problem = f"no managed scope found (HERMES_MANAGED_DIR is unset and {_DEFAULT_MANAGED_DIR} does not exist)"
     return tuple(dirs), problem
 
 
@@ -127,11 +126,11 @@ def get_managed_dirs() -> tuple[Path, ...]:
     dirs, problem = _resolve_managed_dirs()
     if not strict_mode():
         return dirs
-    if not problem:
+    if not problem and (dirs or not _STRICT_LAST_DIRS):
         _STRICT_LAST_DIRS[:] = dirs
         return dirs
-    if _STRICT_LAST_DIRS:  # changed after this process loaded the scope: its files fall back below
-        _strict_report_once(problem)
+    if _STRICT_LAST_DIRS:  # broke or vanished after this process loaded the scope: its files fall back below
+        _strict_report_once(problem or "the managed scope this process loaded no longer resolves")
         return tuple(_STRICT_LAST_DIRS)
     raise _strict_refusal(problem)
 
@@ -263,7 +262,7 @@ def check_strict() -> None:
     otherwise. Called by the dotenv loader, which every entry point runs before anything else."""
     if not strict_mode():
         return
-    for managed_dir in get_managed_dirs():  # strict: at least one directory, or ManagedScopeError
+    for managed_dir in get_managed_dirs():  # strict: an unresolvable HERMES_MANAGED_DIR raises here
         _read_managed_config_file(managed_dir)
         _read_managed_env_file(managed_dir)
 

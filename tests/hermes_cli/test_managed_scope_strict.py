@@ -123,14 +123,29 @@ def test_strict_refuses_a_managed_dir_that_is_not_a_directory(tmp_path, monkeypa
             managed_scope.get_managed_dir()
 
 
-def test_strict_refuses_when_no_scope_exists_at_all(monkeypatch):
+def test_strict_without_any_configured_scope_enforces_nothing(monkeypatch):
+    """No HERMES_MANAGED_DIR and no /etc/hermes: nothing is configured, so nothing is incomplete."""
     from hermes_cli import managed_scope
 
     _strict(monkeypatch)
     monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
     managed_scope.invalidate_managed_cache()
-    with pytest.raises(managed_scope.ManagedScopeError, match="no managed scope found"):
-        managed_scope.check_strict()
+    managed_scope.check_strict()
+    assert managed_scope.get_managed_dirs() == ()
+    assert managed_scope.load_managed_config() == {}
+
+
+def test_strict_keeps_the_scope_when_its_directory_vanishes_later(scope, monkeypatch, caplog):
+    from hermes_cli import managed_scope
+
+    _home, managed, _reset = scope
+    _strict(monkeypatch)
+    (managed / "config.yaml").write_text("updates:\n  check: false\n", encoding="utf-8")
+    assert managed_scope.load_managed_config() == {"updates": {"check": False}}
+    monkeypatch.delenv("HERMES_MANAGED_DIR")  # the variable is gone mid-run
+    with caplog.at_level(logging.CRITICAL, logger="hermes_cli.managed_scope"):
+        assert managed_scope.load_managed_config() == {"updates": {"check": False}}
+    assert any("no longer resolves" in r.getMessage() for r in caplog.records)
 
 
 def test_strict_accepts_an_explicit_empty_mapping_and_no_env_file(scope, monkeypatch):

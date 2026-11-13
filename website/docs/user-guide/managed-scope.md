@@ -154,13 +154,15 @@ make Hermes refuse to run instead of ignoring a broken managed scope. Every
 entry point (CLI, gateway, TUI, cron, ACP) then exits with status 1 and names
 the problem when:
 
-- no managed directory resolves (`HERMES_MANAGED_DIR` unset and `/etc/hermes`
-  absent), or `HERMES_MANAGED_DIR` is set but is not a directory;
+- `HERMES_MANAGED_DIR` is set but is not a directory;
 - the managed `config.yaml` is missing, unreadable, fails to parse, or its root
   is not a mapping — an empty file counts as "not a mapping" (write `{}` for an
   intentionally empty policy);
 - a managed `.env` exists but cannot be read or decoded (a missing `.env` is
   fine: it is optional).
+
+With no managed scope configured at all (`HERMES_MANAGED_DIR` unset and
+`/etc/hermes` absent) there is nothing to enforce, and nothing refuses.
 
 ```bash
 $ HERMES_MANAGED_STRICT=1 hermes
