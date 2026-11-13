@@ -2960,6 +2960,7 @@ export const ruOverrides = {
     versionDetailsClient: 'Это устройство',
     versionDetailsBackend: 'Подключённый бэкенд',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',
     availableBody: 'Новая версия Hermes готова к установке.',

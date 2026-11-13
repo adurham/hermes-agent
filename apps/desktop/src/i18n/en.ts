@@ -3740,6 +3740,8 @@ export const en: Translations = {
     openDownloadPage: 'Open download page',
     latestBody: 'You’re running the latest version.',
     latestBodyBackend: 'The backend is running the latest version.',
+    backendStaleBody:
+      'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
     availableBody: 'A new version of Hermes is ready to install.',

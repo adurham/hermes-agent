@@ -163,6 +163,7 @@ export const arBoot = {
     gitUnusable: 'لم يتمكن Hermes من تشغيل Git على هذا الجهاز، لذا لم يتمكن من التحقق من التحديثات.',
     latestBody: 'أنت تستخدم أحدث إصدار.',
     latestBodyBackend: 'الواجهة الخلفية تعمل بأحدث إصدار.',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: 'كل شيء جاهز',
     availableTitle: 'يتوفر تحديث جديد',
     availableBody: 'إصدار جديد من Hermes جاهز للتثبيت.',

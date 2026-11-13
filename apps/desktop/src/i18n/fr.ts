@@ -4246,6 +4246,7 @@ export const frOverrides = {
     openDownloadPage: 'Ouvrir la page de téléchargement',
     latestBody: 'Vous utilisez la dernière version.',
     latestBodyBackend: 'Le backend utilise la dernière version.',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: 'Tout est prêt',
     availableTitle: 'Nouvelle mise à jour disponible',
     availableBody: 'Une nouvelle version de Hermes est prête à être installée.',

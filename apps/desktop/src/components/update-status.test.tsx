@@ -382,3 +382,44 @@ describe('a stale app build', () => {
     expect(view.updateAvailable).toBe(false)
   })
 })
+
+// A `hermes update` moves the tree; the backend process keeps the code it loaded until
+// something restarts it. That gap must read as stale, not as "the latest version".
+describe('a backend running older code than its checkout', () => {
+  const current = {
+    supported: true,
+    behind: 0,
+    updateAvailable: false,
+    currentSha: 'b'.repeat(40),
+    targetSha: 'b'.repeat(40)
+  }
+
+  it('is not reported as latest', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      backendOutOfSync: true,
+      checking: false,
+      status: current,
+      target: 'backend',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(true)
+    expect(view.line).toBe(en.updates.backendStaleBody)
+    expect(view.tone).toBe('available')
+  })
+
+  it('leaves the client row alone', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      backendOutOfSync: true,
+      checking: false,
+      status: current,
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(view.line).toBe(en.updates.latestBody)
+    expect(view.updateAvailable).toBe(false)
+  })
+})

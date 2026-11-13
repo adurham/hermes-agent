@@ -4236,6 +4236,7 @@ export const deOverrides = {
     openDownloadPage: 'Download-Seite öffnen',
     latestBody: 'Sie verwenden die neueste Version.',
     latestBodyBackend: 'Das Backend läuft mit der neuesten Version.',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: 'Alles bereit',
     availableTitle: 'Neues Update verfügbar',
     availableBody: 'Eine neue Hermes-Version ist bereit zur Installation.',

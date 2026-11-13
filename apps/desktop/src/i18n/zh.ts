@@ -3627,6 +3627,7 @@ export const zhOverrides = {
     gitUnusable: 'Hermes 无法在这台电脑上运行 Git，因此无法检查更新。',
     latestBody: '你正在运行最新版本。',
     latestBodyBackend: '后端正在运行最新版本。',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安装。',

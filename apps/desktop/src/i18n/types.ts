@@ -3212,6 +3212,7 @@ export interface Translations extends NoticeTranslations {
     openDownloadPage: string
     latestBody: string
     latestBodyBackend: string
+    backendStaleBody: string
     allSetTitle: string
     availableTitle: string
     availableBody: string

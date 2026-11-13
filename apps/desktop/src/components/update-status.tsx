@@ -72,6 +72,12 @@ interface UpdateStatusInput {
    * exactly what an in-place `hermes update` (no rebuild) leaves behind.
    */
   bundleOutOfSync?: boolean
+  /**
+   * The connected backend PROCESS reports a commit older than its own checkout: a `hermes
+   * update` moves the tree, but the process keeps the code it loaded until something restarts
+   * it. Without this the row calls such a backend "the latest version".
+   */
+  backendOutOfSync?: boolean
   /** Names the pinned release when a source install is current on stable. */
   latestRelease?: (version: string) => string
   /** Names a move back to an older stable release the checkout already contains. */
@@ -113,6 +119,7 @@ function availableLine(
 
 function ordinaryUpdateStatus({
   apply,
+  backendOutOfSync,
   bundleOutOfSync,
   checking,
   held,
@@ -126,7 +133,8 @@ function ordinaryUpdateStatus({
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
   const staleBuild = Boolean(bundleOutOfSync) && target === 'client'
-  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable) || staleBuild
+  const staleBackend = Boolean(backendOutOfSync) && target === 'backend'
+  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable) || staleBuild || staleBackend
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
@@ -152,9 +160,11 @@ function ordinaryUpdateStatus({
   if (updateAvailable) {
     return {
       applying,
-      line: staleBuild && behind <= 0 && !status?.updateAvailable
-        ? u.bundleOutOfSync
-        : availableLine(status, behind, u, rollback),
+      line: staleBackend && behind <= 0 && !status?.updateAvailable
+        ? u.backendStaleBody
+        : staleBuild && behind <= 0 && !status?.updateAvailable
+          ? u.bundleOutOfSync
+          : availableLine(status, behind, u, rollback),
       supported,
       tone: 'available',
       updateAvailable
@@ -350,17 +360,30 @@ export function UpdateStatusCard({
     return <></>
   }
 
-  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} bundleOutOfSync={target === 'client' && Boolean(version?.bundleOutOfSync)} />
+  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} version={version} />
+}
+
+/** The backend reports the commit it LOADED, not its checkout's HEAD: an update moves the tree
+ *  and the process keeps running the code it booted with until something restarts it. False
+ *  whenever either side is unreadable — a guess here would be a false alarm. */
+function backendRunningOldCode(
+  version: DesktopVersionInfo | null,
+  status: DesktopUpdateStatus | null
+): boolean {
+  const loaded = /\.g([0-9a-f]{7,40})/i.exec(version?.backendVersion ?? '')?.[1]
+  const head = status?.currentSha
+
+  return Boolean(loaded && head && !head.startsWith(loaded) && !loaded.startsWith(head))
 }
 
 function UpdateStatusCardBody({
   showReleaseNotes,
   target,
-  bundleOutOfSync
+  version
 }: {
   showReleaseNotes: boolean
   target: UpdateTarget
-  bundleOutOfSync: boolean
+  version: DesktopVersionInfo | null
 }): ReactElement {
   const { t } = useI18n()
   const u = t.updates
@@ -372,7 +395,8 @@ function UpdateStatusCardBody({
 
   const view = deriveUpdateStatus({
     apply,
-    bundleOutOfSync,
+    backendOutOfSync: target === 'backend' && backendRunningOldCode(version, status),
+    bundleOutOfSync: target === 'client' && Boolean(version?.bundleOutOfSync),
     checking,
     held: t.settings.about.channel.heldBody,
     latestRelease: t.settings.about.channel.latestRelease,

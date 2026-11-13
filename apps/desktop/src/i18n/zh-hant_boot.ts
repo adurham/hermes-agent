@@ -123,6 +123,7 @@ export const zhHantBoot = {
     versionDetailsClient: '本裝置',
     versionDetailsBackend: '已連線的後端',
     latestBodyBackend: '後端正在執行最新版本。',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安裝。',

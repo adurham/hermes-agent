@@ -2711,6 +2711,7 @@ export const jaOverrides = {
     versionDetailsClient: 'このデバイス',
     versionDetailsBackend: '接続中のバックエンド',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
+    backendStaleBody: 'The backend is running older code than its own checkout — update it (or restart the gateway) to load it.',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',
     availableBody: '新しいバージョンの Hermes をインストールする準備ができています。',
