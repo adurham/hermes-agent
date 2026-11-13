@@ -70,6 +70,17 @@ class NousProfile(ProviderProfile):
 
         supported: Optional[tuple[str, ...]] = None
         overrides: Optional[dict[str, str]] = None
+        m = (model or "").strip().lower()
+        # Family overrides apply whether the ladder came from the catalog or from the static
+        # table below: the catalog narrows levels (live 2026-11-12: DeepSeek V4 and
+        # glm-5.3-flash publish no `medium`) but never carries the vendor round-up rules, so
+        # without this a `medium` ask fell through to the nearest-weaker clamp and shipped as
+        # `low` — a two-tier drop on every aux lane.
+        if "deepseek" in m:
+            overrides = re_.DEEPSEEK_V4_OVERRIDES
+        elif "glm" in m:
+            glm53 = ("glm-5.3", "glm-5-3", "glm-5p3")
+            overrides = re_.GLM53_OVERRIDES if any(t in m for t in glm53) else re_.GLM52_OVERRIDES
         try:
             from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities
 
@@ -79,15 +90,10 @@ class NousProfile(ProviderProfile):
         if isinstance(catalog_efforts, list) and catalog_efforts:
             supported = tuple(dict.fromkeys(str(e).strip().lower() for e in catalog_efforts if str(e).strip()))
         if supported is None:
-            m = (model or "").strip().lower()
             if "deepseek" in m:
-                supported, overrides = re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES
+                supported = re_.DEEPSEEK_V4_EFFORTS
             elif "glm" in m:
-                glm53 = ("glm-5.3", "glm-5-3", "glm-5p3")
-                if any(t in m for t in glm53):
-                    supported, overrides = re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES
-                else:
-                    supported, overrides = re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES
+                supported = re_.GLM53_EFFORTS if any(t in m for t in ("glm-5.3", "glm-5-3", "glm-5p3")) else re_.GLM52_EFFORTS
             else:
                 supported = re_.OPENAI_COMPAT_WIRE_EFFORTS
         return re_.clamp_effort(requested, supported, overrides) or requested

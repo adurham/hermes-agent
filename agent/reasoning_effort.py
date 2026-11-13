@@ -76,11 +76,19 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 # api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every : level accepted with monotonic
 # reasoning-token scaling (low=4, medium=11, : high=98, max=125 on the probe prompt).
 GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: ``medium`` rounds UP for the same reason as DeepSeek's: the Portal catalog for
+#: ``glm-5.3-flash`` publishes only low/high/max, so a medium ask clamped down to low.
+GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max", "medium": "high"}
 
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: ``medium`` is a real level on DeepSeek's own wire, but the Nous Portal catalog publishes
+#: only low/high/xhigh/max for this family — so a ``medium`` ask there used to clamp DOWN to
+#: ``low`` (silent 2-tier drop on every aux lane, 2026-11-12). Round it UP to ``high`` the way
+#: Kimi K3's ``medium → high`` does: the model has no middle tier, and the stronger neighbour
+#: is the honest match. No-op on the direct DeepSeek route, where ``medium`` is supported and
+#: an override is never consulted.
+DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max", "medium": "high"}
 
 #: exo (local distributed-inference cluster) chat-completions wire: a top-level
 #: ``reasoning_effort`` validated against ``none``..``xhigh``
