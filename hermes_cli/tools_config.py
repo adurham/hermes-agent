@@ -521,7 +521,13 @@ def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_conf
 
 def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: list[str], plugin_ts_keys: set[str]) -> set[str]:
     """Plugin toolsets: on by default unless default-off (catalog spotify) or "known" for this platform
-    (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
+    (``known_plugin_toolsets``, written on every save) and absent from the saved list. Under
+    ``plugins.toolsets_opt_in: true`` only the plugin toolsets ``platform_toolsets.<platform>`` names
+    are on, so a plugin toolset nobody listed (one a later release adds included) stays off."""
+    from utils import is_truthy_value
+
+    if is_truthy_value(cfg_get(config, "plugins", "toolsets_opt_in"), default=False):
+        return {pts for pts in plugin_ts_keys if pts in toolset_names}
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
     return {
         pts for pts in plugin_ts_keys

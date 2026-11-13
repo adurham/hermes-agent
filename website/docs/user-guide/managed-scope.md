@@ -203,6 +203,15 @@ This is **drift control, not a sandbox**: it stops an unreviewed plugin from
 quietly joining the process, but whoever can edit the config — or the files
 of an allowlisted plugin — can still change what runs.
 
+Two related keys keep a pinned surface stable when a release adds plugins:
+
+- `plugins.disabled` entries containing `*`, `?` or `[` are `fnmatch` patterns,
+  so `platforms/*` disables every platform plugin, including ones added later.
+- `plugins.toolsets_opt_in: true` makes `platform_toolsets.<platform>`
+  authoritative for plugin toolsets: one is enabled only when that list names
+  it (by default plugin toolsets are on unless switched off). MCP server
+  toolsets are unaffected.
+
 ## Security model and limitations (v1)
 
 - **Enforcement is filesystem permissions only.** If a user has write access to
