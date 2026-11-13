@@ -34,6 +34,22 @@ _DEFAULT_MANAGED_DIR = Path("/etc/hermes")
 # set by whoever owns the managed files; it is never persisted to any .env.
 STRICT_ENV = "HERMES_MANAGED_STRICT"
 
+# What this tree's managed scope enforces, declared as a LITERAL tuple of strings so a deployment
+# launcher can read it with ``ast.literal_eval`` straight from this file's source, without importing
+# hermes. A tree that predates a behaviour lacks its name, so a launcher whose policy depends on it
+# can refuse to start instead of silently enforcing less than it claims. Add a name when a managed
+# behaviour is added; never rename or reuse one.
+MANAGED_SCOPE_CAPABILITIES = (
+    "strict-mode",  # HERMES_MANAGED_STRICT=1 fails closed on a broken managed scope
+    "layered-managed-dirs",  # HERMES_MANAGED_DIR layers under /etc/hermes, never replaces it
+    "save-config-keeps-user-values",  # save_config does not strip the user's own values for managed keys
+    "raw-config-readers-honor-overlay",  # gates that read the raw user config apply the overlay
+    "blocked-features-bare-and-platform-names",  # 'telegram' and 'platform.telegram' match each other
+    "plugins-disabled-globs",  # plugins.disabled entries may be fnmatch patterns
+    "plugins-user-dir-allowlist",  # plugins.allow_user_dir / user_dir_allowlist
+    "plugins-toolsets-opt-in",  # plugins.toolsets_opt_in
+)
+
 _CACHE_LOCK = threading.Lock()
 # path_key -> (*file_cache_version, parsed)
 _CONFIG_CACHE: dict[str, tuple] = {}
