@@ -1014,6 +1014,11 @@ export interface DesktopUpdateStatus {
    *  literal number. */
   behind?: number | null
   currentSha?: string
+  /** Backend only: the commit the serving PROCESS booted from. Absent on older backends. */
+  runningSha?: string
+  /** Backend only: the process serves older code than its own checkout (an update without a
+   *  restart). Absent on older backends. */
+  processBehind?: boolean
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
   /** The R2 channel name; independent of source branch and package version. */

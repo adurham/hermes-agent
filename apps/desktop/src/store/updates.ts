@@ -563,6 +563,11 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     branch: res.branch ?? undefined,
     latestTag: res.source_version && !res.rollback_to ? `v${res.source_version}` : undefined,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
+    // The backend's own verdict on "is the process serving older code than its checkout?" —
+    // absent on backends that predate it, so the caller keeps its own fallback.
+    runningSha: res.running_sha ?? undefined,
+    currentSha: res.current_sha ?? undefined,
+    processBehind: res.process_behind === undefined ? undefined : Boolean(res.process_behind),
     commits: res.commits,
     fetchedAt: Date.now()
   }

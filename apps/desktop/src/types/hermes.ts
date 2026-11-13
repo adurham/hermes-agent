@@ -1733,6 +1733,12 @@ export interface BackendUpdateCheckResponse {
   branch?: null | string
   /** Stable: the release version the update installs, e.g. `0.22.0`. */
   source_version?: null | string
+  /** The commit the serving process booted from; absent on backends that predate it. */
+  running_sha?: null | string
+  /** The checkout's HEAD at check time; absent on backends that predate it. */
+  current_sha?: null | string
+  /** The process serves older code than its own checkout (an update without a restart). */
+  process_behind?: boolean
   can_apply: boolean
   update_command: string | null
   message: string | null

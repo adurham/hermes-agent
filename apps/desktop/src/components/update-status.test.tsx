@@ -7,7 +7,7 @@ import { en } from '@/i18n/en'
 import type { UpdateApplyState } from '@/store/updates'
 import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus } from '@/store/updates'
 
-import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
+import { backendRunningOldCode, deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -421,5 +421,24 @@ describe('a backend running older code than its checkout', () => {
 
     expect(view.line).toBe(en.updates.latestBody)
     expect(view.updateAvailable).toBe(false)
+  })
+})
+
+describe('backendRunningOldCode', () => {
+  const head = 'c'.repeat(40)
+
+  it('trusts the backend verdict when it sends one', () => {
+    expect(backendRunningOldCode(null, { supported: true, processBehind: true })).toBe(true)
+    expect(backendRunningOldCode(null, { supported: true, processBehind: false })).toBe(false)
+  })
+
+  it('compares the two commits when the verdict is absent', () => {
+    expect(backendRunningOldCode(null, { supported: true, currentSha: head, runningSha: 'd'.repeat(40) })).toBe(true)
+    expect(backendRunningOldCode(null, { supported: true, currentSha: head, runningSha: head.slice(0, 8) })).toBe(false)
+  })
+
+  it('stays quiet when nothing is readable', () => {
+    expect(backendRunningOldCode(null, { supported: true })).toBe(false)
+    expect(backendRunningOldCode(null, null)).toBe(false)
   })
 })

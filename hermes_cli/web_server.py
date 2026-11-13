@@ -34,6 +34,28 @@ from typing import Any, Dict, Optional, Tuple
 from hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
+
+
+def _startup_sha(root: Path) -> "str | None":
+    """The commit THIS process booted from, read once at import.
+
+    The dashboard outlives ``hermes update``: the tree moves under a live process, so "the code I am
+    running" is a startup fact. Comparing it with the checkout's HEAD at request time is what tells
+    the Desktop its backend is serving older code.
+    """
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+STARTUP_SHA = _startup_sha(PROJECT_ROOT)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

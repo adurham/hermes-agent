@@ -286,6 +286,35 @@ def _source_release_label(status: dict[str, Any]) -> str:
     return f"{status.get('channel') or 'stable'} release" + (f" v{version}" if version else "")
 
 
+def _process_code_fields() -> dict[str, Any]:
+    """The commit this dashboard booted from, the checkout's HEAD now, and whether they differ.
+
+    A ``hermes update`` moves the tree; the serving process keeps the code it loaded until it
+    restarts. Without these the Desktop can only say "up to date" about a backend that is running
+    older code, because the check speaks about the checkout alone.
+    """
+    import subprocess
+
+    from hermes_cli import web_server as _ws
+
+    running = getattr(_ws, "STARTUP_SHA", None)
+    current = None
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(_ws.PROJECT_ROOT), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+        )
+        if done.returncode == 0:
+            current = done.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        current = None
+    return {
+        "running_sha": running,
+        "current_sha": current,
+        "process_behind": bool(running and current and running != current),
+    }
+
+
 @router.get("/api/hermes/update/check")
 async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
@@ -303,6 +332,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
             "current_version": get_version_info().derived_version,
             "behind": None, "update_available": False, "can_apply": False,
             "update_command": "", "message": COMMIT_BUILD_UPDATE_MESSAGE,
+            **_process_code_fields(),
         }
 
     if _dashboard_local_update_managed_externally():
@@ -312,6 +342,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
             "behind": None,
             "update_available": False, "can_apply": False,
             "update_command": "", "message": _MANAGED_EXTERNALLY_MESSAGE,
+            **_process_code_fields(),
         }
 
     install_method = detect_install_method(_server_path("PROJECT_ROOT"))
@@ -321,6 +352,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         "behind": None,
         "update_available": False, "can_apply": install_method == "git",
         "update_command": recommended_update_command_for_method(install_method), "message": None,
+        **_process_code_fields(),
     }
     non_applyable = _NON_APPLYABLE_MESSAGES.get(install_method)
     if non_applyable is not None:

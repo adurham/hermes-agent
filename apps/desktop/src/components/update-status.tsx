@@ -364,16 +364,28 @@ export function UpdateStatusCard({
 }
 
 /** The backend reports the commit it LOADED, not its checkout's HEAD: an update moves the tree
- *  and the process keeps running the code it booted with until something restarts it. False
- *  whenever either side is unreadable — a guess here would be a false alarm. */
-function backendRunningOldCode(
+ *  and the process keeps running the code it booted with until something restarts it. The backend
+ *  answers this itself (`process_behind`); older backends only send the two commits, and a version
+ *  string carrying `.g<sha>` is the last fallback. False whenever nothing is readable — a guess
+ *  here would be a false alarm. */
+export function backendRunningOldCode(
   version: DesktopVersionInfo | null,
   status: DesktopUpdateStatus | null
 ): boolean {
-  const loaded = /\.g([0-9a-f]{7,40})/i.exec(version?.backendVersion ?? '')?.[1]
+  if (status?.processBehind !== undefined) {
+    return status.processBehind
+  }
+
+  const loaded = status?.runningSha
   const head = status?.currentSha
 
-  return Boolean(loaded && head && !head.startsWith(loaded) && !loaded.startsWith(head))
+  if (loaded && head) {
+    return !head.startsWith(loaded) && !loaded.startsWith(head)
+  }
+
+  const fromVersion = /\.g([0-9a-f]{7,40})/i.exec(version?.backendVersion ?? '')?.[1]
+
+  return Boolean(fromVersion && head && !head.startsWith(fromVersion) && !fromVersion.startsWith(head))
 }
 
 function UpdateStatusCardBody({
