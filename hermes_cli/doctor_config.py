@@ -144,9 +144,10 @@ def managed_scope_check() -> None:
     if managed_dir is None:
         return
     n_cfg, n_env = len(managed_scope.managed_config_keys()), len(managed_scope.load_managed_env())
-    check_ok(f"Managed scope active: {n_cfg} config key(s), {n_env} env key(s) pinned by {managed_dir}")
-    if os.environ.get("HERMES_MANAGED_DIR", "").strip():
-        check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
+    layers = ", ".join(str(d) for d in reversed(managed_scope.get_managed_dirs()))  # highest precedence first
+    check_ok(f"Managed scope active: {n_cfg} config key(s), {n_env} env key(s) pinned by {layers}")
+    if override := os.environ.get("HERMES_MANAGED_DIR", "").strip():
+        check_info(f"managed dir set via HERMES_MANAGED_DIR={override}")
 
 
 @doctor_check("MCP security check failed: {e}")

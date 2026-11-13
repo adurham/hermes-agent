@@ -401,8 +401,7 @@ def resolve_home_dotenv(home: Path) -> dict[str, str]:
     layer seeing the one before. External secret sources and the project ``.env`` are not included."""
     from hermes_cli import managed_scope
 
-    managed_dir = managed_scope.get_managed_dir()
-    layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
+    layers = [home / ".env", *(managed_dir / ".env" for managed_dir in managed_scope.get_managed_dirs())]
     with _DOTENV_LOCK:
         lookup_env = _dotenv_lookup_env(None)
     out: dict[str, str] = {}
@@ -499,11 +498,10 @@ def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) ->
     try:
         from hermes_cli import managed_scope
 
-        managed_dir = managed_scope.get_managed_dir()
+        managed_dirs = managed_scope.get_managed_dirs()
     except Exception:  # health: allow BLE001 -- managed scope never blocks startup, as in _apply_managed_env
-        managed_dir = None
-    if managed_dir is not None:
-        layers.append((managed_dir / ".env", True))
+        managed_dirs = ()
+    layers.extend((managed_dir / ".env", True) for managed_dir in managed_dirs)
     for path, override in layers:
         try:
             assignments = _dotenv_assignments(path)
@@ -805,16 +803,15 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
         from hermes_cli import managed_scope
 
         managed_scope.check_strict()
-        managed_dir = managed_scope.get_managed_dir()
+        managed_dirs = managed_scope.get_managed_dirs()
     except Exception:
         return
-    if managed_dir is None:
-        return
-    managed_env = managed_dir / ".env"
-    if not managed_env.exists():
-        return
-    _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True, load_pass=load_pass, managed=True)
+    for managed_dir in managed_dirs:  # lowest precedence first: /etc/hermes is applied last and wins
+        managed_env = managed_dir / ".env"
+        if not managed_env.exists():
+            continue
+        _sanitize_env_file_if_needed(managed_env)
+        _load_dotenv_with_fallback(managed_env, override=True, load_pass=load_pass, managed=True)
 
 
 def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:

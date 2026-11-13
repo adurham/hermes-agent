@@ -61,9 +61,9 @@ def _due_stamp() -> tuple:
     from hermes_cli import managed_scope
     from hermes_constants import get_default_hermes_root
     home = Path(_profile_home("default") or get_default_hermes_root())
-    managed = managed_scope.get_managed_dir()
+    managed = [p for d in managed_scope.get_managed_dirs() for p in (d / "config.yaml", d / ".env")]
     paths = (get_default_hermes_root() / "config.yaml", home / "config.yaml", home / ".env", home / "auth.json",
-             *_shared_nous_store(), *((managed / "config.yaml", managed / ".env") if managed else ()))
+             *_shared_nous_store(), *managed)
     return tuple(_version(path) for path in paths)
 
 

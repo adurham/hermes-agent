@@ -3,7 +3,7 @@
 DISTINCT from ``hermes_cli.config.is_managed()`` / ``HERMES_MANAGED`` (a coarse package-manager
 write-lock that blocks all mutation); this layer injects specific immutable values. The two are
 independent and may coexist. v1 enforcement is filesystem permissions only (see
-``docs/design/managed-scope.md`` §7); ``get_managed_dir()`` is the single seam for adding
+``docs/design/managed-scope.md`` §7); ``_resolve_managed_dirs()`` is the single seam for adding
 macOS / Windows native locations later.
 """
 from __future__ import annotations
@@ -38,8 +38,8 @@ _CACHE_LOCK = threading.Lock()
 # path_key -> (*file_cache_version, parsed)
 _CONFIG_CACHE: dict[str, tuple] = {}
 _ENV_CACHE: dict[str, tuple] = {}
-# Strict mode: the last managed dir this process resolved, and the breakages already reported.
-_STRICT_LAST_DIR: list[Path] = []
+# Strict mode: the managed dirs this process last resolved in full, and the breakages already reported.
+_STRICT_LAST_DIRS: list[Path] = []
 _STRICT_REPORTED: set[str] = set()
 
 
@@ -83,41 +83,83 @@ def _strict_report_once(reason: str) -> None:
 
 def _under_pytest() -> bool:
     """True inside the test suite: ignore the system ``/etc/hermes`` so a real managed scope on a
-    dev/CI box can't leak policy into the suite. An explicit ``HERMES_MANAGED_DIR`` still wins."""
+    dev/CI box can't leak policy into the suite. An explicit ``HERMES_MANAGED_DIR`` still applies."""
     return "PYTEST_CURRENT_TEST" in os.environ
 
 
-def _resolve_managed_dir() -> tuple[Optional[Path], str]:
-    """``(dir, "")``, or ``(None, why)`` when no managed scope resolves."""
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _resolve_managed_dirs() -> tuple[tuple[Path, ...], str]:
+    """``(active dirs, lowest precedence first; problem)`` — *problem* is "" when the scope is complete."""
+    dirs: list[Path] = []
+    problem = ""
     override = os.environ.get("HERMES_MANAGED_DIR", "").strip()
     if override:
         p = Path(override)
         if p.is_dir():
-            return p, ""
-        return None, f"HERMES_MANAGED_DIR={override!r} is not a directory"
+            dirs.append(p)
+        else:
+            problem = f"HERMES_MANAGED_DIR={override!r} is not a directory"
     if not _under_pytest() and _DEFAULT_MANAGED_DIR.is_dir():
-        return _DEFAULT_MANAGED_DIR, ""
-    return None, f"no managed scope found (HERMES_MANAGED_DIR is unset and {_DEFAULT_MANAGED_DIR} does not exist)"
+        if dirs and _same_dir(dirs[0], _DEFAULT_MANAGED_DIR):
+            dirs.clear()  # one directory named twice: read it once, at system precedence
+        dirs.append(_DEFAULT_MANAGED_DIR)
+    if not dirs and not problem:
+        problem = f"no managed scope found (HERMES_MANAGED_DIR is unset and {_DEFAULT_MANAGED_DIR} does not exist)"
+    return tuple(dirs), problem
+
+
+def get_managed_dirs() -> tuple[Path, ...]:
+    """The active managed-scope directories, lowest precedence first; ``()`` when none.
+
+    ``$HERMES_MANAGED_DIR`` (IT-only bootstrap override; never persisted to any .env; honored only
+    when non-empty AND the directory exists) layers UNDER ``/etc/hermes``: the system directory,
+    when it exists, is always read and wins per leaf, so pointing the variable at a missing or
+    different directory can neither disable nor shadow it. A missing directory contributes nothing
+    — the common case, so this must be cheap + side-effect-free. Under ``HERMES_MANAGED_STRICT`` an
+    incomplete resolution raises ``ManagedScopeError`` instead (see ``strict_mode``).
+    """
+    dirs, problem = _resolve_managed_dirs()
+    if not strict_mode():
+        return dirs
+    if not problem:
+        _STRICT_LAST_DIRS[:] = dirs
+        return dirs
+    if _STRICT_LAST_DIRS:  # changed after this process loaded the scope: its files fall back below
+        _strict_report_once(problem)
+        return tuple(_STRICT_LAST_DIRS)
+    raise _strict_refusal(problem)
 
 
 def get_managed_dir() -> Optional[Path]:
-    """Resolve the managed-scope directory, or None when no scope is present.
+    """The highest-precedence active managed directory (``/etc/hermes`` when it exists), or None.
+    For "is a scope active" checks and labels; readers of the managed files use ``get_managed_dirs``."""
+    dirs = get_managed_dirs()
+    return dirs[-1] if dirs else None
 
-    Priority: ``$HERMES_MANAGED_DIR`` (IT-only bootstrap override; never persisted to any .env;
-    honored only when non-empty AND the directory exists), then ``/etc/hermes`` when it exists.
-    A missing directory resolves to None — the common case, so it must be cheap + side-effect-free.
-    Under ``HERMES_MANAGED_STRICT`` an unresolvable scope raises ``ManagedScopeError`` instead.
-    """
-    managed_dir, why = _resolve_managed_dir()
-    if not strict_mode():
-        return managed_dir
-    if managed_dir is not None:
-        _STRICT_LAST_DIR[:] = [managed_dir]
-        return managed_dir
-    if _STRICT_LAST_DIR:  # vanished after this process loaded it: its files fall back below
-        _strict_report_once(why)
-        return _STRICT_LAST_DIR[0]
-    raise _strict_refusal(why)
+
+def describe_source(filename: str) -> str:
+    """The managed ``<dir>/<filename>`` paths that exist, highest precedence first, for messages."""
+    found = [str(d / filename) for d in reversed(get_managed_dirs()) if (d / filename).exists()]
+    return ", ".join(found) or "the managed scope"
+
+
+def config_file_signature() -> tuple:
+    """Change-detection key over every managed ``config.yaml`` that exists (``()`` when none), so a
+    cache of the merged config invalidates when any layer is edited, added or removed."""
+    sig: list = []
+    for managed_dir in get_managed_dirs():
+        path = managed_dir / "config.yaml"
+        try:
+            sig.append((str(path), *file_cache_version(path)))
+        except OSError:
+            continue  # absent: contributes nothing, exactly like a missing scope
+    return tuple(sig)
 
 
 def invalidate_managed_cache() -> None:
@@ -125,7 +167,7 @@ def invalidate_managed_cache() -> None:
     with _CACHE_LOCK:
         _CONFIG_CACHE.clear()
         _ENV_CACHE.clear()
-        _STRICT_LAST_DIR.clear()
+        _STRICT_LAST_DIRS.clear()
         _STRICT_REPORTED.clear()
 
 
@@ -194,12 +236,25 @@ def _read_managed_env_file(managed_dir: Path):
     return _cached_read(managed_dir / ".env", _ENV_CACHE, _parse_managed_env)
 
 
-def _load_managed_file(read) -> dict:
-    managed_dir = get_managed_dir()
-    if managed_dir is None:
-        return {}
-    parsed = read(managed_dir)
-    return parsed if isinstance(parsed, dict) else {}
+def _merge_layer(base: dict, top: dict) -> dict:
+    """*top* over *base* per leaf (``hermes_cli.config._deep_merge`` rules: dicts recurse, anything
+    else replaces wholesale, a ``None`` over a dict section is ignored)."""
+    out = dict(base)
+    for key, value in top.items():
+        if isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = _merge_layer(out[key], value)
+        elif not (isinstance(out.get(key), dict) and value is None):
+            out[key] = value
+    return out
+
+
+def _load_managed_file(read, merge) -> dict:
+    merged: dict = {}
+    for managed_dir in get_managed_dirs():
+        parsed = read(managed_dir)
+        if isinstance(parsed, dict):
+            merged = merge(merged, parsed)
+    return merged
 
 
 def check_strict() -> None:
@@ -208,25 +263,26 @@ def check_strict() -> None:
     otherwise. Called by the dotenv loader, which every entry point runs before anything else."""
     if not strict_mode():
         return
-    managed_dir = get_managed_dir()  # strict: a directory, or ManagedScopeError
-    if managed_dir is not None:
+    for managed_dir in get_managed_dirs():  # strict: at least one directory, or ManagedScopeError
         _read_managed_config_file(managed_dir)
         _read_managed_env_file(managed_dir)
 
 
 def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open). Always {} under a config
-    backend that takes config and locks from elsewhere (remote mode, D18; boot warns about the file)."""
+    """Parsed managed config.yaml — every managed dir's, merged per leaf with ``/etc/hermes`` on top
+    — or {} when absent/malformed (fail-open). Always {} under a config backend that takes config
+    and locks from elsewhere (remote mode, D18; boot warns about the file)."""
     from hermes_cli.config_backend import get_config_backend
 
     if not get_config_backend().honors_managed_config():
         return {}
-    return _load_managed_file(_read_managed_config_file)
+    return _load_managed_file(_read_managed_config_file, _merge_layer)
 
 
 def load_managed_env() -> dict[str, str]:
-    """Parsed managed .env (KEY=VALUE), or {} when absent (fail-open)."""
-    return _load_managed_file(_read_managed_env_file)
+    """Parsed managed .env (KEY=VALUE) of every managed dir, ``/etc/hermes`` winning per key, or {}
+    when absent (fail-open)."""
+    return _load_managed_file(_read_managed_env_file, lambda base, top: {**base, **top})
 
 
 def _parse_managed_env(path: Path) -> dict[str, str]:

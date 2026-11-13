@@ -24,8 +24,9 @@ def _show_managed_banner() -> None:
     if not managed_keys and not managed_env:
         return
     print()
+    layers = ", ".join(str(d) for d in reversed(managed_scope.get_managed_dirs()))  # highest precedence first
     print(color(
-        f"  ⚷ Some settings are managed by your administrator ({managed_scope.get_managed_dir()}) "
+        f"  ⚷ Some settings are managed by your administrator ({layers}) "
         f"and cannot be changed", Colors.YELLOW, Colors.BOLD))
     for label, keys in (("config", managed_keys), ("env", managed_env)):
         if keys:

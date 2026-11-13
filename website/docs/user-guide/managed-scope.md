@@ -42,24 +42,29 @@ Either file is optional. A missing managed directory or missing file simply
 means "no managed scope," and configuration resolves exactly as it does without
 the feature.
 
-### Relocating the directory
+### An additional managed directory
 
-The location can be relocated with the `HERMES_MANAGED_DIR` environment variable
-(for containers or non-`/etc` deployments). This is a deployment/bootstrap path
-knob — like `HERMES_HOME` — set by the same administrator who owns the managed
-files. It is **never persisted** to any `.env` by Hermes.
+The `HERMES_MANAGED_DIR` environment variable adds a second managed directory
+(for containers, non-`/etc` deployments, or a launcher that ships its own
+policy). It layers **under** `/etc/hermes`: when `/etc/hermes` exists it is
+always read and wins per leaf, so the variable can add policy but can neither
+disable nor shadow the system directory — a missing or empty value, or a path
+that does not exist, simply contributes nothing. This is a deployment/bootstrap
+path knob — like `HERMES_HOME` — set by the same administrator who owns the
+managed files. It is **never persisted** to any `.env` by Hermes.
 
 ```bash
-# Point managed scope at a custom directory (set by IT / the deployment, not the user)
+# Add a managed directory (set by IT / the deployment, not the user)
 export HERMES_MANAGED_DIR=/opt/org/hermes-policy
 ```
 
 :::warning
-A user who can set `HERMES_MANAGED_DIR` can repoint managed scope at a directory
-they control, defeating it. In a real deployment this variable should be fixed
-by the administrator (e.g. baked into the service unit / container image), not
-left user-settable. `hermes doctor` reports the *resolved* managed directory so
-a redirect is visible.
+A user who can set `HERMES_MANAGED_DIR` can point that layer at a directory
+they control, replacing whatever it would have pinned (not what `/etc/hermes`
+pins). In a real deployment this variable should be fixed by the administrator
+(e.g. baked into the service unit / container image), not left user-settable.
+`hermes doctor` reports every *resolved* managed directory so a redirect is
+visible.
 :::
 
 ## Precedence
@@ -69,8 +74,11 @@ For the keys a managed layer specifies, the order is (highest wins):
 | Tier | config.yaml | .env |
 |---|---|---|
 | 1 | `/etc/hermes/config.yaml` (managed) | `/etc/hermes/.env` (managed) |
-| 2 | `~/.hermes/config.yaml` (user) | `~/.hermes/.env` (user) |
-| 3 | built-in defaults | pre-existing shell environment |
+| 2 | `$HERMES_MANAGED_DIR/config.yaml` (managed) | `$HERMES_MANAGED_DIR/.env` (managed) |
+| 3 | `~/.hermes/config.yaml` (user) | `~/.hermes/.env` (user) |
+| 4 | built-in defaults | pre-existing shell environment |
+
+`hermes config set` refuses a key that either managed layer pins.
 
 Merging is **leaf-level**: pinning `model.default` does not freeze the rest of
 `model.*`. A managed `config.yaml` of:

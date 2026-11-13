@@ -927,11 +927,11 @@ class RemoteBackend:
 
 def managed_config_file() -> Optional[Path]:
     from hermes_cli import managed_scope
-    managed_dir = managed_scope.get_managed_dir()
-    path = managed_dir / "config.yaml" if managed_dir else None
-    if path is None:
-        return None
-    return path if path.exists() else None  # config-reader: ok — existence only, to warn it is ignored (D18)
+    for managed_dir in reversed(managed_scope.get_managed_dirs()):  # highest precedence first
+        path = managed_dir / "config.yaml"
+        if path.exists():  # config-reader: ok — existence only, to warn it is ignored (D18)
+            return path
+    return None
 
 
 def _first_change(path: KeyPath, sent: Any, found: bool, got: Any) -> Optional[KeyPath]:
