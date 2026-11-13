@@ -638,6 +638,11 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
     """
     if not (plugin_dir / "__init__.py").exists():
         return
+    if source != "bundled":
+        from hermes_cli.plugins_discovery import user_plugin_dir_refusal
+        if refusal := user_plugin_dir_refusal(plugin_dir):  # plugins.allow_user_dir: false
+            logger.info("Skipping provider plugin: %s", refusal)
+            return
     if source != "bundled" and _plugin_disabled(plugin_dir):
         logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
         return

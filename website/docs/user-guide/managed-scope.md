@@ -174,6 +174,35 @@ never kills the thread that happened to read it: the last successfully loaded
 managed values stay in force and a `CRITICAL` log line names the problem. Fix
 the file; valid edits keep taking effect as usual.
 
+## Closing the user plugins directory (drift control)
+
+Plugins dropped into `~/.hermes/plugins/` load from there whatever the
+administrator's toolset lists say (a model-provider plugin is imported at
+startup even when it is not in `plugins.enabled`). Two keys close that
+directory:
+
+```yaml
+plugins:
+  allow_user_dir: false            # default true: the directory behaves as before
+  user_dir_allowlist:              # only consulted when allow_user_dir is false
+    - holographic                  # names are paths relative to ~/.hermes/plugins
+    - model-providers/my-provider
+```
+
+With `allow_user_dir: false`, nothing in the user plugins directory is
+imported — standalone, model-provider, memory, platform, backend, context
+engine, cron or computer-use plugins alike, and whatever `plugins.enabled`
+says — unless `user_dir_allowlist` names its directory. The decision is made
+from the directory path alone, before any of the plugin's code runs; an
+allowlisted plugin still needs whatever enabling its kind normally needs, and
+`plugins.disabled` still wins. Bundled plugins, pip-installed (entry-point)
+plugins and opt-in project plugins are not affected. Changes take effect on
+the next start.
+
+This is **drift control, not a sandbox**: it stops an unreviewed plugin from
+quietly joining the process, but whoever can edit the config — or the files
+of an allowlisted plugin — can still change what runs.
+
 ## Security model and limitations (v1)
 
 - **Enforcement is filesystem permissions only.** If a user has write access to

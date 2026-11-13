@@ -231,6 +231,10 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
         # user-installed provider in ``plugins.disabled``; the loader must honour it or "disabled" is a lie.
         logger.warning("%s", parked_provider_notice(name))
         return None
+    from hermes_cli.plugins_discovery import user_plugin_dir_refusal
+    if provider_dir is not None and (refusal := user_plugin_dir_refusal(provider_dir)):
+        logger.warning("%s", refusal)  # covers the plugin-host path too, which never reaches plugin_loader
+        return None
 
     def _load(_dir):
         if provider_dir:

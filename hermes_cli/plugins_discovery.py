@@ -10,6 +10,7 @@ import contextlib
 import contextvars
 import importlib.metadata
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -23,6 +24,7 @@ from hermes_cli.plugins_manifest import (
     parse_manifest_file, portable_plugin_manifest,
 )
 from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
+from utils import is_truthy_value
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -129,6 +131,49 @@ def _get_enabled_plugins() -> Optional[set]:
         return set(enabled) if isinstance(enabled, list) else None
     except Exception:
         return None
+
+
+def _user_dir_policy() -> tuple[bool, frozenset[str]]:
+    """``(plugins.allow_user_dir, plugins.user_dir_allowlist)`` — ``(True, ∅)`` when unset."""
+    try:
+        from hermes_cli.config import load_config
+        plugins = load_config().get("plugins")
+    except Exception:  # health: allow BLE001 -- unreadable config: same fail-open as _get_disabled_plugins
+        return True, frozenset()
+    plugins = plugins if isinstance(plugins, dict) else {}
+    allowlist = plugins.get("user_dir_allowlist")
+    names = {str(n).strip().strip("/") for n in allowlist} if isinstance(allowlist, list) else set()
+    return is_truthy_value(plugins.get("allow_user_dir"), default=True), frozenset(names - {""})
+
+
+def _user_dir_relative_name(plugin_dir: Path) -> Optional[str]:
+    """*plugin_dir* relative to ``<HERMES_HOME>/plugins`` (``holographic``, ``model-providers/foo``), or None
+    outside it. Lexical (no symlink resolution): the name is the entry as found in that directory."""
+    root = os.path.abspath(get_hermes_home() / "plugins")
+    path = os.path.abspath(plugin_dir)
+    if path == root or os.path.commonpath([root, path]) != root:
+        return None
+    return Path(os.path.relpath(path, root)).as_posix()
+
+
+def user_plugin_dir_refusal(plugin_dir: Path) -> Optional[str]:
+    """Why a plugin directory inside ``<HERMES_HOME>/plugins`` must not load, else None.
+
+    ``plugins.allow_user_dir: false`` closes the user plugins directory: nothing in it is imported,
+    whatever its kind (standalone, model-provider, memory, platform, backend, context engine, cron
+    or computer-use provider), unless ``plugins.user_dir_allowlist`` names its path relative to that
+    directory. Decided from the path alone, before any code in it runs; bundled, pip entry-point and
+    project plugins are not affected. Drift control, not a sandbox: whoever can edit the config (or
+    the allowlisted plugin's files) can still change what runs.
+    """
+    allow, allowlist = _user_dir_policy()
+    if allow:
+        return None
+    name = _user_dir_relative_name(plugin_dir)
+    if name is None or name in allowlist:
+        return None
+    return (f"user plugin '{name}' not loaded: plugins.allow_user_dir is false and "
+            f"plugins.user_dir_allowlist does not list it")
 
 
 def is_skipped_plugin_dir(name: str) -> bool:
@@ -287,6 +332,10 @@ def gate_manifest(
             f"plugins.toml, or use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override"
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
+    # A closed user plugins directory (plugins.allow_user_dir: false) wins over every enable path.
+    refusal = user_plugin_dir_refusal(Path(manifest.path)) if manifest.source == "user" and manifest.path else None
+    if refusal:
+        return _placeholder(refusal, logging.INFO, "Skipping '%s': %s", refusal)
     if names & disabled:
         if enabled and names & enabled:
             # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
