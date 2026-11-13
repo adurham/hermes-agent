@@ -9,6 +9,42 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Fork-only fix — 2026-11-13 (the turn-close contract's call site was dropped by the promise-gate retirement)
+
+**Symptom.** On the desktop surface the agent's replies vanished: a turn that did real tool work
+(kanban sweeps, test runs) ended with a one-line acknowledgement, or with an empty bubble, while
+the actual answer — the one written into `end_turn`'s `summary` — was never shown. Measured in
+`~/.hermes/state.db` for session `20261113_145814_947a00`: three turns whose whole reply lived in
+a `summary` stored 62, 280 and 0 characters of trailing prose instead (rows 84554, 84693,
+`84717`+`84715`), and the operator had to ask twice for a reply.
+
+**Root cause.** `agent/end_turn.py` + `agent/turn_final_response_contract.py` implement the
+turn-close contract: a turn that used a tool must close by calling `end_turn`, and its `summary`
+*is* the reply. The branch that does that used to run inline in `finish_text_response`; it was
+extracted into `apply_turn_contract`, and then the **call** was deleted together with the
+promise-gate block it sat beside (`7dcaba6c004`, "retire promise_gate"). `apply_turn_contract` had
+zero callers from that commit on. With `agent.turn_contract: true` the tool is still registered,
+the model is still told to call it, and `end_turn_tool` still records the payload on the agent —
+but nothing ever read it, so the close was discarded and the trailing prose (or nothing) was both
+delivered and persisted. The decision-table tests all stayed green because every one of them drove
+`apply_turn_contract` directly; no test went through `finish_text_response`.
+
+**Fix.** Re-instated the call in `agent/turn_final_response.py::finish_text_response`, after
+`apply_stop_gates` and before `apply_llm_output_transform` — so a plugin rewrite of the reply still
+reaches the delivered text, and a `REJECT`/`IDLE`/`CONTINUE` verdict still returns `continue`
+before anything is published or flushed.
+
+**Files.** `agent/turn_final_response.py` (+19), `tests/agent/test_turn_contract.py` (+144:
+`TestFinishTextResponseWiring`, three tests that drive `finish_text_response` itself — a close
+delivers and stores the summary, prose after tool use is re-prompted, contract-off still delivers
+prose).
+
+**Verification.** The two wiring tests fail on the pre-fix tree (`action == "continue"` vs
+`"break"`) and pass with it; `tests/agent/{test_turn_contract,test_system_prompt_restore,
+test_reply_line_before_silence,test_bare_toolcall_recovery}.py` → 123 passed; `ruff check` clean on
+both files. The running desktop backend keeps the old code until it is restarted
+(`~/.hermes/scripts/hermes_safe_restart.sh`), so a fresh process is what proves it in the app.
+
 ### 2026-11-12 (upstream sync) — v0.23.1 merged, and why the cron job could not do it
 
 **Range.** `v0.23.0..v0.23.1` (v0.23.1 = `3b421578588`): 2,604 commits, 2,781 files, +151,690/−62,595.

@@ -791,3 +791,147 @@ class TestLoopVerdict:
         verdict = apply_turn_contract(agent, messages=self._rows(), final_msg={"role": "assistant", "content": "x"},
                                       tool_calls_this_turn=1)
         assert verdict.enabled is False and verdict.decision is None and verdict.reprompt is False
+
+
+class TestFinishTextResponseWiring:
+    """The wiring regression (2026-11-13): the close branch was extracted out of
+    ``finish_text_response`` into ``turn_final_response_contract.apply_turn_contract``, and the
+    CALL was then dropped with the promise-gate retirement (7dcaba6c004). Every test above
+    drives the contract directly, so the decision table stayed green while production lost the
+    reply: the close was recorded on the agent and never read, and the trailing prose (or an
+    empty bubble) was what the operator saw. These drive ``finish_text_response`` itself.
+    """
+
+    _PROSE = "Lane's green and moving. Verdict up top, details in the reply."
+    _SUMMARY = "**Lane is green.** Console SERVING, 82 cards closed today."
+
+    @staticmethod
+    def _agent(monkeypatch, tmp_path, *, enabled=True, payload=None):
+        from agent import end_turn as et
+
+        monkeypatch.setattr(et, "STATS_PATH", tmp_path / "tc.json")
+        import types
+
+        return types.SimpleNamespace(
+            model="m", provider="p", quiet_mode=True, log_prefix="", api_mode="chat_completions",
+            valid_tool_names={"terminal"},
+            _turn_contract_enabled=enabled,
+            _turn_contract_rejections=0, _turn_continuations=0,
+            _turn_continuations_budget=MAX_TURN_CONTINUATIONS,
+            _end_turn_payload=payload,
+            _turn_continuations_budget_at_init=None,
+            _stall_guards=True,
+            _interrupt_requested=False,
+            _session_messages=None,
+            _empty_content_retries=0, _thinking_prefill_retries=0,
+            _dropped_toolcall_retries=0, _mute_post_response=False,
+            _emit_diagnostic_status=lambda *a, **k: None,
+            _has_content_after_think_block=lambda text: bool(text),
+            _extract_reasoning=lambda _m: None,
+            _strip_think_blocks=lambda text: text,
+            _emit_pending_fallback_notice=lambda: None,
+            _clear_status_buffer=lambda: None,
+            _looks_like_codex_intermediate_ack=lambda **k: False,
+            _build_assistant_message=lambda _am, reason: {
+                "role": "assistant", "content": TestFinishTextResponseWiring._PROSE,
+            },
+            _persist_session=lambda *a, **k: None,
+            _flush_messages_to_session_db=lambda *a, **k: None,
+            _emit_interim_assistant_message=lambda *a, **k: None,
+            _cleanup_task_resources=lambda *a, **k: None,
+            _safe_print=lambda *a, **k: None,
+            _vprint=lambda *a, **k: None,
+        )
+
+    @staticmethod
+    def _isolate(monkeypatch):
+        """Cut the collaborators that need a live turn: only the contract block is under test."""
+        import types as _types
+
+        from agent import empty_fallback_restore
+        from agent import turn_final_response as tfr
+        from agent import turn_finalizer as tf
+
+        monkeypatch.setattr(tfr, "_recover_marker_reply", lambda *a, **k: None)
+        monkeypatch.setattr(tfr, "publish_held_final_row", lambda *a, **k: None)
+        monkeypatch.setattr(
+            tfr, "apply_stop_gates",
+            lambda agent, final_msg, **k: _types.SimpleNamespace(
+                continue_turn=False, final_response=k.get("final_response"),
+                pending_verification_response=None,
+                pending_verification_response_previewed=None,
+            ),
+        )
+        monkeypatch.setattr(tf, "apply_llm_output_transform", lambda agent, text, **k: (text, False, None))
+        monkeypatch.setattr(empty_fallback_restore, "note_primary_response_ok", lambda agent: None)
+
+    @staticmethod
+    def _rows():
+        return [
+            {"role": "user", "content": "hey hows the PS5 work going?"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "ok"},
+        ]
+
+    def _run(self, agent, messages):
+        import types as _types
+
+        from agent.turn_final_response import finish_text_response
+
+        return finish_text_response(
+            agent,
+            assistant_message=_types.SimpleNamespace(content=self._PROSE, tool_calls=None),
+            response=None, finish_reason="stop", messages=messages,
+            api_messages=messages, conversation_history=[], api_call_count=3,
+            user_message="hey hows the PS5 work going?", active_system_prompt="s",
+            final_response=self._PROSE, _turn_exit_reason=None,
+            _preflight_compression_blocked=False, codex_ack_continuations=0,
+            truncated_response_parts=[], length_continue_retries=0,
+            _pending_verification_response=None,
+            _pending_verification_response_previewed=None, effective_task_id=None,
+        )
+
+    def test_a_close_delivers_the_summary_not_the_trailing_prose(self, tmp_path, monkeypatch):
+        from agent.end_turn import normalize_payload
+
+        self._isolate(monkeypatch)
+        agent = self._agent(
+            monkeypatch, tmp_path,
+            payload=normalize_payload("done", self._SUMMARY, []),
+        )
+        messages = self._rows()
+
+        verdict = self._run(agent, messages)
+
+        assert verdict.action == "break"
+        assert verdict.final_response == self._SUMMARY
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == self._SUMMARY, (
+            "the summary must be the stored row: that is what every surface renders"
+        )
+        assert self._PROSE not in messages[-1]["content"]
+        assert agent._end_turn_payload is None
+
+    def test_prose_after_tool_use_is_reprompted_under_the_contract(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch)
+        agent = self._agent(monkeypatch, tmp_path, payload=None)
+        messages = self._rows()
+
+        verdict = self._run(agent, messages)
+
+        assert verdict.action == "continue"
+        assert verdict.final_response is None
+        assert messages[-1]["role"] == "user" and messages[-1]["_turn_contract_nudge"] is True
+        assert agent._turn_contract_rejections == 1
+
+    def test_contract_off_still_delivers_the_prose(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch)
+        agent = self._agent(monkeypatch, tmp_path, enabled=False, payload=None)
+        messages = self._rows()
+
+        verdict = self._run(agent, messages)
+
+        assert verdict.action == "break"
+        assert verdict.final_response == self._PROSE
+        assert messages[-1]["content"] == self._PROSE

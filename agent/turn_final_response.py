@@ -388,6 +388,25 @@ def finish_text_response(
         final_response = None
         return _verdict("continue")
 
+    # Turn-close contract (agent/turn_final_response_contract.py, agent/end_turn.py): a turn
+    # that used a tool may not end on prose — the model must call end_turn and its summary IS
+    # the reply. This branch ran inline here until it was extracted to the contract module, and
+    # the CALL was then dropped when the promise gate was retired (7dcaba6c004): every close
+    # was accepted by the tool, recorded on the agent, and never read, so the trailing prose
+    # (or nothing at all) was what the operator saw. Judged after the stop gates and before the
+    # output transform, so a plugin rewrite still reaches the delivered text.
+    from agent.turn_final_response_contract import apply_turn_contract
+    _tc = apply_turn_contract(
+        agent, messages=messages, final_msg=final_msg,
+        tool_calls_this_turn=tool_calls_this_turn(messages),
+    )
+    if _tc.reprompt:
+        agent._session_messages = messages
+        final_response = None
+        return _verdict("continue")
+    if _tc.final_response is not None:
+        final_response = _tc.final_response
+
     # Plugins rewrite the reply BEFORE it is appended and flushed: SQLite treats a non-blank
     # assistant row as settled, so a transform after this write would reach the user but never
     # the stored/replayed transcript (#44239). finalize_turn reads the recorded outcome; like
