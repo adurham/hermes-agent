@@ -340,3 +340,45 @@ describe('VersionHero bundle banners', () => {
     expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
   })
 })
+
+// A source install's check speaks about the CHECKOUT: an in-place `hermes update`
+// (or an update handoff that never rebuilt) leaves the loaded app build behind a
+// current checkout, and the panel must not call that "latest".
+describe('a stale app build', () => {
+  const current = {
+    supported: true,
+    behind: 0,
+    updateAvailable: false,
+    currentSha: 'a'.repeat(40),
+    targetSha: 'a'.repeat(40)
+  }
+
+  it('is not reported as latest while the checkout is current', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      bundleOutOfSync: true,
+      checking: false,
+      status: current,
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(true)
+    expect(view.line).toBe(en.updates.bundleOutOfSync)
+    expect(view.tone).toBe('available')
+  })
+
+  it('leaves the backend row alone', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      bundleOutOfSync: true,
+      checking: false,
+      status: current,
+      target: 'backend',
+      u: en.updates
+    })
+
+    expect(view.line).toBe(en.updates.latestBodyBackend)
+    expect(view.updateAvailable).toBe(false)
+  })
+})

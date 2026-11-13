@@ -66,6 +66,12 @@ interface UpdateStatusInput {
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   u: Translations['updates']
+  /**
+   * The loaded app build is behind this install's checkout. A source check speaks about the
+   * CHECKOUT, so without this the panel says "latest" while the app itself is commits behind —
+   * exactly what an in-place `hermes update` (no rebuild) leaves behind.
+   */
+  bundleOutOfSync?: boolean
   /** Names the pinned release when a source install is current on stable. */
   latestRelease?: (version: string) => string
   /** Names a move back to an older stable release the checkout already contains. */
@@ -107,6 +113,7 @@ function availableLine(
 
 function ordinaryUpdateStatus({
   apply,
+  bundleOutOfSync,
   checking,
   held,
   latestRelease,
@@ -118,7 +125,8 @@ function ordinaryUpdateStatus({
   const behind = status?.behind ?? 0
   // behind is null when the exact count is unknowable (shallow clone): the
   // backend flags that case via updateAvailable instead of a number.
-  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable)
+  const staleBuild = Boolean(bundleOutOfSync) && target === 'client'
+  const updateAvailable = behind > 0 || Boolean(status?.updateAvailable) || staleBuild
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
@@ -144,7 +152,9 @@ function ordinaryUpdateStatus({
   if (updateAvailable) {
     return {
       applying,
-      line: availableLine(status, behind, u, rollback),
+      line: staleBuild && behind <= 0 && !status?.updateAvailable
+        ? u.bundleOutOfSync
+        : availableLine(status, behind, u, rollback),
       supported,
       tone: 'available',
       updateAvailable
@@ -340,15 +350,17 @@ export function UpdateStatusCard({
     return <></>
   }
 
-  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} />
+  return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} bundleOutOfSync={target === 'client' && Boolean(version?.bundleOutOfSync)} />
 }
 
 function UpdateStatusCardBody({
   showReleaseNotes,
-  target
+  target,
+  bundleOutOfSync
 }: {
   showReleaseNotes: boolean
   target: UpdateTarget
+  bundleOutOfSync: boolean
 }): ReactElement {
   const { t } = useI18n()
   const u = t.updates
@@ -360,6 +372,7 @@ function UpdateStatusCardBody({
 
   const view = deriveUpdateStatus({
     apply,
+    bundleOutOfSync,
     checking,
     held: t.settings.about.channel.heldBody,
     latestRelease: t.settings.about.channel.latestRelease,
