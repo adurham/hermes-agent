@@ -33,6 +33,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 | **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
+| **Claude Code** | — (your Claude login; `claude` on PATH) | ✔ | ✔ (page summaries) | Uses your Claude seat; queries and URLs go only to Anthropic |
 
 Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
 
@@ -398,6 +399,27 @@ Requirements and scope:
 - **Search only**: the built-in covers search, not extraction. Pair it with Firecrawl (or another extract-capable backend) through `web.extract_backend` when you also need `web_extract`.
 
 **One tool either way.** Selecting this backend swaps the client-side `web_search` function for the built-in 1:1 — it is not an additive grant. A session whose toolset has no `web_search` never gets server-side search injected.
+
+### Claude Code (Claude's own WebSearch / WebFetch) {#claude-code}
+
+For installs where Anthropic is the only vendor allowed to see queries and URLs. Each call runs one short-lived `claude -p` child restricted to exactly one built-in tool (`WebSearch` for search, `WebFetch` for extract), using your existing Claude login — no API key.
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  backend: "claude-code"        # or search_backend / extract_backend
+  claude_code:
+    model: haiku                # helper-child model alias (default haiku)
+    timeout_s: 60               # per call (extract gets 2x)
+    env: {}                     # extra env for the child, e.g. proxy workarounds
+```
+
+- **Explicit only.** Having `claude` on PATH never selects this backend; a `web.*backend` key must name `claude-code`.
+- **Search** returns the WebSearch link list (title and URL) plus Claude's synthesized `summary` of the results, not per-link snippets.
+- **Extract returns a summary of each page**, not the raw page: WebFetch summarizes with a small model. Use a terminal fetch when you need the verbatim page.
+- **The child is locked down** (one tool, no MCP, no settings sources, empty temp working directory, no API keys, telemetry off, query/URLs on stdin) because it reads untrusted web text.
+- **One child at a time** per machine, killed as a process group on timeout. An "Unable to verify organization" failure (often a broken proxy auto-config) opens a 5-minute circuit breaker instead of retrying against your login.
+- Each call costs a Claude request against your seat and takes a few seconds.
 
 ---
 
