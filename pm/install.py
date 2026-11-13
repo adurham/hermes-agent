@@ -197,13 +197,23 @@ def lazy_installs_allowed() -> bool:
         return False
 
 
-def _is_feature_blocked(name: str) -> bool:
-    """Policy: does ``security.blocked_features`` veto lazily installing *name*?
+_PLATFORM_FEATURE_PREFIX = "platform."
+
+
+def _bare_feature(name: str) -> str:
+    """A platform adapter requests its bare extra (``telegram``) while config commonly names it
+    ``platform.telegram``: both spellings are the same feature."""
+    return name.strip().removeprefix(_PLATFORM_FEATURE_PREFIX)
+
+
+def _blocking_entry(name: str) -> str | None:
+    """The ``security.blocked_features`` entry that vetoes lazily installing *name*, or None.
 
     Narrower than :func:`lazy_installs_allowed` (an all-or-nothing switch):
     the list names individual pm packages / extras (e.g. ``"tts-premium"``)
     a user never wants pulled in on demand, while everything else still
-    lazy-installs. Applies to the lazy path only — an explicit
+    lazy-installs. A ``platform.<name>`` entry and a bare ``<name>`` match
+    each other. Applies to the lazy path only — an explicit
     ``hermes pm install`` is the user's deliberate override. Fails open
     (not blocked) when the config cannot be read, like the original
     tools/lazy_deps.py check.
@@ -211,20 +221,29 @@ def _is_feature_blocked(name: str) -> bool:
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
         blocked = cfg_get(load_config_readonly(), "security", "blocked_features", default=None) or []
-    except Exception:
-        return False
+    except Exception:  # health: allow BLE001 -- fails open as documented: an unreadable config blocks nothing
+        return None
     if isinstance(blocked, str):
         blocked = [blocked]
-    return isinstance(blocked, (list, tuple, set)) and name in blocked
+    if not isinstance(blocked, (list, tuple, set)):
+        return None
+    wanted = _bare_feature(name)
+    return next((str(entry) for entry in blocked if _bare_feature(str(entry)) == wanted), None)
+
+
+def _is_feature_blocked(name: str) -> bool:
+    """Policy: does ``security.blocked_features`` veto lazily installing *name*? (``_blocking_entry``)"""
+    return _blocking_entry(name) is not None
 
 
 def _refuse_blocked(name: str) -> InstallError:
     from pm import receipt
 
+    entry = _blocking_entry(name) or name
     error = InstallError(
         name,
         f"feature {name!r} is blocked by security.blocked_features in config.yaml",
-        f"remove {name!r} from security.blocked_features or run `hermes pm install`",
+        f"remove {entry!r} from security.blocked_features or run `hermes pm install`",
     )
     receipt.record_refusal("blocked-feature", str(error))
     return error
