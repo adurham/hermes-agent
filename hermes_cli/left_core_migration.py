@@ -1032,12 +1032,17 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     (it stays inert on a core that still ships the feature) still needs it. Completion is marked
     under ``_left_core_scoped`` so a later run never undoes a choice the user made since
     (``hermes tools``). Raises when config.yaml cannot be read or written."""
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.config import atomic_config_write, require_readable_config_before_write
     from hermes_cli.config_backend import config_exists
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
     created = not config_exists(path)
-    config = read_user_config_raw(path)
+    # Fail closed. A bare raw read maps an unreadable or unparseable config to {}, and the
+    # write below would then replace the user's whole config with this function's
+    # bookkeeping keys alone (that collapse-to-empty destroyed a full config on a
+    # v0.23 update). require_readable_config_before_write refuses instead; _pending
+    # reports the row and skips it.
+    config = require_readable_config_before_write(path)
     installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
     if _scope_kept(config, feature) and not installed:
         return
