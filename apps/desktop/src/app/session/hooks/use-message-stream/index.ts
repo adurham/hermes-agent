@@ -1181,6 +1181,13 @@ export function useMessageStream({
               existing.interim || keepFailedPartialText ? existing.parts : currentResponseParts(existing.parts)
             ).trim()
 
+            // Every text part in the bubble, not just the suffix after its last tool call. A
+            // settled close keeps its summary ABOVE the closing `end_turn` chip, so the suffix
+            // is empty there and the suffix-only comparison below cannot see the reply that is
+            // already painted — a second completion of the same turn then appends it again
+            // (the transcript read as the answer twice, second copy under the tool cards).
+            const existingBubbleText = partsText(existing.parts).trim()
+
             // The last assistant row is a sealed interim (a tool-call turn or a
             // verify-on-stop candidate — `message.interim` fires for BOTH, see
             // tui_gateway `_load_interim_assistant_messages`). When the final
@@ -1229,7 +1236,7 @@ export function useMessageStream({
               existing.pending ||
               failureRepeatsErrorCard ||
               settlesPersistedRow ||
-              (!interimBoundaryPending && finalText && existingText === finalText)
+              (finalText && (existingText === finalText || existingBubbleText === finalText))
             ) {
               nextMessages = settleAt(index)
             } else if (

@@ -91,6 +91,26 @@ describe('useMessageStream turn-close replacement settlement', () => {
     expect(chatMessageText(messages.at(-1)!)).not.toContain('What I changed')
   })
 
+  it('does not paint a second bubble when the same close is delivered twice', async () => {
+    mountStream()
+    await start()
+
+    // The shape that duplicated in the wild: the close's summary settles ABOVE its own
+    // `end_turn` chip, so the bubble's suffix after the last tool call is empty. A repeat
+    // frame of the same turn (a re-delivered message.complete) compared only that suffix,
+    // saw nothing, and appended the answer a second time.
+    await toolStart('t1', 'terminal')
+    await toolComplete('t1', 'terminal')
+    await delta(DRAFT)
+    await toolStart('t2', 'end_turn')
+    await toolComplete('t2', 'end_turn')
+    await interim(DRAFT)
+    await completeReplaced(SUMMARY)
+    await completeReplaced(SUMMARY)
+
+    expect(assistantTexts()).toEqual([SUMMARY])
+  })
+
   it('never lets a replaced completion overwrite an already-settled reply', async () => {
     mountStream()
     await start()
