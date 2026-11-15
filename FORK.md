@@ -23623,27 +23623,22 @@ main-process `webContents.debugger` CPU profile rather than guessed at.
 
 ## 2026-11-15 (desktop) — a turn-contract close painted the same reply twice
 
-The desktop had no handling for the wire's `final_content_replaced`. The gateway and the Ink
-TUI both carry it (`agent/end_turn.py::note_final_content_replaced` → `final_content_replaced`
-on the local viewer's `message.complete`; `ui-tui/src/app/turnController.ts` replaces the last
-segment with the summary), but the renderer dropped the field on the floor: the settle branch
-only knew `response_previewed` / `response_transformed`, so the summary appended as a second
-bubble beside the streamed draft — the operator read the same report twice, draft above the
-`End Turn` chip and delivered answer below it.
+**Symptom (owner, screenshot of the running app).** *"can we do something about the extra/duplicated responses at the end of a turn in hermes-agent?"* The transcript showed one report twice: the streamed draft with four tool chips under it in the prose block, then the `End Turn 6ms` chip, then the same report again as a `Summary Paragraph`. Every close that went through `end_turn` did this, so it read as a systematic double-answer rather than a one-off.
 
-Two defects, both in `apps/desktop`:
+**Cause.** Two defects in `apps/desktop`, both about a field the rest of the stack already carried. The gateway sets `final_content_replaced` on the local viewer's `message.complete` (`agent/end_turn.py::note_final_content_replaced` → `gateway/run_turn_runner.py` viewer_meta → `tui_gateway/prompt_turn.py`), and the Ink TUI honours it (`ui-tui/src/app/turnController.ts` replaces the last segment with the summary). The renderer never read it:
 
-1. `message.complete` never forwarded `final_content_replaced` into `completeAssistantMessage`,
-   and the settle condition didn't consult it, so a close with no prefix overlap with its
-   draft appended instead of settling.
-2. Even when it settled, `mergeFinalAssistantText` keeps every text part before the last tool
-   call as confirmed narration — and the closing `end_turn` chip is a tool call *below* the
-   draft, so the merge preserved the draft under the chip and hung the summary off the end.
-   `replaceDraftResponseText` (response-parts.ts) replaces the reply's last contiguous text
-   run instead, keeping tools, reasoning and earlier sealed narration in place.
+1. `gateway-event/message-stream.ts` passed only `response_transformed` into `completeAssistantMessage`, and the settle branch in `use-message-stream/index.ts` only knew `response_previewed || responseTransformed`. A close whose summary shares no prefix with its draft therefore fell through every heuristic and appended a second bubble.
+2. Settling alone would not have been enough. `mergeFinalAssistantText` keeps every text part before the last tool call as confirmed narration — and the closing `end_turn` chip *is* a tool call, below the draft — so the merge preserved the draft under the chip and hung the summary off the end of the same bubble.
 
-`turn-close-replacement.test.tsx` reproduces it: stashed against the previous tree the first
-case fails with the draft and the summary as two bubbles; with the fix it is one bubble whose
-text is the summary, tool parts intact, and the second case still refuses to overwrite an
-already-settled reply (the interimBoundaryPending rule survives). Renderer suite 407/407,
-`tsc --build tsconfig.json` clean.
+**Fix.**
+
+* `apps/desktop/src/lib/chat-messages/types.ts` — `GatewayEventPayload.final_content_replaced`, typed off the generated contract (the field was already in `gateway-contract.generated.ts`; nothing to regenerate).
+* `gateway-event/message-stream.ts` + `gateway-event/types.ts` — forward it as an 11th `completeAssistantMessage` argument.
+* `use-message-stream/index.ts` — the settle branch now gates on `interimBoundaryPending && (responsePreviewed || responseTransformed || finalContentReplaced)`, so a replaced final settles onto its draft bubble and still refuses to overwrite an already-settled reply (the boundary rule that keeps `interim('old') → message.start → complete({text:'new'})` from destroying `old` is untouched).
+* `use-message-stream/response-parts.ts::replaceDraftResponseText` — when the close replaced the draft, replace the reply's **last contiguous run of text parts** instead of merging: tools, reasoning and earlier sealed narration keep their places, the draft goes.
+
+**Evidence.** `turn-close-replacement.test.tsx` reproduces the screenshot's event shape (tool round → streamed draft → `tool.start/tool.complete` for `end_turn` → `message.interim` → `complete` with `final_content_replaced`). Stashed against the previous tree the first case fails exactly as the owner saw it — two assistant bubbles, the draft and the summary; with the fix it is one bubble whose text is the summary, tool parts intact. Second case asserts a late replaced final still appends rather than overwriting a settled reply. Renderer suite 407/407 across 69 files in `use-message-stream`, `tsc --build tsconfig.json` and eslint clean.
+
+**Deploy.** Both halves shipped on `efbc4e7c3e2`. Front: rebuilt on the Mac and installed — `/Applications/Hermes.app/Contents/Resources/install-stamp.json` names `efbc4e7c3e2` (previous copy was `6895a0ce0f0c`, two days stale), and the installed `app.asar` hashes identical to `apps/desktop/release/mac-arm64` (`689225ed1d47b0…`), so the copy in `/Applications` is the fix rather than a leftover. Back: `hermes-desktop-serve` restarted on the same sha (14:10:03, cwd `/home/adam.durham/repos/hermes-agent`), which also cleared the 503 `Restart required` guard that the pull had armed against the still-old process.
+
+**Operational note for the next desktop deploy.** `hermes desktop --build-only` never touches `/Applications` — the install step (`_installed_desktop_launch_target` → `_refresh_installed_desktop_apps`) only runs on the launch path, and it skips a bundle that is running. And the running bundle **ignores SIGTERM**: `pkill -f /Applications/Hermes.app/Contents/MacOS/Hermes` returns 0 without stopping it, so the install reports `⚠ /Applications/Hermes.app is running and was not refreshed` and the child launch dies on the single-instance lock while the window keeps the old build. The sequence that works is `pkill -9 -f …`, wait for the pid to vanish, then `hermes desktop` (which finds the build current, installs, and launches).
