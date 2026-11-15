@@ -246,6 +246,12 @@ export type GatewayEventPayload = {
   // message.complete — a transform_llm_output hook rewrote the final text after streaming;
   // it authoritatively replaces the current turn's streamed text even without a prefix match.
   response_transformed?: MessageCompletePayload['response_transformed']
+  // message.complete — the turn-close contract (end_turn) wrote its summary over the final
+  // message's streamed draft, and only the summary is stored. The draft bubble takes this text
+  // instead of keeping the draft AND adding the reply (agent/end_turn.py). Unlike
+  // `response_transformed` the draft is discarded, not merged: the two usually restate each
+  // other, so a merge paints the same report twice.
+  final_content_replaced?: MessageCompletePayload['final_content_replaced']
   // message.complete — `text` is a response this turn already delivered: it adds no text.
   response_reused?: MessageCompletePayload['response_reused']
   persisted_turn?: PersistedTurn | null

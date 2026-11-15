@@ -54,7 +54,7 @@ import { terminalCompletionState } from './completion-terminal-state'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { bindReceiptUserRows } from './receipt-user-rows'
-import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { currentResponseParts, mergeCurrentResponseText, replaceDraftResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { streamSessionPaneVisibility, subscribeStreamPaneVisibility } from './session-pane-visibility'
 import {
@@ -988,7 +988,8 @@ export function useMessageStream({
       responseTransformed?: boolean,
       status?: string,
       responseReused?: boolean,
-      failureReason?: string
+      failureReason?: string,
+      finalContentReplaced?: boolean
     ) => {
       let shouldHydrate = false
 
@@ -1037,6 +1038,13 @@ export function useMessageStream({
           }
 
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+
+          // The turn-close contract's summary REPLACED this message's streamed draft. Merging
+          // would keep the draft above the closing tool chip and stack the summary under it —
+          // one reply painted twice (the draft usually restates the summary). Replace instead.
+          if (finalContentReplaced) {
+            return replaceDraftResponseText(parts, visibleFinalText, occurredAt)
+          }
 
           // Partial terminal errors carry the whole retained assistant buffer,
           // not just the response after the last tool (unlike healthy finals).
@@ -1225,7 +1233,8 @@ export function useMessageStream({
             ) {
               nextMessages = settleAt(index)
             } else if (
-              (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
+              (interimBoundaryPending &&
+                (responsePreviewed || responseTransformed || finalContentReplaced)) ||
               finalContinuesInterim
             ) {
               // Settle the interim in place instead of creating a duplicate —

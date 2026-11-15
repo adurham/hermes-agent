@@ -23620,3 +23620,30 @@ with the window in front). Fable's read: that half is JS/DOM work, not the arcs'
 per-event writes that bypass the text queue (tool progress/stdout, status, usage) committing
 into the unvirtualised newest turn are the next suspects, and should be attributed with a
 main-process `webContents.debugger` CPU profile rather than guessed at.
+
+## 2026-11-15 (desktop) — a turn-contract close painted the same reply twice
+
+The desktop had no handling for the wire's `final_content_replaced`. The gateway and the Ink
+TUI both carry it (`agent/end_turn.py::note_final_content_replaced` → `final_content_replaced`
+on the local viewer's `message.complete`; `ui-tui/src/app/turnController.ts` replaces the last
+segment with the summary), but the renderer dropped the field on the floor: the settle branch
+only knew `response_previewed` / `response_transformed`, so the summary appended as a second
+bubble beside the streamed draft — the operator read the same report twice, draft above the
+`End Turn` chip and delivered answer below it.
+
+Two defects, both in `apps/desktop`:
+
+1. `message.complete` never forwarded `final_content_replaced` into `completeAssistantMessage`,
+   and the settle condition didn't consult it, so a close with no prefix overlap with its
+   draft appended instead of settling.
+2. Even when it settled, `mergeFinalAssistantText` keeps every text part before the last tool
+   call as confirmed narration — and the closing `end_turn` chip is a tool call *below* the
+   draft, so the merge preserved the draft under the chip and hung the summary off the end.
+   `replaceDraftResponseText` (response-parts.ts) replaces the reply's last contiguous text
+   run instead, keeping tools, reasoning and earlier sealed narration in place.
+
+`turn-close-replacement.test.tsx` reproduces it: stashed against the previous tree the first
+case fails with the draft and the summary as two bubbles; with the fix it is one bubble whose
+text is the summary, tool parts intact, and the second case still refuses to overwrite an
+already-settled reply (the interimBoundaryPending rule survives). Renderer suite 407/407,
+`tsc --build tsconfig.json` clean.

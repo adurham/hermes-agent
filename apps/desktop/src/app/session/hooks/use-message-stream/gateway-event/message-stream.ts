@@ -435,7 +435,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
       payload?.response_reused === true,
-      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined
+      typeof payload?.failure_reason === 'string' ? payload.failure_reason : undefined,
+      payload?.final_content_replaced === true
     )
 
     if (payload?.status === 'complete') {
