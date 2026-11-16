@@ -23644,3 +23644,32 @@ main-process `webContents.debugger` CPU profile rather than guessed at.
 **Operational note for the next desktop deploy.** `hermes desktop --build-only` never touches `/Applications` — the install step (`_installed_desktop_launch_target` → `_refresh_installed_desktop_apps`) only runs on the launch path, and it skips a bundle that is running. And the running bundle **ignores SIGTERM**: `pkill -f /Applications/Hermes.app/Contents/MacOS/Hermes` returns 0 without stopping it, so the install reports `⚠ /Applications/Hermes.app is running and was not refreshed` and the child launch dies on the single-instance lock while the window keeps the old build. The sequence that works is `pkill -9 -f …`, wait for the pid to vanish, then `hermes desktop` (which finds the build current, installs, and launches).
 
 **Follow-up (15:37) — the same turn could still paint twice.** Owner, looking at a *different* session: the reply appeared once, then again under a fresh `Thought`/`Used 2 tools` header. The DB holds one row for it (`messages` 96115, 794 chars; nothing after it, no second prompt accepted in `gui.log`), so the second copy was paint-side. Cause: the settle test for "this exact reply is already on screen" compared `partsText(currentResponseParts(bubble))` — the text AFTER the bubble's last tool call — and a settled close keeps its summary ABOVE its own `end_turn` chip, so that suffix is empty. A repeat `message.complete` for the turn (or any second settle of it) therefore saw no text, matched no branch, and appended the summary again. Fix: compare the whole bubble's text (`existingBubbleText`), not just the suffix, and drop the `!interimBoundaryPending` guard from the exact-equality clause — the last-user boundary already scopes it to this turn, so an identical reply from an earlier turn cannot match. `turn-close-replacement.test.tsx` +1: replaying the same close frame twice must leave one bubble; stashed against the previous tree it fails with the reply twice.
+
+## 2026-11-16 (desktop) — session status dots: "done" drifted to the running blue, and three states were hollow rings
+
+**Symptom (owner, two screenshots of the pane tabs).** The tab dots were all the same filled blue. Owner's model: amber = needs me, blue = working, green = done. *"Lab Status Check-in — that one finished but isn't green"*, and *"I'm not a fan of the blue hollow … it should be a different solid color"*; after the first fix, *"I thought I said no hollow ones"* — the background and draft dots were still rings.
+
+**Cause.** All in `apps/desktop`, the one `SessionStatusDot` primitive that the sidebar rows, pane tabs and session switcher share (`app/chat/session-status-dot.tsx`, state resolved by `$sessionDotStateById`):
+
+1. **Done was not a fixed color.** The finished dot paints `--ui-success`, and `themes/context.tsx` set it to `harmonize('#10b981', midground, 0.25)` — emerald rotated 25% of the way toward the theme accent. Under a blue accent that lands teal-blue, one shade from the running dot (`--ui-accent`), so "finished" read as a second "running". That is the code path; the owner's finished tab was not itself inspected in the screenshot (both dots in the first screenshot measured identical `rgb(88,130,246)`, the accent, and `state.db` showed both sessions with activity seconds earlier, so those two really were running).
+2. **Hollow rings.** `stalled` (running, silent past the watchdog window) was a 1px border in the accent, and `background` / `draft` were 1px borders in grey. Fill/hollow was the design's second axis, which the owner rejected outright.
+
+**Fix.** `session-status-dot.tsx` + `themes/context.tsx`; every dot is solid, color is the only axis:
+
+| State | Dot |
+|---|---|
+| needs-input | amber, solid (unchanged) |
+| working | theme accent, solid (unchanged) |
+| stalled | **purple-500**, solid (was hollow accent) |
+| unread / finished | **`--ui-success` = `#22c55e`** on every theme (was harmonized toward the accent); `harmonize` import dropped from `themes/context.tsx` (the helper stays in `themes/color.ts`) |
+| background / delegating | **cyan-500**, solid (was hollow grey) |
+| draft | **solid `--ui-text-quaternary`**, full size (was hollow) |
+| idle | unchanged: the small project-color dot, else faint grey |
+
+`sessionDotClassName` feeds the sidebar status filter and the profile switcher, so those pick the new colors up with no further change. `$sessionDotStateById` priority is untouched; this is paint only.
+
+**Evidence.** `vitest run src/app/chat/sidebar src/themes` from `.build/webapp-workspace/apps/desktop`: 68 files / 570 tests pass, both before and after the second commit; no test pinned the old class names. The full `tsc --noEmit` run reports exactly one error — `use-session-actions.test.tsx` cannot resolve `tests/fixtures/session-resume-active-turn.json`, a fixture the webapp workspace does not mirror — in neither touched file. eslint clean through the pre-commit hook. Not verified: a screenshot of the finished-green or stalled-purple dot on the owner's screen.
+
+**Deploy.** Two commits, both pushed to `origin/main` and installed on the Mac: `fbbcd22c76a` (green + purple) and `08381d498b7` (all-solid, cyan, solid draft). `/Applications/Hermes.app/Contents/Resources/install-stamp.json` names `08381d498b79c364…`, `builtAt 2026-11-16T06:12:21Z`, with the new app running. The workstation backend `hermes-desktop-serve` was **not** restarted: the pull armed its `503 Restart required` guard (the model picker refuses until the process reloads), and restarting mid-session drops the chat; this change is renderer-only, so the old backend serves it correctly.
+
+**Operational note.** Two ssh traps on the Mac deploy. (1) A foreground `ssh macbook-jump '… nohup … &'` held the connection open until the 60s tool timeout even though the job had started; launch with `ssh -n -f host 'nohup bash -lc "…" > /tmp/hermes-desktop-redeploy.log 2>&1 < /dev/null &'`. (2) The stamp is rewritten partway through the install, so a read taken mid-copy returns nothing — re-read it after a few seconds rather than concluding the deploy failed. Both on top of the existing rule: `pkill -9` the running bundle (it ignores SIGTERM) before `hermes desktop`, and verify with `install-stamp.json`, not the exit code.
