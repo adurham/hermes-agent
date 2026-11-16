@@ -105,7 +105,8 @@ credential the listener's other routes accept (a native ticket, a sign-in sessio
 token) gets only `gateway_running`, `gateway_state`, `overall`, `auth_required`, `auth_providers`
 and `auth_flows`. Version, host paths, the gateway PID, the install id and profile names need the
 credential. Native clients send a ticket on every request to this listener, so they read the full
-body as before.
+body as before. `GET /api/health` there likewise answers such a caller `ok` and `auth_required`
+only, without `version`, `displayVersion` or `commit`.
 
 ## Deliberately limited compatibility
 

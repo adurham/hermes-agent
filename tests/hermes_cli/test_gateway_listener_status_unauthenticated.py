@@ -163,3 +163,34 @@ def test_dashboard_surface_body_is_unchanged(gateway_listener, monkeypatch):
     body = gateway_listener.get("/api/status").json()
     for key in ("version", "install_id", "profiles", "hermes_home", "config_path", "gateway_pid"):
         assert key in body, key
+    # The standalone dashboard / serve keeps its public health body (unchanged).
+    assert {"version", "displayVersion", "commit"} <= set(gateway_listener.get("/api/health").json())
+
+
+def test_uncredentialed_health_is_liveness_only(gateway_listener):
+    response = gateway_listener.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "auth_required": False}
+    forged = gateway_listener.get("/api/health", headers={"X-Hermes-Session-Token": "forged"})
+    assert forged.json() == {"ok": True, "auth_required": False}
+
+
+def test_credentialed_health_keeps_the_version(gateway_listener):
+    """Desktop's ``resolveGatewayVersion`` reads ``displayVersion`` here with its native ticket."""
+    body = gateway_listener.get("/api/health", headers={TICKET: "valid-ticket"}).json()
+    assert body["ok"] is True and {"version", "displayVersion", "commit"} <= set(body)
+
+
+def test_gated_listener_with_a_verified_session_keeps_the_health_version(gateway_listener, monkeypatch):
+    from hermes_cli.dashboard_auth import middleware
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+    monkeypatch.setattr(middleware, "peek_session", lambda request: types.SimpleNamespace(user_id="u"))
+    assert {"version", "displayVersion", "commit"} <= set(gateway_listener.get("/api/health").json())
+
+
+def test_a_session_check_fault_leaves_health_live_not_a_500(gateway_listener, monkeypatch):
+    """The anonymous liveness probe goes through the session check since this listener trims it."""
+    client = _session_check_fault(monkeypatch)
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "auth_required": True}

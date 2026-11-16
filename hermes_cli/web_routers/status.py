@@ -117,17 +117,21 @@ async def get_ssh_ownership(request: Request):
 
 
 @router.get("/api/health")
-async def get_health():
+async def get_health(request: Request):
     """Lightweight process liveness for desktop/backend readiness probes.
 
     ``commit`` is the code this process BOOTED from (``get_version_info`` is cached at
     ``web_server`` import): Desktop refuses to attach to a backend whose commit differs from
-    its checkout, so a serve that outlived ``hermes update`` is never re-adopted.
+    its checkout, so a serve that outlived ``hermes update`` is never re-adopted. On the
+    gateway's private listener a caller without a credential gets liveness only, as on
+    ``/api/status``; Desktop's ticketed version read there keeps the full body.
     """
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if await _gateway_caller_uncredentialed(request):
+        return {"ok": True, "auth_required": auth_required}
     info = get_version_info()
     return {"ok": True, "version": info.base_version, "displayVersion": info.display_version,
-            "commit": info.commit,
-            "auth_required": bool(getattr(app.state, "auth_required", False))}
+            "commit": info.commit, "auth_required": auth_required}
 
 
 @router.get("/api/host/identity")
@@ -568,6 +572,13 @@ async def _status_unauthenticated_keys(request: Request) -> Optional[frozenset]:
     else:
         return None
     return None if await _status_caller_authenticated(request) else allowed
+
+
+async def _gateway_caller_uncredentialed(request: Optional[Request]) -> bool:
+    """True for a request on the gateway's private listener that carries no credential."""
+    from hermes_cli.web_server_surface import surface
+    return request is not None and surface(request.app.state) == "gateway" \
+        and not await _status_caller_authenticated(request)
 
 
 @router.get("/api/status")
