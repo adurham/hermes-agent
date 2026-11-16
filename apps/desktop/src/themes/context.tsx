@@ -31,7 +31,7 @@ import {
 } from './backend-sync'
 import { writeBootPalette } from './boot-palette'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
-import { harmonize, normalizeHex, readableInk } from './color'
+import { normalizeHex, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import { $pendingModeApply } from './request'
 import { retintTheme } from './retint'
@@ -376,11 +376,10 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     '--dt-destructive-foreground': c.destructiveForeground,
     '--dt-sidebar-border': c.sidebarBorder ?? c.border,
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
-    // Semantic success, bent toward the accent so it settles into the palette
-    // instead of clashing with it. A green accent barely moves it (see
-    // `harmonize`); a blue one turns the sidebar's finished dots teal rather
-    // than leaving eight emerald spots fighting the theme.
-    '--ui-success': harmonize('#10b981', midground, 0.25),
+    // Semantic success: a fixed green on every theme. It used to be rotated
+    // toward the accent (`harmonize`), which turned the finished dot teal-blue
+    // under a blue accent and made "done" read as a second "running".
+    '--ui-success': '#22c55e',
     '--dt-font-sans': resolveChatFontFamily(chatFontFamily, typo.fontSans),
     '--dt-font-mono': typo.fontMono,
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'

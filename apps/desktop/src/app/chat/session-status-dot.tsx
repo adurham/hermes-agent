@@ -20,7 +20,7 @@ type DotVariant = {
 // Shared base for every active dot; idle is smaller and uses its own class.
 const DOT_BASE = 'size-1.5 rounded-full'
 
-// Three colors and one fill/hollow axis, none of it moving. Motion on a 6px
+// A handful of colors and one fill/hollow axis, none of it moving. Motion on a 6px
 // circle can only say "something is happening" — which the row's arc already
 // says, better — while costing a repaint per frame on every row at once. What
 // the dot is for is telling states APART, and that is a job for color and fill:
@@ -41,12 +41,12 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     className: `${DOT_BASE} bg-(--ui-accent)`,
     role: 'status'
   },
-  // Hollow accent — still authoritatively running, but nothing has arrived for
-  // the watchdog window. Same color as working because it IS working; hollow
-  // because nothing is coming out of it right now.
+  // Solid purple — still authoritatively running, but nothing has arrived for
+  // the watchdog window. A distinct solid color rather than a hollow accent
+  // ring: a hollow blue read as unfinished UI next to the filled dots.
   stalled: {
     ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} border border-(--ui-accent)`,
+    className: `${DOT_BASE} bg-purple-500`,
     role: 'status',
     title: r => r.sessionRunning
   },
@@ -59,10 +59,9 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.backgroundRunning
   },
-  // Emerald — the turn finished while the user was looking elsewhere. The
-  // color is theme-derived (`--ui-success`, a success green rotated toward the
-  // accent) so eight finished dots can't sit in the sidebar fighting a palette
-  // they don't belong to. Under a green accent it stays emerald.
+  // Green — the turn finished while the user was looking elsewhere. A fixed
+  // `--ui-success` on every theme, so "done" never drifts toward the accent
+  // blue that means "running".
   unread: {
     ariaLabel: r => r.finishedUnread,
     className: `${DOT_BASE} bg-(--ui-success)`,
