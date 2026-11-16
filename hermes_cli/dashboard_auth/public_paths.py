@@ -11,7 +11,9 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # gateway config, platform discovery, MCP setup and cold plugin imports.
     "/api/health",
     # Portal wildcard liveness probe (``docs/agent-dashboard-public-url-contract.md``,
-    # NAS side): version, gateway state, session count, auth-gate shape. No secrets.
+    # NAS side): version, gateway state, session count, auth-gate shape. No secrets. The gateway's
+    # private listener and a signed-out Webapp answer an uncredentialed caller an allowlisted
+    # subset (``web_routers/status.py``).
     "/api/status",
     # Read-only config-defaults / schema feeds for the SPA's Config page.
     "/api/config/defaults",

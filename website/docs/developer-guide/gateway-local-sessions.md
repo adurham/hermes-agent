@@ -100,6 +100,13 @@ one-use launch links are then off. `dashboard.public_url` never applies to the W
 gateway's private listener for native clients reads it as main does, so hosted sign-in on that
 listener keeps working.
 
+`GET /api/status` stays public on the gateway's private listener, but a caller that sends no
+credential the listener's other routes accept (a native ticket, a sign-in session or the session
+token) gets only `gateway_running`, `gateway_state`, `overall`, `auth_required`, `auth_providers`
+and `auth_flows`. Version, host paths, the gateway PID, the install id and profile names need the
+credential. Native clients send a ticket on every request to this listener, so they read the full
+body as before.
+
 ## Deliberately limited compatibility
 
 - `source` accepts `cli` (default), `tui`, `gui`, `acp`, `tool` and `oneshot`

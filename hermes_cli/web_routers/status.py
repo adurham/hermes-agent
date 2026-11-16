@@ -523,22 +523,51 @@ _WEBAPP_SIGNED_OUT_STATUS_KEYS = frozenset({
     "auth_required", "auth_providers", "auth_flows"})
 
 
-async def _webapp_caller_signed_out(request: Request) -> bool:
-    """True when this request reached the gateway's Webapp behind its sign-in gate with no
-    session the gate would accept. ``/api/status`` is public, so the gate never verified one."""
+#: What the gateway's private listener for native clients answers a caller that sent no credential
+#: its other routes accept: liveness and the auth shape, nothing else. Native clients send a ticket
+#: on every request (Desktop's ``fetchJson``), so they get the full body; any other local process
+#: (any OS user on the host) gets no version, host paths, PID, install id or profile names.
+_GATEWAY_UNAUTHENTICATED_STATUS_KEYS = frozenset({
+    "gateway_running", "gateway_state", "overall", "auth_required", "auth_providers", "auth_flows"})
+
+
+async def _status_caller_authenticated(request: Request) -> bool:
+    """True when this request carries a credential the listener's gated routes would accept (a
+    native ticket, a hosted grant, a sign-in session, or the session token). Public paths skip
+    both auth gates, so nothing has verified one yet. A fault in the session check reads as no
+    session: a public liveness probe answers the trimmed body, never a 500."""
     from hermes_cli.web_server import _require_token
-    from hermes_cli.web_server_surface import surface
-    if request is None or surface(request.app.state) != "webapp" \
-            or not getattr(request.app.state, "auth_required", False):
-        return False
-    if getattr(request.state, "session", None) is None:
+    if getattr(request.app.state, "auth_required", False) \
+            and getattr(request.state, "session", None) is None:
         from hermes_cli.dashboard_auth.middleware import peek_session
-        request.state.session = await run_in_threadpool(peek_session, request)
+        try:
+            request.state.session = await run_in_threadpool(peek_session, request)
+        except Exception:  # health: allow BLE001 -- a fault reads as "not signed in", not a 500
+            _log.debug("public status: session check failed; caller read as uncredentialed",
+                       exc_info=True)
+            request.state.session = None
     try:
         _require_token(request)
     except HTTPException:
-        return True
-    return False
+        return False
+    return True
+
+
+async def _status_unauthenticated_keys(request: Request) -> Optional[frozenset]:
+    """The allowlist this caller's public ``/api/status`` body is cut to, or None for the full
+    body: the Webapp behind its sign-in gate and the gateway's private listener trim a caller
+    without a credential; the standalone dashboard keeps its public body."""
+    from hermes_cli.web_server_surface import surface
+    if request is None:  # awaited in-process
+        return None
+    serving = surface(request.app.state)
+    if serving == "webapp" and getattr(request.app.state, "auth_required", False):
+        allowed = _WEBAPP_SIGNED_OUT_STATUS_KEYS
+    elif serving == "gateway":
+        allowed = _GATEWAY_UNAUTHENTICATED_STATUS_KEYS
+    else:
+        return None
+    return None if await _status_caller_authenticated(request) else allowed
 
 
 @router.get("/api/status")
@@ -546,16 +575,18 @@ async def get_status(profile: Optional[str] = None,
                      request: Request = None):  # type: ignore[assignment]  # None when awaited in-process
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
+    A caller without a credential gets an allowlisted subset on the Webapp behind its sign-in
+    gate and on the gateway's private listener (``_status_unauthenticated_keys``).
 
     ``?profile=`` (dashboard management switcher) uses the config-only contextvar scope, NOT
     _profile_scope: this handler awaits the remote health probe, and _profile_scope swaps
     process-global skills-module attributes a concurrent request would cross-restore.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
-    signed_out = await _webapp_caller_signed_out(request)
+    signed_out_keys = await _status_unauthenticated_keys(request)
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
-    requested_profile = "" if signed_out else (profile or "").strip()
+    requested_profile = "" if signed_out_keys is not None else (profile or "").strip()
     profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
         profile_dir = _resolve_profile_dir(requested_profile)
@@ -641,8 +672,8 @@ async def get_status(profile: Optional[str] = None,
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
-        if signed_out:
-            return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
+        if signed_out_keys is not None:
+            return {key: value for key, value in status.items() if key in signed_out_keys}
         return status
     finally:
         if status_scope is not None:
