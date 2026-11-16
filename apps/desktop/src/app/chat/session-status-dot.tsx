@@ -20,12 +20,10 @@ type DotVariant = {
 // Shared base for every active dot; idle is smaller and uses its own class.
 const DOT_BASE = 'size-1.5 rounded-full'
 
-// A handful of colors and one fill/hollow axis, none of it moving. Motion on a 6px
+// A handful of colors and every dot solid, none of it moving. Motion on a 6px
 // circle can only say "something is happening" — which the row's arc already
 // says, better — while costing a repaint per frame on every row at once. What
-// the dot is for is telling states APART, and that is a job for color and fill:
-// filled means producing, hollow means open but quiet. The two states this
-// replaces differed by 30% opacity and were, in practice, the same dot.
+// the dot is for is telling states APART, and that is a job for color.
 const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Amber — a clarify/approval is blocking the turn. The one "act now" color,
   // and the only state the user is required to do something about.
@@ -42,20 +40,20 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status'
   },
   // Solid purple — still authoritatively running, but nothing has arrived for
-  // the watchdog window. A distinct solid color rather than a hollow accent
-  // ring: a hollow blue read as unfinished UI next to the filled dots.
+  // the watchdog window. A distinct solid color; a hollow accent ring
+  // read as unfinished UI next to the filled dots.
   stalled: {
     ariaLabel: r => r.sessionRunning,
     className: `${DOT_BASE} bg-purple-500`,
     role: 'status',
     title: r => r.sessionRunning
   },
-  // Hollow muted — a terminal(background=true) process outlived the turn. An
-  // outline reads as "still open" without claiming the model is working; a
-  // filled grey dot read as finished, the opposite of what this means.
+  // Solid cyan — a terminal(background=true) process or async subagent
+  // outlived the turn. A distinct color rather than a grey: a filled grey dot
+  // read as finished, the opposite of what this means.
   background: {
     ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} border border-(--ui-text-tertiary)`,
+    className: `${DOT_BASE} bg-cyan-500`,
     role: 'status',
     title: r => r.backgroundRunning
   },
@@ -68,13 +66,11 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.finishedUnread
   },
-  // Hollow grey, the faintest ink the app has — nothing has ever run here. It
-  // shares the outline with `background` because both mean "open, not
-  // producing", and sits a shade dimmer because a draft is the one state that
-  // has yet to do anything at all.
+  // Solid faint grey — nothing has ever run here. Full-size (idle is smaller)
+  // and quieter than any state that has done something.
   draft: {
     ariaLabel: r => r.draftSession,
-    className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
+    className: `${DOT_BASE} bg-(--ui-text-quaternary)`,
     title: r => r.draftSession
   },
   // Settled: the project color when there is one, else the faintest filled
