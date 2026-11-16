@@ -91,6 +91,52 @@ describe('useMessageStream turn-close replacement settlement', () => {
     expect(chatMessageText(messages.at(-1)!)).not.toContain('What I changed')
   })
 
+  it('drops the rejected prose AND the trailing prose around the end_turn chip', async () => {
+    mountStream()
+    await start()
+
+    // The recorded shape: a tool round, a text-only ending the harness rejected (still
+    // streamed to the screen), the retried `end_turn` call, then the model's trailing prose
+    // once the close tool returned. The completion carries the summary — the one reply.
+    await toolStart('t1', 'terminal')
+    await toolComplete('t1', 'terminal')
+    await delta(DRAFT)
+    await toolStart('t2', 'end_turn')
+    await toolComplete('t2', 'end_turn')
+    await delta('Closing note that restates the report.')
+    await completeReplaced(SUMMARY)
+
+    const messages = assistantMessages()
+
+    expect(assistantTexts()).toEqual([SUMMARY])
+    expect(chatMessageText(messages.at(-1)!)).not.toContain('What I changed')
+    expect(chatMessageText(messages.at(-1)!)).not.toContain('Closing note')
+    expect(messages.at(-1)?.parts.filter(part => part.type === 'tool-call')).toHaveLength(2)
+  })
+
+  it('keeps narration from earlier tool rounds when the close replaces the draft', async () => {
+    mountStream()
+    await start()
+
+    await delta('Checking the logs first.')
+    await toolStart('t1', 'terminal')
+    await toolComplete('t1', 'terminal')
+    await delta(DRAFT)
+    await toolStart('t2', 'end_turn')
+    await toolComplete('t2', 'end_turn')
+    await delta('Trailing restatement.')
+    await completeReplaced(SUMMARY)
+
+    const text = assistantMessages()
+      .map(m => chatMessageText(m))
+      .join('\n')
+
+    expect(text).toContain('Checking the logs first.')
+    expect(text).toContain(SUMMARY)
+    expect(text).not.toContain('What I changed')
+    expect(text).not.toContain('Trailing restatement.')
+  })
+
   it('does not paint a second bubble when the same close is delivered twice', async () => {
     mountStream()
     await start()
