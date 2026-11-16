@@ -355,8 +355,9 @@ def test_a_manual_switch_shows_the_new_providers_own_windows(monkeypatch):
 
     gauge = plan_gauge(agent)
 
-    # The fullest ACCOUNT-scoped window; the model-scoped Opus week (91%) cannot block the account.
-    assert gauge == {'id': 'week', 'label': 'Current week', 'used_bp': 4_200,
+    # The current-session window wins over the fuller weekly one; the model-scoped Opus week (91%)
+    # cannot block the account.
+    assert gauge == {'id': 'session', 'label': 'Current session', 'used_bp': 1_200,
                      'resets_at_ms': int(resets.timestamp() * 1000),
                      'provider': 'claude-subscription-directsdk-experimental'}
     assert plan_route(agent) is None

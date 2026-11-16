@@ -220,9 +220,13 @@ def _account_window_gauge(provider: str) -> dict | None:
     if not live:
         return None
     full = [row for row in live if row[2] >= 100.0]
+    session = [row for row in live if _window_gauge_id(getattr(row[0], "label", "")) == "session"]
     # A full window is what blocks, and of several the one that frees up last (same rule as
-    # ``usage_gauges.binding_gauge``); otherwise the fullest is the one worth showing.
+    # ``usage_gauges.binding_gauge``). Short of that, the current-session window (Claude's 5-hour,
+    # Codex's session) is what the operator watches while working, so it wins over a fuller
+    # weekly one; with no session window the fullest is the one worth showing.
     window, reset_ms, used = (max(full, key=lambda row: row[1] or 0) if full
+                              else session[0] if session
                               else max(live, key=lambda row: row[2]))
     return {"id": _window_gauge_id(getattr(window, "label", "")), "label": getattr(window, "label", ""),
             "used_bp": max(0, min(10_000, round(used * 100))), "resets_at_ms": reset_ms,
