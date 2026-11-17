@@ -60,6 +60,7 @@ from hermes_cli.update_cmd_fleet import (
     _gateway_recovery_partition, _gateway_service_matches_profile, _pending_fleet_restart_needed,
     _receipt_looks_unfinished, _receipt_reports_stale_runtime, _resolve_manage_cmd,
     _restart_gateway_fleet_after_update, _restart_launchd_gateway_after_update,
+    restart_local_gateways_gently,
     _restart_macos_launchd_gateways, _restart_phase_failure_is_incomplete,
     _restart_systemd_gateway_units,
     _run_pending_fleet_restart,

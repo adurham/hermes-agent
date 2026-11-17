@@ -457,8 +457,14 @@ def _complete_selected(request: dict) -> bool:
         skip = None
     if skip:
         record_skip("gateway_restart", skip)
-        record_stage("restart", "skipped")
-        print(f"  ✓ Gateway restart skipped: {skip}.")
+        # The guards speak for the FLEET — remote hosts, sibling profiles, an obligation already
+        # stamped. None of that promises THIS host's gateway is running the code just installed:
+        # an update that bounced only the desktop backend left it on pre-update modules. So the
+        # local unit is always drained (refuse new turns, finish in-flight work, at least five
+        # minutes) and only forced when that window expires.
+        print(f"  → Fleet restart skipped ({skip}); draining this host's gateway anyway.")
+        local = update_cmd.restart_local_gateways_gently()
+        record_stage("restart", "success" if local else "failed")
         return complete
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")

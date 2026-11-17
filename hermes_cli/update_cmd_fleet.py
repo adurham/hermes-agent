@@ -1266,7 +1266,7 @@ def _schedule_deferred_unit_restart(scope: str, scope_cmd: list, svc_name: str) 
         done = subprocess.run(
             ["systemd-run", "--user", "--on-active=5", "--collect", f"--unit={unit}",
              *scope_cmd, "restart", svc_name],
-            capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -1887,3 +1887,80 @@ def _wait_for_service_active(scope_cmd_: list, svc_name_: str, timeout: float = 
         if _time.monotonic() >= deadline:
             return False
         _time.sleep(0.5)
+
+
+#: Minimum time an update lets a gateway finish in-flight work before forcing its restart.
+GATEWAY_DRAIN_FLOOR_SECONDS = 300.0
+
+
+def _local_gateway_targets() -> list[tuple[str, list, str]]:
+    """``(scope, scope_cmd, unit)`` for every gateway/serve unit defined on THIS host."""
+    targets: list[tuple[str, list, str]] = []
+    seen: set[str] = set()
+
+    def add(scope: str, scope_cmd: list, svc_name: str) -> None:
+        if svc_name in seen:
+            return
+        seen.add(svc_name)
+        targets.append((scope, scope_cmd, svc_name))
+
+    for scope, scope_cmd in _SYSTEMD_SCOPES:
+        try:
+            listed = _systemctl(
+                list(scope_cmd) + ["--no-ask-password", "list-units", "--type=service", "--all", "--plain", "--no-legend"],
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if getattr(listed, "returncode", 1) != 0:
+            continue
+        _for_each_systemd_gateway_unit(
+            getattr(listed, "stdout", "") or "",
+            process_unit=lambda svc, _s=scope, _c=scope_cmd: add(_s, _c, svc),
+            on_unit_timeout=lambda svc, exc: None,
+        )
+    return targets
+
+
+def restart_local_gateways_gently(*, drain_seconds: float = GATEWAY_DRAIN_FLOOR_SECONDS) -> bool:
+    """Leave THIS host's gateway serving the checkout, draining it instead of killing it.
+
+    The fleet guards speak for the FLEET: they can call a host current while its process still
+    serves pre-update modules, because the identity they compare is stamped by the update rather
+    than read from the running process. That is how an update bounced only the desktop backend and
+    left the gateway on old code. So the completion tail always runs this for the local host:
+    SIGUSR1 refuses new turns and lets in-flight work finish, and the window never drops below five
+    minutes — only a drain that overruns it is forced.
+
+    Returns ``False`` when a unit could not be brought back active.
+    """
+    from hermes_cli.gateway import _graceful_restart_via_sigusr1
+
+    budget = max(float(drain_seconds), GATEWAY_DRAIN_FLOOR_SECONDS)
+    ok = True
+
+    for scope, scope_cmd, svc_name in _local_gateway_targets():
+        if not _systemd_unit_owned_by_update(scope_cmd, svc_name):
+            continue
+        pid = _unit_main_pid(scope_cmd, svc_name)
+        drained = (
+            bool(pid)
+            and _service_unit_supports_graceful_sigusr1_restart(svc_name)
+            and _graceful_restart_via_sigusr1(pid, budget)
+        )
+        if not drained:
+            print(f"  • {svc_name}: no clean drain within {budget:.0f}s — forcing the restart")
+            manage_cmd = list(scope_cmd) + ["--no-ask-password"]
+            if _needs_sudo(scope):
+                manage_cmd = ["sudo", "-n"] + manage_cmd
+            try:
+                result = _systemctl_reset_and_restart(manage_cmd, svc_name, scope_cmd=scope_cmd)
+                drained = getattr(result, "returncode", 1) == 0
+            except subprocess.TimeoutExpired:
+                drained = False
+        if drained and _wait_for_service_active(scope_cmd, svc_name):
+            print(f"  ✓ {svc_name} restarted on the checkout code")
+            continue
+        ok = False
+        print(f"  ⚠ {svc_name} could not be restarted")
+    return ok
