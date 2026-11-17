@@ -220,6 +220,20 @@ def _cfg_get_reasoning(params):
             raw_effort = False if parsed.get("enabled") is False else parsed.get("effort")
         # YAML `reasoning_effort: false` means thinking disabled, not "unset".
         effort = "none" if raw_effort is False else str(raw_effort or "medium")
+    # Report the level the ROUTE runs, not the raw request: ollama.com accepts `xhigh` and
+    # silently runs its default, so a pill reading `xhigh` there describes nothing real.
+    try:
+        from agent.reasoning_effort import route_wire_effort
+
+        model_cfg = cfg.get("model") or {}
+        effort = route_wire_effort(
+            effort,
+            provider=model_cfg.get("provider") if isinstance(model_cfg, dict) else None,
+            model=model_cfg.get("default") if isinstance(model_cfg, dict) else None,
+            base_url=model_cfg.get("base_url") if isinstance(model_cfg, dict) else None,
+        ) or effort
+    except Exception:
+        pass
     display = "show" if (cfg.get("display") or {}).get("show_reasoning", True) else "hide"
     return {"value": effort, "display": display}
 

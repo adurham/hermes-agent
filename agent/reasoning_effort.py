@@ -335,3 +335,27 @@ def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[
     effort = requested_effort(reasoning_config)
     clamped = clamp_effort(None if effort == "none" else effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
     return ({}, {"reasoning_effort": clamped}) if clamped in OX_ALPHA_EFFORTS else ({}, {})
+
+
+def route_wire_effort(
+    effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> str:
+    """The level *effort* actually becomes on this route's wire.
+
+    A UI that displays the request instead of this value promises a tier the route may not
+    have: ollama.com answers ``xhigh`` with a 200 and then runs its own default. Callers that
+    report a session's effort use this so the pill and the picker agree with what is sent.
+    Unknown routes (no declared vocabulary) pass the request through untouched.
+    """
+    requested = str(effort or "").strip().lower()
+    if not requested:
+        return requested
+    from utils import base_url_host_matches
+
+    if base_url and base_url_host_matches(str(base_url), "ollama.com"):
+        return clamp_effort(requested, OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES) or requested
+    declared = route_declared_efforts(provider, model, base_url)
+    if declared:
+        return clamp_effort(requested, declared) or requested
+    return requested

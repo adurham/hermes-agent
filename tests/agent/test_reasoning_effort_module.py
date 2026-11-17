@@ -205,3 +205,26 @@ class TestRouteDeclaredEfforts:
         from agent.reasoning_effort import route_declared_efforts
 
         assert route_declared_efforts("", None) is None
+
+
+class TestRouteWireEffort:
+    """What a route really sends for a requested level."""
+
+    def test_ollama_cloud_maps_xhigh_to_max(self):
+        from agent.reasoning_effort import route_wire_effort
+
+        assert route_wire_effort(
+            "xhigh", "ollama-cloud-team", "deepseek-v4.1-flash:1017", "https://ollama.com/v1"
+        ) == "max"
+
+    def test_ollama_cloud_keeps_a_real_level(self):
+        from agent.reasoning_effort import route_wire_effort
+
+        assert route_wire_effort(
+            "high", "ollama-cloud", "kimi-k3", "https://ollama.com/v1"
+        ) == "high"
+
+    def test_unknown_route_passes_the_request_through(self):
+        from agent.reasoning_effort import route_wire_effort
+
+        assert route_wire_effort("xhigh", "anthropic", "claude-sonnet-5", "https://api.anthropic.com") == "xhigh"
