@@ -184,3 +184,24 @@ class TestRequestedEffort:
         assert requested_effort({"enabled": False, "effort": "high"}) is None
         assert requested_effort("not-a-dict") is None
         assert requested_effort({"effort": ""}) is None
+
+
+class TestRouteDeclaredEfforts:
+    """Which routes may narrow the picker to their own effort vocabulary."""
+
+    def test_ollama_com_declares_its_vocabulary(self):
+        from agent.reasoning_effort import OLLAMA_CLOUD_EFFORTS, route_declared_efforts
+
+        assert route_declared_efforts(
+            "ollama-cloud-team", "deepseek-v4.1-flash:1017", "https://ollama.com/v1"
+        ) == OLLAMA_CLOUD_EFFORTS
+
+    def test_unknown_endpoint_stays_unknown(self):
+        from agent.reasoning_effort import route_declared_efforts
+
+        assert route_declared_efforts("custom", "m1", "https://relay.example/v1") is None
+
+    def test_no_provider_and_no_host_stays_unknown(self):
+        from agent.reasoning_effort import route_declared_efforts
+
+        assert route_declared_efforts("", None) is None

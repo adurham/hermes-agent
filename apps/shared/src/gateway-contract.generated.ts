@@ -870,6 +870,7 @@ export interface ModelCapabilities {
   daybreak?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
+  efforts?: string[] | null
 }
 /** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
 export interface ModelPricing {

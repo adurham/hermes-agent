@@ -1204,6 +1204,7 @@ function ModelFamilyRow({
         daybreak={daybreak}
         defaultEffort={defaultEffort}
         effort={effEffort}
+        efforts={caps?.efforts ?? undefined}
         effortWire={isCurrent ? current.effortWire : undefined}
         fastControl={fastControl}
         isActive={isCurrent}

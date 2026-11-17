@@ -15,6 +15,17 @@ from providers.base import ProviderProfile
 class OllamaCloudProfile(ProviderProfile):
     """Ollama Cloud — maps xhigh→max via top-level reasoning_effort."""
 
+    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...]:
+        """Ollama Cloud's real vocabulary: ``none|low|medium|high|max``.
+
+        ``xhigh`` is not a level on this wire (it answers 200 and then runs the server
+        default), so a picker built from this set never offers it — declaring the set is
+        what keeps the composer's effort menu honest instead of relying on a silent clamp.
+        A custom ``providers:`` entry pointed at ollama.com reaches the same set through
+        ``agent.reasoning_effort.route_declared_efforts``' host check.
+        """
+        return OLLAMA_CLOUD_EFFORTS
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, supports_reasoning: bool = False, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:

@@ -84,6 +84,10 @@ interface ModelEditSubmenuProps {
   /** Gateway-reported level the route actually sends for `effort` (active row
    *  only; '' = unknown). A clamped pick is spelled out on its radio row. */
   effortWire?: string
+  /** Levels this route's wire really has, when the provider declares them
+   *  (``ModelCapabilities.efforts``). Absent = unknown: the full ladder is
+   *  offered and the wire clamps. */
+  efforts?: readonly string[] | null
   /** How fast mode is offered for this model (param toggle vs. variant swap). */
   fastControl: FastControl
   serviceTier?: string
@@ -126,6 +130,7 @@ export function ModelOptionsContent({
   defaultEffort,
   effort,
   effortWire,
+  efforts,
   fastControl,
   serviceTier,
   ultrafastSupported = false,
@@ -136,6 +141,12 @@ export function ModelOptionsContent({
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
+
+  // A provider that declares its vocabulary gets exactly that list. Offering a level the
+  // wire answers with its own default (ollama.com's `xhigh`) is a promise the picker
+  // cannot keep — the pill then has to correct it with "→Max". Unknown stays the full
+  // ladder, so an undeclared route keeps offering everything.
+  const effortOptions = efforts?.length ? REASONING_EFFORTS.filter(value => efforts.includes(value)) : REASONING_EFFORTS
 
   const effortValue = resolveReasoningEffort(effort, defaultEffort)
   const clamp = reasoningEffortClamp(effortValue, effortWire)
@@ -227,7 +238,7 @@ export function ModelOptionsContent({
           <DropdownMenuSeparator className="mx-0" />
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
           <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
-            {REASONING_EFFORTS.map(value => (
+            {effortOptions.map(value => (
               <DropdownMenuRadioItem
                 className={dropdownMenuRow}
                 key={value}

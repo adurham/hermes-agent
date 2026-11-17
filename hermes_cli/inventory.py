@@ -592,6 +592,19 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
 
+            # A vocabulary the PROVIDER owns (profile declaration, or a documented host) narrows
+            # the picker to levels that route really has. That is not the aggregator catalog's
+            # ``supported_efforts`` above — that one under-reports and must stay off the wire.
+            if entry.get("reasoning"):
+                try:
+                    from agent.reasoning_effort import route_declared_efforts
+
+                    offered = route_declared_efforts(slug, model, row.get("api_url"))
+                except Exception:
+                    offered = None
+                if offered:
+                    entry["efforts"] = list(offered)
+
             caps[model] = entry
 
         row["capabilities"] = caps

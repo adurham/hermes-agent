@@ -174,6 +174,48 @@ def clamp_effort(
     return max(below, key=EFFORT_LADDER.index) if below else min(candidates, key=EFFORT_LADDER.index)
 
 
+def route_declared_efforts(
+    provider: Optional[str], model: Optional[str] = None, base_url: Optional[str] = None,
+) -> Optional[tuple[str, ...]]:
+    """The effort levels this route's wire is KNOWN to have, or ``None`` when unknown.
+
+    Only an authoritative source answers: the provider's own profile declaration
+    (:meth:`ProviderProfile.supported_reasoning_efforts`) or a host with a documented
+    vocabulary. An aggregator catalog's ``supported_efforts`` never qualifies — it
+    under-reports levels the service honors, so narrowing a picker from it would hide
+    working choices. ``None`` means "offer the full ladder and let the wire clamp".
+
+    ollama.com is the case that motivated this: its ``/v1`` accepts ``xhigh`` with a 200
+    and then runs the server default, so a picker that offers ``xhigh`` is offering a
+    level the route does not have.
+    """
+    from utils import base_url_host_matches
+
+    if base_url and base_url_host_matches(str(base_url), "ollama.com"):
+        return OLLAMA_CLOUD_EFFORTS
+    if not provider:
+        return None
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(str(provider))
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        declared = profile.supported_reasoning_efforts(model)
+    except Exception:
+        return None
+    if not declared:
+        return None
+    declared = tuple(str(level).strip().lower() for level in declared)
+    # A profile that merely restates the widest OpenAI-compat set declares nothing new.
+    if set(declared) == set(OPENAI_COMPAT_WIRE_EFFORTS):
+        return None
+    return declared
+
+
 def route_supported_efforts(
     provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
 ) -> tuple[str, ...]:

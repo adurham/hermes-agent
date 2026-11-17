@@ -27,6 +27,7 @@ function renderSubmenu(opts: {
   daybreak?: DaybreakControl
   defaultEffort?: string
   effort?: string
+  efforts?: readonly string[]
   fastControl: FastControl
   isActive?: boolean
   onSelectModel?: (model: string) => void
@@ -42,6 +43,7 @@ function renderSubmenu(opts: {
             daybreak={opts.daybreak}
             defaultEffort={opts.defaultEffort ?? 'medium'}
             effort={opts.effort ?? 'medium'}
+            efforts={opts.efforts}
             fastControl={opts.fastControl}
             isActive={opts.isActive ?? true}
             model="m1"
@@ -151,5 +153,46 @@ describe('the Daybreak switch', () => {
     renderSubmenu({ fastControl: { kind: 'param', on: false }, onSetOptions: vi.fn(), reasoning: false })
 
     expect(screen.queryByRole('switch', { name: 'Daybreak' })).toBeNull()
+  })
+})
+
+// A route that declares its vocabulary (``ModelCapabilities.efforts``) must not offer
+// levels its wire answers with the server default. ollama.com is the motivating case:
+// `xhigh` returns 200 and then runs the default, so offering it in the menu promised a
+// tier the route does not have — the pill had to correct it with "→Max".
+describe('ModelEditSubmenu offers only the levels the route declares', () => {
+  it('ollama cloud hides xhigh, ultra and minimal', () => {
+    renderSubmenu({
+      efforts: ['none', 'low', 'medium', 'high', 'max'],
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true
+    })
+
+    const offered = screen.getAllByRole('menuitemradio').map(row => row.textContent)
+    expect(offered).toEqual(['Low', 'Medium', 'High', 'Max'])
+    expect(screen.queryByText('Extra High')).toBeNull()
+    expect(screen.queryByText('Ultra')).toBeNull()
+  })
+
+  it('an undeclared route keeps the full ladder', () => {
+    renderSubmenu({ fastControl: { kind: 'none' }, onSetOptions: vi.fn(), reasoning: true })
+
+    const offered = screen.getAllByRole('menuitemradio').map(row => row.textContent)
+    expect(offered).toEqual(['Minimal', 'Low', 'Medium', 'High', 'Extra High', 'Max', 'Ultra'])
+  })
+
+  it('a declared level still reports the pick', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      efforts: ['none', 'low', 'medium', 'high', 'max'],
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true
+    })
+
+    fireEvent.click(screen.getByText('High'))
+
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
   })
 })

@@ -156,3 +156,33 @@ def test_catalog_failure_never_breaks_the_picker(monkeypatch):
     caps = rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
     assert "supported_efforts" not in caps
     assert caps["reasoning"] is True
+
+
+def test_provider_declared_vocabulary_reaches_the_picker(monkeypatch):
+    """A vocabulary the PROVIDER owns narrows the effort radio.
+
+    ollama.com answers `xhigh` with 200 and then runs its default tier, so a picker
+    built from the widest OpenAI-compat set offers a level that route does not have.
+    Declaring the set is the fix; the aggregator catalog's `supported_efforts` stays
+    off the payload for the separate reason pinned above.
+    """
+    monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
+    rows = [{
+        "slug": "ollama-cloud-team",
+        "api_url": "https://ollama.com/v1",
+        "models": ["deepseek-v4.1-flash:1017"],
+    }]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]["deepseek-v4.1-flash:1017"]
+    assert caps["efforts"] == ["none", "low", "medium", "high", "max"]
+    assert "supported_efforts" not in caps
+
+
+def test_undeclared_route_keeps_the_full_ladder(monkeypatch):
+    """No provider declaration and no known host → no narrowing at all."""
+    monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
+    rows = [{"slug": "custom", "api_url": "https://relay.example/v1", "models": ["m1"]}]
+    inv._apply_capabilities(rows)
+
+    assert "efforts" not in rows[0]["capabilities"]["m1"]

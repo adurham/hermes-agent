@@ -479,6 +479,11 @@ class ModelCapabilities(Result):
     daybreak: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    # Levels this route's wire really has, when the PROVIDER declares them (its profile's
+    # ``supported_reasoning_efforts``) or the base URL is a known-vocabulary host (ollama.com).
+    # Absent means unknown — deliberately distinct from an aggregator catalog's ``supported_efforts``,
+    # which under-reports levels the service honors and must never narrow the picker.
+    efforts: list[str] | None = None
 
 
 class ProviderLimit(Result):
