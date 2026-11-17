@@ -149,11 +149,14 @@ def disabled_match(names: Iterable[Optional[str]], disabled: Iterable[Any]) -> b
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns for name in present)
 
 
-def _user_dir_policy() -> tuple[bool, frozenset[str]]:
-    """``(plugins.allow_user_dir, plugins.user_dir_allowlist)`` — ``(True, ∅)`` when unset."""
+def _user_dir_policy(config: Optional[dict] = None) -> tuple[bool, frozenset[str]]:
+    """``(plugins.allow_user_dir, plugins.user_dir_allowlist)`` of *config* (default: ``load_config()``) —
+    ``(True, ∅)`` when unset."""
     try:
-        from hermes_cli.config import load_config
-        plugins = load_config().get("plugins")
+        if config is None:
+            from hermes_cli.config import load_config
+            config = load_config()
+        plugins = config.get("plugins")
     except Exception:  # health: allow BLE001 -- unreadable config: same fail-open as _get_disabled_plugins
         return True, frozenset()
     plugins = plugins if isinstance(plugins, dict) else {}
@@ -162,30 +165,40 @@ def _user_dir_policy() -> tuple[bool, frozenset[str]]:
     return is_truthy_value(plugins.get("allow_user_dir"), default=True), frozenset(names - {""})
 
 
-def _user_dir_relative_name(plugin_dir: Path) -> Optional[str]:
-    """*plugin_dir* relative to ``<HERMES_HOME>/plugins`` (``holographic``, ``model-providers/foo``), or None
-    outside it. Lexical (no symlink resolution): the name is the entry as found in that directory."""
-    root = os.path.abspath(get_hermes_home() / "plugins")
+def _user_dir_relative_name(plugin_dir: Path, plugins_root: Optional[Path] = None) -> Optional[str]:
+    """*plugin_dir* relative to *plugins_root* (default ``<HERMES_HOME>/plugins``; ``holographic``,
+    ``model-providers/foo``), or None outside it. Lexical (no symlink resolution): the name is the entry as
+    found in that directory."""
+    root = os.path.abspath(get_hermes_home() / "plugins" if plugins_root is None else plugins_root)
     path = os.path.abspath(plugin_dir)
     if path == root or os.path.commonpath([root, path]) != root:
         return None
     return Path(os.path.relpath(path, root)).as_posix()
 
 
-def user_plugin_dir_refusal(plugin_dir: Path) -> Optional[str]:
-    """Why a plugin directory inside ``<HERMES_HOME>/plugins`` must not load, else None.
+def user_plugin_dir_refusal(
+    plugin_dir: Path, *, plugins_root: Optional[Path] = None, config: Optional[dict] = None
+) -> Optional[str]:
+    """Why a plugin directory inside *plugins_root* (default ``<HERMES_HOME>/plugins``) must not load,
+    else None.
 
     ``plugins.allow_user_dir: false`` closes the user plugins directory: nothing in it is imported,
-    whatever its kind (standalone, model-provider, memory, platform, backend, context engine, cron
-    or computer-use provider), unless ``plugins.user_dir_allowlist`` names its path relative to that
-    directory. Decided from the path alone, before any code in it runs; bundled, pip entry-point and
-    project plugins are not affected. Drift control, not a sandbox: whoever can edit the config (or
-    the allowlisted plugin's files) can still change what runs.
+    whatever its kind (standalone, model-provider, memory, platform, backend, context engine, cron,
+    computer-use provider or dashboard plugin), unless ``plugins.user_dir_allowlist`` names its path
+    relative to that directory. Decided from the path alone, before any code in it runs; bundled, pip
+    entry-point and project plugins are not affected. Drift control, not a sandbox: whoever can edit the
+    config (or the allowlisted plugin's files) can still change what runs.
+
+    *plugins_root* is the user plugins directory *plugin_dir* was found in (default: the active scope's
+    ``<HERMES_HOME>/plugins``; the dashboard also scans the hermes root's, and a request may act for
+    another profile); the allowlist names paths relative to it, and a *plugin_dir* outside it is not
+    judged (None). *config* is the configuration whose ``plugins.allow_user_dir`` /
+    ``plugins.user_dir_allowlist`` decide (default: ``load_config()`` of the active scope).
     """
-    allow, allowlist = _user_dir_policy()
+    allow, allowlist = _user_dir_policy(config)
     if allow:
         return None
-    name = _user_dir_relative_name(plugin_dir)
+    name = _user_dir_relative_name(plugin_dir, plugins_root)
     if name is None or name in allowlist:
         return None
     return (f"user plugin '{name}' not loaded: plugins.allow_user_dir is false and "

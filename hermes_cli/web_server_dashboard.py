@@ -634,7 +634,9 @@ def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
                 if name in seen_names:
                     continue
                 seen_names.add(name)
-                plugins.append(_dashboard_plugin_entry(data, name, child / "dashboard", source))
+                entry = _dashboard_plugin_entry(data, name, child / "dashboard", source)
+                entry["_root"] = str(plugins_root)  # the plugins directory it was found in (user-dir policy)
+                plugins.append(entry)
             except OSError as exc:
                 _log.warning("Skipping unreadable dashboard plugin %s: %s", manifest_file, exc)
                 continue
@@ -843,16 +845,32 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
     return payload
 
 
-def _plugin_api_mount_skip_reason(plugin: dict[str, Any], enabled_set: set, disabled_set: set) -> Optional[str]:
-    """Why a plugin's backend ``api`` must NOT be imported, or None when it may be.
+def _plugin_api_mount_skip_reason(
+    plugin: dict[str, Any], enabled_set: set, disabled_set: set, config: Optional[dict] = None
+) -> Optional[str]:
+    """Why a plugin's backend ``api`` must NOT be imported (nor its assets served), or None when it may be.
 
-    User plugins must be in ``plugins.enabled`` and not ``plugins.disabled`` before their
-    Python runs (GHSA-mcfc-hp25-cjv7); bundled plugins are trusted but respect an explicit
+    A closed user plugins directory (``plugins.allow_user_dir: false`` without a
+    ``plugins.user_dir_allowlist`` entry, read from *config*, default the active scope's, and judged
+    relative to the plugins directory the entry was found in, ``_root``) wins over every enable, as for
+    the plugin manager's loaders. User plugins must be in ``plugins.enabled`` and
+    not ``plugins.disabled`` (exact names or ``fnmatch`` patterns, as the plugin manager matches them)
+    before their Python runs (GHSA-mcfc-hp25-cjv7); bundled plugins are trusted but respect an explicit
     disable; project plugins (``./.hermes/plugins/``) ship with the CWD and are
     attacker-controlled when opening a malicious repo — never auto-imported (GHSA-5qr3-c538-wm9j).
     """
+    from hermes_cli.plugins_discovery import disabled_match, user_plugin_dir_refusal
+    from hermes_constants import get_hermes_home
     source, plugin_name = plugin.get("source"), plugin.get("name", "")
-    if source in ("user", "bundled") and plugin_name in disabled_set:
+    if source == "user":
+        # ``_dir`` is ``<plugins root>/<plugin>/dashboard``; an entry without one (a request for a name not
+        # discovered yet) is judged by its name in the active home's plugins directory.
+        root = Path(plugin["_root"]) if plugin.get("_root") else get_hermes_home() / "plugins"
+        plugin_dir = Path(plugin["_dir"]).parent if plugin.get("_dir") else root / str(plugin_name)
+        refusal = user_plugin_dir_refusal(plugin_dir, plugins_root=root, config=config)
+        if refusal:
+            return refusal
+    if source in ("user", "bundled") and disabled_match((plugin_name,), disabled_set):
         return "explicitly disabled"
     if source == "user" and plugin_name not in enabled_set:
         return "not in plugins.enabled"
@@ -874,14 +892,20 @@ def _launch_profile_scope():
         reset_hermes_home_override(token)
 
 
-def _plugin_enable_sets_here() -> tuple[set, set]:
-    """``(plugins.enabled, plugins.disabled)`` of the active profile scope from one cached read-only
-    config read: the gates run on the event loop for every plugin request and upgrade."""
+def _plugin_config_here() -> dict:
+    """The active profile scope's config from one cached read-only read: the gates run on the event
+    loop for every plugin request and upgrade. Never mutate it."""
     from hermes_cli.config import load_config_readonly
     try:
         config = load_config_readonly()
     except Exception:  # health: allow BLE001 -- an unreadable config grants no consent (empty sets), as plugins_cmd reads it
         config = {}
+    return config if isinstance(config, dict) else {}
+
+
+def _plugin_enable_sets_here(config: Optional[dict] = None) -> tuple[set, set]:
+    """``(plugins.enabled, plugins.disabled)`` of *config* (default :func:`_plugin_config_here`)."""
+    config = _plugin_config_here() if config is None else config
     enabled, disabled = (cfg_get(config, "plugins", key, default=[]) for key in ("enabled", "disabled"))
     return (set(enabled) if isinstance(enabled, list) else set(),
             set(disabled) if isinstance(disabled, list) else set())
@@ -895,7 +919,8 @@ def _plugin_consent_withheld(plugin: dict[str, Any]) -> bool:
     profile the request acts for decides alone: a native ticket's profile, a ``?profile=``
     selection, else the launch profile (#134889, PLG-3).
     """
-    return _plugin_api_mount_skip_reason(plugin, *_plugin_enable_sets_here()) is not None
+    config = _plugin_config_here()
+    return _plugin_api_mount_skip_reason(plugin, *_plugin_enable_sets_here(config), config=config) is not None
 
 
 def _plugin_api_name(scope) -> str:

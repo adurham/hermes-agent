@@ -48,6 +48,7 @@ MANAGED_SCOPE_CAPABILITIES = (
     "plugins-disabled-globs",  # plugins.disabled entries may be fnmatch patterns
     "plugins-user-dir-allowlist",  # plugins.allow_user_dir / user_dir_allowlist
     "plugins-toolsets-opt-in",  # plugins.toolsets_opt_in
+    "dashboard-plugin-api-honors-plugin-policy",  # dashboard plugin API/assets: allow_user_dir, disabled globs
 )
 
 _CACHE_LOCK = threading.Lock()

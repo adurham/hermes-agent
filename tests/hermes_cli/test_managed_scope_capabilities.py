@@ -17,6 +17,7 @@ EXPECTED = {
     "plugins-disabled-globs",
     "plugins-user-dir-allowlist",
     "plugins-toolsets-opt-in",
+    "dashboard-plugin-api-honors-plugin-policy",
 }
 
 
