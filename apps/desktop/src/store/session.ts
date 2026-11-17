@@ -13,6 +13,7 @@ import {
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
 import { hostHas } from '@/lib/host-capabilities'
+import { migrateOllamaCloudEffort } from '@/lib/reasoning-effort'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import {
@@ -1411,7 +1412,20 @@ export function getSessionOwnerHint(
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
-export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
+// The last composer pick is sticky across sessions and outranks the profile default, so a
+// value recorded before the ollama-cloud picker declared its vocabulary would keep seeding a
+// chat with a level that route cannot run. Migrate once, and persist so it stays migrated.
+const storedComposerEffort = storedString(COMPOSER_EFFORT_KEY) ?? ''
+const initialReasoningEffort = migrateOllamaCloudEffort(
+  storedComposerString(COMPOSER_PROVIDER_KEY) ?? '',
+  storedComposerEffort
+)
+
+if (initialReasoningEffort !== storedComposerEffort) {
+  persistString(COMPOSER_EFFORT_KEY, initialReasoningEffort || null)
+}
+
+export const $currentReasoningEffort = atom(initialReasoningEffort)
 export const $currentServiceTier = atom(storedString(COMPOSER_SERVICE_TIER_KEY) ?? '')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).

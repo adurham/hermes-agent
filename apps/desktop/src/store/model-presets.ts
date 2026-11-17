@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { migrateOllamaCloudEffort } from '@/lib/reasoning-effort'
 import { persistString, storedString } from '@/lib/storage'
 
 import { notifyError } from './notifications'
@@ -69,10 +70,7 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
 /** Stable `provider::model` key (matches the visibility-store format). */
 export const modelPresetKey = (provider: string, model: string): string => `${provider}::${model}`
 
-/** Levels the ollama.com wire never had, and the level that route actually runs instead.
- *  ``ultra`` is Hermes-internal (no wire takes it) and ``xhigh`` is not one of the five
- *  levels that endpoint honours — it answers 200 and runs the server default. */
-const OLLAMA_CLOUD_EFFORT_MIGRATION: Record<string, string> = { ultra: 'max', xhigh: 'max' }
+
 
 /** Rewrite presets saved before the Ollama Cloud picker declared its vocabulary.
  *
@@ -86,11 +84,11 @@ export function migratePresets(presets: Record<string, ModelPreset>): Record<str
 
   for (const [key, preset] of Object.entries(presets)) {
     const provider = key.includes('::') ? key.slice(0, key.indexOf('::')) : ''
-    const mapped = preset?.effort && provider.startsWith('ollama-cloud') ? OLLAMA_CLOUD_EFFORT_MIGRATION[preset.effort] : undefined
+    const mapped = preset?.effort ? migrateOllamaCloudEffort(provider, preset.effort) : undefined
 
-    next[key] = mapped ? { ...preset, effort: mapped } : preset
+    next[key] = mapped && mapped !== preset.effort ? { ...preset, effort: mapped } : preset
 
-    if (mapped) {
+    if (mapped && mapped !== preset.effort) {
       changed = true
     }
   }

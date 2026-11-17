@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isThinkingEnabled,
+  migrateOllamaCloudEffort,
   reasoningEffortClamp,
   reasoningEffortLabel,
   resolveReasoningEffort
@@ -45,5 +46,18 @@ describe('reasoning-effort', () => {
     // Off selects nothing on the scale.
     expect(resolveReasoningEffort('none')).toBe('')
     expect(resolveReasoningEffort('bogus')).toBe(DEFAULT_REASONING_EFFORT)
+  })
+})
+
+describe('migrateOllamaCloudEffort', () => {
+  it('rewrites the levels an ollama.com route never had', () => {
+    expect(migrateOllamaCloudEffort('ollama-cloud', 'xhigh')).toBe('max')
+    expect(migrateOllamaCloudEffort('ollama-cloud-team', 'ultra')).toBe('max')
+  })
+
+  it('leaves real levels and other providers alone', () => {
+    expect(migrateOllamaCloudEffort('ollama-cloud', 'high')).toBe('high')
+    expect(migrateOllamaCloudEffort('anthropic', 'xhigh')).toBe('xhigh')
+    expect(migrateOllamaCloudEffort('claude-subscription-directsdk-experimental', 'xhigh')).toBe('xhigh')
   })
 })

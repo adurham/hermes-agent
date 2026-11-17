@@ -67,3 +67,17 @@ export function resolveReasoningEffort(effort: string, fallback: string = DEFAUL
 
   return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT
 }
+
+/** Levels an ollama.com route never had, and the level it runs instead.
+ *  `ultra` is Hermes-internal (no wire takes it) and `xhigh` is not one of that endpoint's
+ *  five words — it answers 200 and runs the server default. */
+const OLLAMA_CLOUD_LEGACY_EFFORT: Record<string, string> = { ultra: 'max', xhigh: 'max' }
+
+/** Rewrite a sticky pick recorded before `provider` declared its vocabulary.
+ *
+ *  Composer selections and per-model presets outlive a deploy and both outrank the profile
+ *  default for a new session, so without this a fresh chat seeds a level its own menu cannot
+ *  offer (`XHigh` on a route whose picker only has low/medium/high/max). */
+export function migrateOllamaCloudEffort(provider: string, effort: string): string {
+  return provider.startsWith('ollama-cloud') ? (OLLAMA_CLOUD_LEGACY_EFFORT[effort] ?? effort) : effort
+}
