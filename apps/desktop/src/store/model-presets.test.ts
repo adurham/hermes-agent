@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $modelPresets, applyModelPreset, getModelPreset, setModelPreset } from './model-presets'
+import { $modelPresets, applyModelPreset, getModelPreset, migratePresets, setModelPreset } from './model-presets'
 import {
   $currentFastMode,
   $currentReasoningEffort,
@@ -93,5 +93,24 @@ describe('model presets', () => {
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentFastMode.get()).toBe(true)
     expect(calls).toEqual([])
+  })
+})
+
+describe('ollama-cloud preset migration', () => {
+  it('rewrites levels that wire never had, and leaves every other provider alone', () => {
+    const migrated = migratePresets({
+      'anthropic::claude-sonnet-5': { effort: 'xhigh' },
+      'ollama-cloud::deepseek-v4.1-flash:1017': { effort: 'ultra', serviceTier: 'normal' },
+      'ollama-cloud-team::kimi-k3': { effort: 'xhigh' },
+      'ollama-cloud::glm-5.3': { effort: 'high' }
+    })
+
+    // ultra (Hermes-internal) and xhigh (not a level on that endpoint) both land on max,
+    // which is what the route actually runs; a real level is untouched.
+    expect(migrated['ollama-cloud::deepseek-v4.1-flash:1017']).toEqual({ effort: 'max', serviceTier: 'normal' })
+    expect(migrated['ollama-cloud-team::kimi-k3']).toEqual({ effort: 'max' })
+    expect(migrated['ollama-cloud::glm-5.3']).toEqual({ effort: 'high' })
+    // Another provider's xhigh is a real level there: never migrated.
+    expect(migrated['anthropic::claude-sonnet-5']).toEqual({ effort: 'xhigh' })
   })
 })

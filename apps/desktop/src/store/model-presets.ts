@@ -69,6 +69,39 @@ type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => P
 /** Stable `provider::model` key (matches the visibility-store format). */
 export const modelPresetKey = (provider: string, model: string): string => `${provider}::${model}`
 
+/** Levels the ollama.com wire never had, and the level that route actually runs instead.
+ *  ``ultra`` is Hermes-internal (no wire takes it) and ``xhigh`` is not one of the five
+ *  levels that endpoint honours — it answers 200 and runs the server default. */
+const OLLAMA_CLOUD_EFFORT_MIGRATION: Record<string, string> = { ultra: 'max', xhigh: 'max' }
+
+/** Rewrite presets saved before the Ollama Cloud picker declared its vocabulary.
+ *
+ *  A preset outranks the profile default on every new session, so a chat seeded from one
+ *  showed `Ultra` (or `XHigh`) for a route whose menu now offers only low/medium/high/max —
+ *  a level that route cannot run. One-way migration: once rewritten, nothing recreates
+ *  `ultra` there, because the menu cannot offer it. */
+export function migratePresets(presets: Record<string, ModelPreset>): Record<string, ModelPreset> {
+  let changed = false
+  const next: Record<string, ModelPreset> = {}
+
+  for (const [key, preset] of Object.entries(presets)) {
+    const provider = key.includes('::') ? key.slice(0, key.indexOf('::')) : ''
+    const mapped = preset?.effort && provider.startsWith('ollama-cloud') ? OLLAMA_CLOUD_EFFORT_MIGRATION[preset.effort] : undefined
+
+    next[key] = mapped ? { ...preset, effort: mapped } : preset
+
+    if (mapped) {
+      changed = true
+    }
+  }
+
+  if (changed) {
+    persistString(STORAGE_KEY, JSON.stringify(next))
+  }
+
+  return next
+}
+
 function load(): Record<string, ModelPreset> {
   const raw = storedString(STORAGE_KEY)
 
@@ -79,7 +112,9 @@ function load(): Record<string, ModelPreset> {
   try {
     const parsed = JSON.parse(raw)
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, ModelPreset>) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? migratePresets(parsed as Record<string, ModelPreset>)
+      : {}
   } catch {
     return {}
   }
