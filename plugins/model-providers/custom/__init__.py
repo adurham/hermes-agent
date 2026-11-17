@@ -4,7 +4,12 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+from agent.reasoning_effort import (
+    OLLAMA_CLOUD_EFFORTS,
+    OLLAMA_CLOUD_OVERRIDES,
+    OPENAI_COMPAT_WIRE_EFFORTS,
+    clamp_effort,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
 from utils import base_url_host_matches
@@ -80,7 +85,19 @@ class CustomProfile(ProviderProfile):
                 # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
                 top_level["reasoning_effort"] = "default"
             elif effort:
-                top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
+                # A custom ``providers:`` entry pointed at Ollama Cloud (a team key / base_url
+                # alias such as ``ollama-cloud-team``) never receives the ``ollama-cloud``
+                # profile, so the widest OpenAI-compat set would forward levels that wire has
+                # no level for: ``xhigh`` answers 200 but lands on the server default
+                # (measured ~= an untagged request, not ``max``), silently dropping the top
+                # tier. Declare Ollama Cloud's real vocabulary here — scoped to the hosted
+                # host, so a local Ollama (:11434) keeps the generic pass-through.
+                if base_url_host_matches(str(ctx.get("base_url") or ""), "ollama.com"):
+                    top_level["reasoning_effort"] = clamp_effort(
+                        effort, OLLAMA_CLOUD_EFFORTS, OLLAMA_CLOUD_OVERRIDES
+                    )
+                else:
+                    top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level
 
     def fetch_models(

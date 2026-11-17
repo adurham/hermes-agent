@@ -200,6 +200,74 @@ class TestCustomReasoningWithNumCtx:
         assert tl == {}
 
 
+class TestOllamaCloudHostVocabulary:
+    """A custom entry pointed at Ollama Cloud speaks the Ollama Cloud vocabulary.
+
+    A ``providers:`` entry such as ``ollama-cloud-team`` (team API key + ``base_url:
+    https://ollama.com/v1``) resolves to this profile, not ``ollama-cloud``, so the widest
+    OpenAI-compat set put levels on that wire it has no level for. Live measurement against
+    ollama.com/v1: ``xhigh`` returns 200 but consumes the same reasoning budget as an
+    untagged request (median ~6.3k completion tokens vs ~9.7k for ``max``), i.e. the top
+    tier was silently dropped. Declare the cloud vocabulary and its ``xhigh → max`` mapping.
+    """
+
+    CLOUD = "https://ollama.com/v1"
+
+    @pytest.mark.parametrize(
+        "effort, expected",
+        [
+            ("xhigh", "max"),  # the level this fix exists for
+            ("ultra", "max"),  # Hermes-internal, never a wire level
+            ("max", "max"),
+            ("high", "high"),
+            ("medium", "medium"),
+            ("low", "low"),
+            ("minimal", "low"),  # ollama.com 400s minimal; nearest weaker level
+        ],
+    )
+    def test_cloud_host_clamps_to_cloud_vocabulary(self, custom_profile, effort, expected):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="deepseek-v4.1-flash:1017",
+            base_url=self.CLOUD,
+        )
+        assert tl == {"reasoning_effort": expected}
+        assert "reasoning_effort" not in eb
+
+    @pytest.mark.parametrize(
+        "base_url",
+        ["http://127.0.0.1:11434/v1", "https://relay.example/v1", "http://localhost:8080/v1"],
+    )
+    def test_non_cloud_endpoints_keep_generic_pass_through(self, custom_profile, base_url):
+        """Scope guard: a local Ollama or arbitrary relay still forwards ``xhigh`` verbatim."""
+        _, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            model="qwen3",
+            base_url=base_url,
+        )
+        assert tl == {"reasoning_effort": "xhigh"}
+
+    def test_cloud_host_still_disables_with_none(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"},
+            model="deepseek-v4.1-flash:1017",
+            base_url=self.CLOUD,
+        )
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_cloud_host_accepts_bespoke_levels_verbatim(self, custom_profile):
+        """An unrecognized name is not a ladder level — clamp_effort leaves it alone,
+        so a numeric ask (``"100"``, DeepSeek's native dial) still reaches the wire the
+        same way it did before, rather than being rewritten to a word level."""
+        _, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "100"},
+            model="deepseek-v4.1-flash:1017",
+            base_url=self.CLOUD,
+        )
+        assert tl == {"reasoning_effort": "100"}
+
+
 class TestCustomResponsesEffortVocabulary:
     """The Responses transport honours a custom endpoint's configured ``max`` (#114249).
 
