@@ -450,6 +450,36 @@ def hello():
     return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
+def _adopt_worker_cgroup():
+    """Move this worker (and everything it forks) out of the spawning unit's cgroup.
+
+    The gateway spawns managed workers as plain children, so their memory -- and their tool
+    children's memory -- is charged against ``hermes-gateway.service``'s ``MemoryMax``. A
+    single runaway allocation then OOM-kills the gateway's main process and every concurrent
+    card with it. See ``hermes_cli.worker_cgroup`` for the mechanism (a transient scope
+    adopted over D-Bus, so the worker keeps its pid, session and framing pipes).
+
+    Best-effort by design: outside a systemd service there is nothing to isolate from, and a
+    host without a user bus must still run the turn. The verdict is logged either way --
+    ``managed-worker.log`` is where an operator sees that a worker ran unprotected.
+    """
+    try:
+        from hermes_cli.worker_cgroup import adopt_worker_cgroup
+
+        info = adopt_worker_cgroup()
+    except Exception as exc:  # isolation must never fail a turn
+        info = {'status': 'failed', 'reason': f'{type(exc).__name__}: {exc}'}
+    if info.get('status') == 'adopted':
+        logger.info('worker cgroup: %s path=%s memory.max=%s oom_score_adj=%s',
+                    info.get('unit'), info.get('path'), info.get('memory_max'), info.get('oom_score_adj'))
+    elif info.get('status') == 'failed':
+        logger.warning('worker cgroup: NOT isolated (%s); this worker is charged to the '
+                       'spawning unit\'s MemoryMax', info.get('reason'))
+    else:
+        logger.debug('worker cgroup: not adopted (%s)', info.get('reason'))
+    return info
+
+
 def main():
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
@@ -462,6 +492,8 @@ def main():
     try:
         channel.send('hello', **hello())
         frame = validate_bootstrap(read_frame(sys.stdin.buffer))
+        # Before the turn touches anything: charge this worker to its own capped cgroup.
+        _adopt_worker_cgroup()
         execute(frame, channel)
     except Exception:
         # Runtime exceptions can contain credentials; the owner gets no raw traceback.

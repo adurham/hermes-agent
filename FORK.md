@@ -9,6 +9,51 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Fork-only fix — 2026-11-17 (kanban): a runaway card worker OOM-killed the whole gateway — managed workers now adopt their own capped cgroup
+
+**Symptom.** One card that allocated past `hermes-gateway.service`'s `MemoryMax` took the gateway
+down with it and every concurrent card with it: three such deaths in seven days, one child at
+23 GB. `managed-worker.log` and the board only showed `EOFError`.
+
+**Root cause.** The gateway spawns each turn's worker (`python -m agent.managed_worker`) as a plain
+child, so the worker's memory — and every tool child's — is charged to the *gateway's* cgroup. When
+that group goes memcg-OOM the kernel kills the biggest process, the group is still over its cap,
+and the next largest member is the main `hermes` process; `KillMode=mixed` then tears the unit
+down. The `hermes-worker-kanban-*` scope the dispatcher creates only wraps the thin client, not
+the process that runs the card.
+
+**Fix.** `hermes_cli/worker_cgroup.py`: at startup, after the bootstrap frame validates and before
+the turn runs, `agent/managed_worker.py::_adopt_worker_cgroup()` moves the worker *itself* into a
+transient scope under `hermes-workers.slice` (`busctl --user call … StartTransientUnit` with
+`PIDs=[own pid]`, so it keeps its pid, session and framing pipes — the gateway's spawn path only
+changes on a gateway restart, and a restart is the outage being removed). Scope: `MemoryMax` 6 GiB
+(`HERMES_WORKER_MEMORY_MAX_MB`, never above a quarter of RAM), `MemorySwapMax=0` (the cap kills, it
+does not spill into a full swap), `OOMPolicy=continue` (the runaway child dies, the worker survives
+to report it), `oom_score_adj` raised to +500 (raise-only: the kernel refuses to lower it without
+`CAP_SYS_RESOURCE`). Best-effort by contract: outside a systemd service (desktop, CLI, tests), with
+no `busctl`, or with `HERMES_WORKER_CGROUP=0` it skips, and any failure is logged at warning
+(`worker cgroup: NOT isolated (…)`) and never fails the turn. `scope_memory(pid)` reads a dead
+worker's `memory.events`/`peak`/`max` for the loss record (see the planned-restart entry).
+
+**Files.** `hermes_cli/worker_cgroup.py` (new), `agent/managed_worker.py`,
+`website/docs/user-guide/features/kanban.md`; tests `tests/hermes_cli/test_worker_cgroup.py`
+(plan/limits, busctl argv encoding, every skip/fail path, adoption verdicts) and
+`tests/agent/test_managed_worker_cgroup.py` (the wrapper logs the verdict and swallows errors).
+
+**Evidence.** Live, not just tests: `systemctl --user list-units 'hermes-worker-managed*'` shows
+running adopted scopes. `~/.hermes/kanban.db` holds 10 `worker_lost` events; 4 carry the new
+`memory` block — two with `oom_kill` 1 and 2, `peak` = the 6 GiB cap and `max` throttle counts of
+299/467 (a runaway killed inside its own scope), two with `oom_kill` 0. The aggregate wall was
+measured the same day: 8 workers charged 18.9 GiB to the slice, 23 oom_kills in its subtree.
+
+**Deploy.** Workers are fresh processes per turn, so this took effect as soon as the files
+existed. **Operational note:** the slice is *not* in the repo —
+`~/.config/systemd/user/hermes-workers.slice` (`MemoryMax=24G` = 4 × the 6 GiB worker cap, no
+`MemoryHigh` on purpose: with swap exhausted a soft throttle stalls an allocator forever instead of
+killing it) must exist on every host; without it systemd creates an implicit uncapped slice. Workers
+now live outside `hermes-gateway.service`, so a service stop no longer kills them by cgroup; they
+still die with their owner because a closed control pipe ends the turn (`_die_with_owner`).
+
 ### Fork-only fix — 2026-11-17 (desktop): the Claude status bar stuck on "Week" — the allowance store kept the later-resetting window, and the week always resets later
 
 **Symptom.** The status bar had been reading `Claude Subscription · Current session N%` (the 5-hour

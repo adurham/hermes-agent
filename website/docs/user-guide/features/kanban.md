@@ -350,6 +350,53 @@ and survives that unit's exit or restart. Creating the scope needs the
 dispatching user's session bus (`/run/user/<uid>/bus`); on a system-level
 install give the user one with `sudo loginctl enable-linger <user>`.
 
+**The agent process itself is isolated too.** That scope wraps the thin
+dispatcher client; the process that actually runs the card is
+`agent.managed_worker`, spawned by the gateway as a plain child — and a child of
+the gateway is charged to *the gateway's* cgroup. One card that allocates past
+`MemoryMax` therefore OOM-kills the biggest process in the gateway's cgroup,
+which can be the gateway's own main process; `KillMode=mixed` then tears the
+unit down and every concurrent card dies with it. So each managed worker adopts
+its own scope at startup (`hermes_cli/worker_cgroup.py`, a
+`StartTransientUnit` call carrying its pid), inside `hermes-workers.slice`:
+
+- `MemoryMax` defaults to 6 GiB (`HERMES_WORKER_MEMORY_MAX_MB`), capped at a
+  quarter of physical RAM, with `MemorySwapMax=0` so an allocation is killed at
+  the cap instead of pushing the host into swap.
+- `OOMPolicy=continue`: the runaway process dies, the worker survives to report
+  the failure (without it, systemd stops the whole scope on the first OOM kill).
+- `oom_score_adj` is raised to +500 (`HERMES_WORKER_OOM_SCORE_ADJ`), so a host
+  OOM prefers a worker over the gateway. The kernel only allows *raising* it
+  without `CAP_SYS_RESOURCE`, which is why the direction is the worker's.
+- The aggregate is bounded by `~/.config/systemd/user/hermes-workers.slice`
+  (`MemoryHigh`/`MemoryMax`), so a burst of cards cannot exhaust host RAM even
+  if each stays under its own cap.
+
+Adoption is best-effort: outside a systemd service (desktop app, CLI, tests)
+there is nothing to isolate from and the worker runs as before. When a host
+*has* a service but no user bus, the worker logs
+`worker cgroup: NOT isolated` to `managed-worker.log` — that is the line to
+look for when a card is suspected of charging the gateway.
+
+**Read the loss record, not the exception's name.** A worker whose frame pipe
+closes books as `managed worker lost: <ExceptionName>` — and `EOFError` is the
+name for *every* kind of death: a memcg OOM kill, a gateway restart, a genuine
+crash. So the owner records what it can see at that moment in the same
+`worker_lost` event: the worker's own cgroup counters (`memory.events`
+`oom_kill`, `memory.peak` against `memory.max`) and the planned-restart marker
+(`.restart_pending.json`) that `hermes update` / `hermes gateway restart` stamp
+before draining. The run error then reads
+`managed worker lost: EOFError [oom_kill=0; cgroup peak 6.14 GiB of 6.00 GiB cap; planned restart 152s earlier]`,
+which settles in one line what a `free -g` and a nearby kernel message cannot
+(measured 2026-11-17: 13 card attempts were lost to two update restarts and
+booked as `EOFError`, and a later card read that as a memory-cgroup OOM kill).
+
+The `hermes-worker-kanban-*` scope around the thin dispatcher client carries its
+own 4 GiB `MemoryMax` (`tools/process_registry.py::_WORKER_MEMORY_MAX_CAP_BYTES`,
+the bound every gateway-spawned local executor gets). It is not the cap that
+decides a card's memory: the client charges tens of MB, while the work runs in
+the `hermes-worker-managed-*` scope above.
+
 - **Gateway dispatcher** (`dispatch_in_gateway: true`, gateway under systemd):
   the scope is mandatory. If the bus is unreachable the spawn is refused and
   recorded on the card as an *infrastructure* failure — `spawn_failed` with
