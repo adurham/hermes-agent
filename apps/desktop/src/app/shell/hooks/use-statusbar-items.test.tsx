@@ -594,6 +594,48 @@ describe('statusbar plan usage — a fallback carries the turn', () => {
 
     expect(planUsageItem()?.label).toBe('Nous Portal · Today 68%')
   })
+
+  // A refusal is not an allowance problem. Reported live: a Claude plan at 42% read "at 42% used,
+  // resets in 2h — this chat is answering on Ollama Cloud until then" because a content-filter
+  // refusal had switched providers. The percentage and its reset are the wrong story for every
+  // cause outside the allowance family, so the bar names the cause instead.
+  it('names a refusal as the cause instead of the plan allowance', () => {
+    setActiveSessionId('runtime-a')
+    $currentUsage.set({
+      calls: 4,
+      input: 1,
+      output: 1,
+      total: 2,
+      plan_gauge: { ...gauge, used_bp: 4_200 },
+      route: { ...route, reason: 'content_policy_blocked' }
+    })
+
+    const item = planUsageItem()
+
+    expect(item?.hidden).toBeFalsy()
+    // No percentage in the label: sitting a live 42% next to an arrow is what read as "spent".
+    expect(item?.label).toBe('Nous Portal → Ollama Cloud')
+    expect(item?.title).toContain('refused this turn on content policy')
+    expect(item?.title).toContain('not because of your plan')
+    expect(item?.title).not.toContain('42% used')
+  })
+
+  it('keeps the allowance story for a rate-limit fallback', () => {
+    setActiveSessionId('runtime-a')
+    $currentUsage.set({
+      calls: 4,
+      input: 1,
+      output: 1,
+      total: 2,
+      plan_gauge: gauge,
+      route: { ...route, reason: 'rate_limit' }
+    })
+
+    const item = planUsageItem()
+
+    expect(item?.label).toBe('Nous Portal · Today 100% → Ollama Cloud')
+    expect(item?.title).toContain('Nous Portal is at 100% used')
+  })
 })
 
 describe('context meter beside an agentless breakdown', () => {

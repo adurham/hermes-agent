@@ -4192,6 +4192,26 @@ export const en: Translations = {
         `${primary} is at ${used} used${resetsIn ? `, resets in ${resetsIn}` : ''} — this chat is answering on ${active} until then · open Billing`,
       fallbackTitleUnknown: (primary, active) =>
         `This chat is set to ${primary}, but answers are coming from ${active} (provider fallback) · open Billing`,
+      // The cause of the swap, when it was NOT the allowance (a refusal, an overload, a dead
+      // provider). Keyed by the failover reason the gateway reports on `usage.route.reason`.
+      fallbackCauses: {
+        content_policy_blocked: 'refused this turn on content policy',
+        provider_policy_blocked: 'blocked this turn by provider policy',
+        data_policy_denied: 'blocked this turn by its data policy',
+        overloaded: 'is overloaded',
+        timeout: 'timed out',
+        connection: 'could not be reached',
+        server_error: 'returned a server error',
+        invalid_response: 'returned an invalid response',
+        auth: 'rejected its credentials',
+        auth_permanent: 'rejected its credentials',
+        model_not_found: 'could not serve this model',
+        format_error: 'rejected the request format',
+        incomplete_response: 'returned an incomplete response',
+        empty_response: 'returned an empty response'
+      },
+      fallbackCauseTitle: (primary, active, cause) =>
+        `${primary} ${cause} — this chat is answering on ${active} because of that, not because of your plan's usage · open Billing`,
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',

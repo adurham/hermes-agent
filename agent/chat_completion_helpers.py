@@ -28,7 +28,8 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_error_code, _extract_status_code, is_generation_terminated_error)
+    _extract_error_code, _extract_status_code, is_generation_terminated_error,
+    policy_refusal_fallback_enabled)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 # FORK: capture+persist the exo engine's per-response ``: generation_stats`` SSE comment frames
 # (see agent/fork/generation_stats.py). Best-effort; a no-op for every endpoint that never sends it.
@@ -2022,6 +2023,10 @@ def _record_fallback_event(agent, reason, old_model, old_provider, fb_model, fb_
     else:
         cause = pending if isinstance(pending, str) and pending else None
     agent._last_fallback_cause = cause
+    # Sticky for the life of the swap (``_last_fallback_cause`` is per-turn): the status bar needs
+    # the CAUSE of the fallback to say what actually happened. Without it every swap reads as "the
+    # plan is spent, back when the window resets" — including a safety refusal, which is neither.
+    agent._provider_fallback_reason = cause
     events = getattr(agent, "_fallback_events", None)
     if not isinstance(events, list):
         events = agent._fallback_events = []
@@ -2180,6 +2185,16 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     construction goes through resolve_provider_client (no duplicated provider→key mappings).
     ``notice_override`` replaces the default "unavailable" line for callers that know *why* before
     any request was refused (the usage preflight, which reads the plan's own gauges)."""
+    # A safety refusal is not an outage (FORK ``fallback.on_policy_refusal``, default off): the
+    # chain covers an unavailable provider, an overloaded model and a spent allowance, and none of
+    # them is what a refusal means. Guarded here rather than at each caller so every refusal path
+    # (HTTP 200 finish_reason=content_filter, a classified 400 content block, a filter-killed
+    # stream) obeys the same rule and falls through to its own typed refusal result.
+    if reason is FailoverReason.content_policy_blocked and not policy_refusal_fallback_enabled():
+        logger.info(
+            "Fallback declined: %s is a refusal, not an outage (fallback.on_policy_refusal=false); "
+            "the turn stays on %s/%s", getattr(reason, "value", reason), agent.provider, agent.model)
+        return False
     from agent.fallback_cooldown import _arm_primary_restore_hold, _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False

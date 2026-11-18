@@ -973,6 +973,10 @@ export interface UsageStats {
     fallback_active?: boolean
     primary_model?: null | string
     primary_provider?: null | string
+    /** Why the swap happened (a `FailoverReason` value, e.g. `content_policy_blocked`,
+     *  `rate_limit`). Absent on an older gateway; only the allowance-family causes explain
+     *  themselves with the plan's percentage, so the bar names any other cause directly. */
+    reason?: null | string
   }
   total: number
 }

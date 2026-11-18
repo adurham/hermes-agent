@@ -42,6 +42,10 @@ class Route(Result):
     fallback_active: bool = False
     primary_model: str | None = None
     primary_provider: str | None = None
+    # FORK: why the swap happened (a FailoverReason value). Only the allowance family explains
+    # itself with the plan's percentage — a refusal, an overload or a dead provider must be named
+    # as itself instead of borrowing the "out of credits" story.
+    reason: str | None = None
 
 
 class Usage(OpenModel):

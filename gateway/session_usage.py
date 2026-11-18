@@ -285,9 +285,13 @@ def plan_route(agent, gauge: dict | None = None) -> dict | None:
     primary = getattr(agent, "_primary_runtime", None)
     primary = primary if isinstance(primary, dict) else {}
     primary_model = str(primary.get("model") or "").strip() or None
+    # Why the swap happened. Without it a status bar can only assume "the allowance is spent", and
+    # it paints every fallback — a safety refusal, an overload, a dead provider — as a plan limit
+    # that clears at the window's reset. ``_provider_fallback_reason`` lives as long as the swap.
+    reason = str(getattr(agent, "_provider_fallback_reason", "") or "").strip() or None
     return {"model": str(getattr(agent, "model", "") or ""), "provider": provider,
             "fallback_active": True, "primary_model": primary_model,
-            "primary_provider": primary_provider}
+            "primary_provider": primary_provider, "reason": reason}
 
 
 def usage_stats(agent) -> dict:

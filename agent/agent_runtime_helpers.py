@@ -1458,6 +1458,7 @@ def restore_primary_runtime(agent) -> bool:
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
+        agent._provider_fallback_reason = None
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
@@ -2381,6 +2382,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     agent._fallback_activated = False
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
+    agent._provider_fallback_reason = None
     agent._fallback_index = 0
     agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;

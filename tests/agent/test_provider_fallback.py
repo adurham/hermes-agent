@@ -74,6 +74,46 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=None)
         assert agent._try_activate_fallback() is False
 
+    def test_a_safety_refusal_never_leaves_the_primary(self):
+        """FORK ``fallback.on_policy_refusal`` (default off): a refusal is a verdict about the
+        request, not an outage — the chain covers unavailable/overloaded/spent only. The turn stays
+        on the chosen model, the chain is not walked, and no restore hold is armed."""
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch("agent.chat_completion_helpers.policy_refusal_fallback_enabled", return_value=False),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(_mock_client(), "gpt-4o")) as resolver,
+        ):
+            assert agent._try_activate_fallback(FailoverReason.content_policy_blocked) is False
+        resolver.assert_not_called()
+        assert agent._fallback_index == 0
+        assert agent._fallback_activated is False
+        assert getattr(agent, "_primary_restore_hold_until", 0.0) == 0.0
+
+    def test_a_safety_refusal_still_falls_back_when_the_knob_is_on(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch("agent.chat_completion_helpers.policy_refusal_fallback_enabled", return_value=True),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(_mock_client(), "gpt-4o")),
+        ):
+            assert agent._try_activate_fallback(FailoverReason.content_policy_blocked) is True
+        assert agent._fallback_activated is True
+
+    def test_an_outage_still_falls_back(self):
+        """The rule is scoped to refusals: unavailable/overloaded/spent keep switching."""
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        for reason in (FailoverReason.overloaded, FailoverReason.rate_limit, FailoverReason.billing):
+            agent = _make_agent(fallback_model=fbs)
+            with (
+                patch("agent.chat_completion_helpers.policy_refusal_fallback_enabled", return_value=False),
+                patch("agent.auxiliary_client.resolve_provider_client",
+                      return_value=(_mock_client(), "gpt-4o")),
+            ):
+                assert agent._try_activate_fallback(reason) is True, reason
+
     def test_advances_index(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},

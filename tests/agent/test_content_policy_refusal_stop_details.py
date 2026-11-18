@@ -35,8 +35,10 @@ def test_empty_refusal_reports_stop_details_explanation():
 
 
 def test_refusal_that_falls_back_names_the_cause(caplog):
-    """A refusal answered by the fallback still says why: the switch notice gets the
+    """Opted in, a refusal answered by the fallback still says why: the switch notice gets the
     content-policy reason (not "provider failure") and agent.log keeps the native stop reason."""
+    from unittest.mock import patch
+
     from agent.error_classifier import FailoverReason
 
     agent = _agent()
@@ -46,7 +48,8 @@ def test_refusal_that_falls_back_names_the_cause(caplog):
         content=[], stop_reason="refusal", usage=None, model="claude",
         stop_details={"type": "refusal", "category": "cyber", "explanation": None},
     )
-    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+    with patch("agent.turn_truncation.policy_refusal_fallback_enabled", return_value=True), \
+            caplog.at_level("WARNING", logger="agent.conversation_loop"):
         verdict = handle_content_policy_refusal(
             agent, response, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
             active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",
@@ -55,6 +58,28 @@ def test_refusal_that_falls_back_names_the_cause(caplog):
     assert verdict.action == "break"
     agent._try_activate_fallback.assert_called_once_with(reason=FailoverReason.content_policy_blocked)
     assert "native_stop_reason=refusal" in caplog.text and "cyber" in caplog.text
+
+
+def test_refusal_stays_on_the_primary_by_default():
+    """Default (``fallback.on_policy_refusal: false``): a refusal is a verdict about the request,
+    not an outage — the chain is never walked, so the turn keeps the operator's own provider."""
+    from unittest.mock import patch
+
+    agent = _agent()
+    agent._has_pending_fallback.return_value = True
+    agent._try_activate_fallback.return_value = True
+    response = SimpleNamespace(
+        content=[], stop_reason="refusal", usage=None, model="claude",
+        stop_details={"type": "refusal", "category": "cyber", "explanation": None},
+    )
+    with patch("agent.turn_truncation.policy_refusal_fallback_enabled", return_value=False):
+        verdict = handle_content_policy_refusal(
+            agent, response, TurnRetryState(), thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
+            active_system_prompt=None, conversation_history=[], api_call_count=1, effective_task_id="t", turn_id="u",
+            api_request_id="r", api_start_time=0.0, retry_count=0, max_retries=0,
+        )
+    agent._try_activate_fallback.assert_not_called()
+    assert verdict.action == "return", "the refusal is surfaced, not routed away"
 
 
 def test_refusal_log_caps_a_long_stop_details_explanation(caplog):

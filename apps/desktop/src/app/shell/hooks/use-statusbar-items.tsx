@@ -90,6 +90,20 @@ import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
+/** Failover reasons where the ALLOWANCE is the explanation for a provider swap: the plan is spent
+ *  or throttled, so naming its percentage and reset is the truthful story. Every other cause
+ *  (a safety refusal, an overload, a dead provider, bad credentials) must not borrow that copy —
+ *  it tells the operator they are out of credits when they are not. Kept in sync with
+ *  `agent.error_classifier.FailoverReason`; an unknown or absent reason keeps the old behaviour. */
+const PLAN_LIMIT_FALLBACK_CAUSES = new Set([
+  'rate_limit',
+  'upstream_rate_limit',
+  'billing',
+  'usage_window',
+  'quota_exhausted',
+  'free_tier_exhausted'
+])
+
 interface StatusbarItemsOptions {
   agentsOpen: boolean
   changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
@@ -400,6 +414,17 @@ export function useStatusbarItems({
     : planProvider
 
   const fallbackTo = fallbackRoute?.provider ? providerDisplayName(fallbackRoute.provider) : ''
+
+  // What the swap was actually FOR. `reason` is the failover reason the gateway recorded. Only the
+  // allowance family — a spent plan, a rate limit, exhausted credits — is explained by the plan's
+  // percentage and its reset; every other cause (a safety refusal, an overload, a dead provider) has
+  // nothing to do with the allowance, and printing "42% used, resets in 2h — answering elsewhere
+  // until then" for one of those claims the operator is out of credits when they are not.
+  const fallbackCause = (fallbackRoute?.reason || '').trim()
+  const causeIsPlanLimit = !fallbackCause || PLAN_LIMIT_FALLBACK_CAUSES.has(fallbackCause)
+  const fallbackCauseText = fallbackCause
+    ? copy.fallbackCauses[fallbackCause] || fallbackCause.replace(/_/g, ' ')
+    : ''
 
   const planAllowance = planGauge
     ? `${planProvider ? `${planProvider} · ` : ''}${gaugeTitle({ label: planGauge.id, title: planGauge.label }, { day: t.modelPicker.today, month: t.modelPicker.month, top_tier: t.modelPicker.topTier, week: t.modelPicker.week })} ${formatPercentUsed(planUsed)}`
@@ -811,17 +836,23 @@ export function useStatusbarItems({
         icon: fallbackRoute ? <AlertTriangle className="size-3" /> : <Activity className="size-3" />,
         id: 'plan-usage',
         label: fallbackRoute
-          ? planAllowance || fallbackFrom
-            ? copy.fallbackSwap(planAllowance || fallbackFrom, fallbackTo || copy.fallbackUnknown)
-            : fallbackTo || undefined
+          ? causeIsPlanLimit
+            ? planAllowance || fallbackFrom
+              ? copy.fallbackSwap(planAllowance || fallbackFrom, fallbackTo || copy.fallbackUnknown)
+              : fallbackTo || undefined
+            : fallbackFrom
+              ? copy.fallbackSwap(fallbackFrom, fallbackTo || copy.fallbackUnknown)
+              : fallbackTo || undefined
           : planGauge
             ? planAllowance
             : undefined,
         title: fallbackRoute
           ? fallbackFrom
-            ? planGauge
-              ? copy.fallbackTitle(fallbackFrom, fallbackTo || copy.fallbackUnknown, formatPercentUsed(planUsed), planResetsIn)
-              : copy.fallbackTitleUnknown(fallbackFrom, fallbackTo || copy.fallbackUnknown)
+            ? causeIsPlanLimit
+              ? planGauge
+                ? copy.fallbackTitle(fallbackFrom, fallbackTo || copy.fallbackUnknown, formatPercentUsed(planUsed), planResetsIn)
+                : copy.fallbackTitleUnknown(fallbackFrom, fallbackTo || copy.fallbackUnknown)
+              : copy.fallbackCauseTitle(fallbackFrom, fallbackTo || copy.fallbackUnknown, fallbackCauseText)
             : copy.fallbackTitleUnknown(fallbackTo || copy.fallbackUnknown, fallbackTo || copy.fallbackUnknown)
           : planGauge
             ? copy.planUsageTitle(formatPercentUsed(planUsed), planResetsIn)
@@ -865,6 +896,8 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage.compressions,
+      causeIsPlanLimit,
+      fallbackCauseText,
       fallbackFrom,
       fallbackRoute,
       fallbackTo,

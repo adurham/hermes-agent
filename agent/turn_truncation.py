@@ -15,7 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, policy_refusal_fallback_enabled
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
@@ -365,6 +365,16 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
         getattr(st.response, "_content_filter_terminated", False)
         and agent._fallback_index < len(agent._fallback_chain)
     ):
+        return None
+    if not policy_refusal_fallback_enabled():
+        # FORK (``fallback.on_policy_refusal``, default off): a filter-killed stream is a refusal,
+        # not an outage — the turn keeps the provider the operator chose.
+        agent._vprint(
+            f"{agent.log_prefix}🛡️  Content filter terminated the stream — staying on "
+            f"{agent.provider or 'the primary'} (no provider switch on a refusal)...",
+            force=True, diagnostic=True,
+        )
+        agent._emit_diagnostic_status("Content filter terminated the stream; not switching providers on a refusal.")
         return None
     agent._vprint(
         f"{agent.log_prefix}🛡️  Content filter terminated stream — activating fallback provider...",
@@ -931,15 +941,24 @@ def handle_content_policy_refusal(
         _refusal_log or "(no text)",
     )
     if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+        if policy_refusal_fallback_enabled():
+            agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
+        else:
+            # FORK: a refusal is not an outage. Say so, and never leave the chosen provider for it
+            # (the chain covers unavailable/overloaded/spent, not "the model said no").
+            agent._buffer_diagnostic_status(
+                "⚠️ Model declined to respond (safety refusal) — staying on "
+                f"{agent.provider or 'the primary provider'}.")
     # Name the cause: without a reason the switch notice reads "unavailable (provider failure)",
     # while the same refusal raised as an HTTP 400 (DeepSeek's "Content Exists Risk") says
     # "content policy blocked the request" (#124874). Not a rate-limit reason, so no cooldown is armed.
-    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+    if policy_refusal_fallback_enabled() and agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
         active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
         return RefusalVerdict("break", None, active_system_prompt)
 
-    # FORK: middle rung of the refusal ladder (fallback → history scrub → give up).
+    # FORK: middle rung of the refusal ladder (history scrub → give up). The provider fallback is
+    # not part of it unless ``fallback.on_policy_refusal`` is on: a refusal is a verdict about
+    # this request, so the turn stays on the model the operator chose.
     # Before surrendering the turn, strip shell-command patterns from HISTORICAL
     # context that look like data exfiltration to Anthropic's content filter but
     # are legitimate authorized support work (pg_dump via lockbox, S3 presigns,

@@ -3651,6 +3651,10 @@ export interface Translations extends NoticeTranslations {
       fallbackUnknown: string
       fallbackTitle: (primary: string, active: string, used: string, resetsIn: string) => string
       fallbackTitleUnknown: (primary: string, active: string) => string
+      /** Non-plan fallbacks (a refusal, an overload, a dead provider): the swap is NOT about the
+       *  allowance, so the bar names the cause instead of the spent-percentage/reset story. */
+      fallbackCauseTitle: (primary: string, active: string, cause: string) => string
+      fallbackCauses: Record<string, string>
       agents: string
       closeAgents: string
       openAgents: string

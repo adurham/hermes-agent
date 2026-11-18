@@ -397,7 +397,45 @@ def test_a_fallback_keeps_the_primaries_allowance_and_names_it(monkeypatch):
     assert gauge is not None and gauge['provider'] == 'claude-subscription-directsdk-experimental'
     assert plan_route(agent) == {
         'model': 'deepseek-v4.1-flash', 'provider': 'ollama-cloud', 'fallback_active': True,
-        'primary_model': 'claude-opus-5-5', 'primary_provider': 'claude-subscription-directsdk-experimental'}
+        'primary_model': 'claude-opus-5-5', 'primary_provider': 'claude-subscription-directsdk-experimental',
+        'reason': None}
+
+
+def test_the_route_names_why_the_swap_happened(monkeypatch):
+    """A status bar that only knows "a fallback is active" must assume the allowance is spent and
+    print its percentage and reset — which painted a safety refusal as an out-of-credits notice on
+    a plan at 42%. The cause rides the payload so the bar can say what actually happened."""
+    import time
+    from datetime import UTC, datetime
+
+    from agent import account_usage_cache
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    from gateway.session_usage import plan_route
+
+    resets = datetime.fromtimestamp(int(time.time()) + 2 * 3_600, tz=UTC)
+    snapshot = AccountUsageSnapshot(
+        provider='claude-subscription-directsdk-experimental', source='oauth_usage_api',
+        fetched_at=datetime.now(UTC),
+        windows=(AccountUsageWindow('Current session', 4200.0, resets),))
+    monkeypatch.setattr(account_usage_cache, 'cached_account_usage',
+                        lambda provider, **_kw: snapshot if provider == 'claude-subscription-directsdk-experimental' else None)
+    monkeypatch.setattr(account_usage_cache, 'snapshot_is_stale', lambda _snapshot: False)
+    agent = _agent()
+    agent.provider = 'ollama-cloud'
+    agent.model = 'deepseek-v4.1-flash'
+    agent._credits_state = None
+    agent._fallback_activated = True
+    agent._primary_runtime = {'provider': 'claude-subscription-directsdk-experimental',
+                              'model': 'claude-opus-5-5'}
+    agent._provider_fallback_reason = 'content_policy_blocked'
+
+    route = plan_route(agent)
+    assert route is not None and route['reason'] == 'content_policy_blocked'
+    # Cleared with the rest of the fallback state on a restore: a stale cause must not outlive
+    # the swap it explains.
+    agent._provider_fallback_reason = None
+    assert (plan_route(agent) or {}).get('reason') is None
 
 
 def test_usage_stats_names_the_route_a_fallback_carries(monkeypatch):
@@ -427,7 +465,7 @@ def test_usage_stats_names_the_route_a_fallback_carries(monkeypatch):
 
     assert stats['route'] == {
         'model': 'deepseek-v4.1-flash', 'provider': 'ollama-cloud', 'fallback_active': True,
-        'primary_model': 'deepseek/deepseek-v4.1-flash', 'primary_provider': 'nous'}
+        'primary_model': 'deepseek/deepseek-v4.1-flash', 'primary_provider': 'nous', 'reason': None}
     CANONICAL_METHODS['session.stats'].result.model_validate(stats)
 
     # A fallback bound into the session (post-restart) has no live flag and its snapshot names the

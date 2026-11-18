@@ -2,8 +2,10 @@
 
 The fork's refusal recovery is a three-rung ladder:
 
-  1. a configured fallback provider (different providers, different policies)
-  2. scrub trigger patterns out of HISTORICAL context and retry  <-- fork-only
+  1. a configured fallback provider -- OPT-IN only (`fallback.on_policy_refusal`): a refusal is a
+     verdict about the request, so by default the turn keeps the provider the operator chose and
+     this rung is skipped entirely
+  2. scrub trigger patterns out of HISTORICAL context and retry  <-- fork-only (the default start)
   3. give up with the /compact recovery hint
 
 The v2026.9.14 decomposition of conversation_loop.py carried rungs 1 and 3 into
@@ -23,6 +25,9 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from agent.turn_retry_state import TurnRetryState
 
@@ -112,12 +117,29 @@ def test_trigger_is_a_real_pattern():
 
 
 class TestRefusalLadder:
+    def test_default_refusal_does_not_switch_provider(self, caplog):
+        """FORK default (``fallback.on_policy_refusal: false``): a refusal never leaves the chosen
+        provider, even with a configured chain — the ladder starts at the scrub rung."""
+        agent, _ = _agent(has_fallback=True)
+        agent._try_activate_fallback = lambda *a, **k: pytest.fail(
+            "a safety refusal must not switch providers (fallback.on_policy_refusal is off)"
+        )
+        msgs = _history()
+
+        with patch("agent.turn_truncation.policy_refusal_fallback_enabled", return_value=False):
+            verdict, retry = _run(agent, msgs, caplog)
+
+        assert verdict.action == "break", "must retry on the same provider"
+        assert TRIGGER not in str(msgs), "the scrub rung must run"
+        assert retry.restart_with_rebuilt_messages
+
     def test_rung1_fallback_wins_without_scrubbing(self, caplog):
-        """A configured fallback is tried FIRST -- cheaper and lossless, so
-        history is left untouched."""
+        """Opted in (``fallback.on_policy_refusal: true``): the configured fallback is tried
+        FIRST -- cheaper and lossless, so history is left untouched."""
         agent, _ = _agent(has_fallback=True)
         msgs = _history()
-        verdict, _retry = _run(agent, msgs, caplog)
+        with patch("agent.turn_truncation.policy_refusal_fallback_enabled", return_value=True):
+            verdict, _retry = _run(agent, msgs, caplog)
         assert verdict.action == "break"
         assert TRIGGER in str(msgs), "rung 1 must not scrub"
         assert agent._refusal_sanitize_attempted is False

@@ -1439,6 +1439,24 @@ def _usage_window_fallback_enabled() -> bool:
         return False
 
 
+def policy_refusal_fallback_enabled() -> bool:
+    """``fallback.on_policy_refusal`` (FORK) — may a safety refusal hand the turn to the chain?
+
+    A refusal is a verdict about THIS request, not an outage. The chain exists for a provider that
+    is unavailable, a model that is overloaded, or an allowance that is spent; spending another
+    provider's quota to answer a question the chosen model declined puts the operator on a model
+    they did not pick and hides the refusal. Default False: the turn stays on the primary, the
+    refusal is surfaced (after the history-scrub rung), and no cooldown/hold is armed.
+    ``fallback.on_policy_refusal: true`` restores upstream's single fallback try.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return bool(cfg_get(load_config_readonly(), "fallback", "on_policy_refusal", default=False))
+    except Exception:  # health: allow BLE001 -- a config read must never change an error verdict
+        logger.debug("fallback.on_policy_refusal unreadable; refusals stay on the primary", exc_info=True)
+        return False
+
+
 def _classify_402(error_msg: str, result_fn: Callable[..., Any], code: str = "", body: Any = None) -> Any:
     """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing.
     The Nous usage-window code is decisive (its prose names the reset time, which must not

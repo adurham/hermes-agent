@@ -9,6 +9,52 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Fork-only fix — 2026-11-17 (a safety refusal is not an outage, and the status bar stops claiming it is)
+
+**Symptom.** The operator, mid-Wi-Fi diagnostic work on a Claude-subscription chat, saw the bar read
+`Claude Subscription — Current session 42% → Ollama Cloud` and its tooltip `Claude Subscription is
+at 42% used, resets in 2h — this chat is answering on Ollama Cloud until then`. Both halves were
+false: the plan had room, and the switch was Claude's own cyber-safeguard classifier refusing the
+turn. Reported as "WHY THE FUCK IS THAT SAYING IT'S USING OLLAMA INSTEAD OF CLAUDE" and then, as a
+rule: "a refusal in the main model like that I don't want to go to fallback — fallback is for the
+provider is unavailable or the model is overloaded, or I'm out of credits".
+
+**Root cause — two halves, same incident.** `agent.log` for session `20261117_174656_6d9a8f`:
+`18:06:46` and `18:09:05` `Model declined to respond (finish_reason=content_filter) … refusal=Cyber
+safeguards flagged this message`, and one line later `Fallback activated: claude-sonnet-5-5[1m] →
+deepseek-v4.1-flash:1017 (ollama-cloud)`.
+1. `agent/turn_truncation.py::handle_content_policy_refusal` tried the provider chain FIRST for any
+   refusal (upstream's design: "different providers, different policies"). That is a policy the
+   owner rejects — a refusal is a verdict about the request, not an outage, and the chain spends
+   another provider to answer what the chosen model declined.
+2. `gateway/session_usage.py::plan_route` carried no cause, so the desktop could only assume "the
+   allowance is spent": `fallbackTitle` hard-codes the percentage and the plan's reset, and the
+   real "until then" was the 600 s anti-flap restore hold (`Primary restore hold armed: flap #1 …`).
+
+**Fix.** FORK knob `fallback.on_policy_refusal` (default false, also set in config.yaml):
+`agent/error_classifier.py::policy_refusal_fallback_enabled`. Guarded at the single choke point
+`chat_completion_helpers.try_activate_fallback` (a `content_policy_blocked` reason returns False
+whatever the caller), plus the two call sites that would otherwise emit a misleading notice:
+`handle_content_policy_refusal` (now scrub → give up; the fallback rung is opt-in) and
+`_content_filter_fallback` (a filter-killed stream). Rate limits, overloads, billing/auth and
+transport failures still switch exactly as before. `plan_route` now carries `reason` (from a new
+sticky `agent._provider_fallback_reason`, cleared with the rest of the fallback state), the contract
+gained `Route.reason`, and the desktop renders `copy.fallbackCauseTitle` — naming the cause — for
+every reason outside the allowance family (`PLAN_LIMIT_FALLBACK_CAUSES`), with the percentage kept
+for the ones where it IS the explanation.
+
+**Files.** `agent/error_classifier.py`, `agent/chat_completion_helpers.py`,
+`agent/agent_runtime_helpers.py`, `agent/turn_truncation.py`, `gateway/session_usage.py`,
+`tui_gateway/contracts/common.py`, `apps/desktop/src/{i18n/en.ts,i18n/types.ts,types/hermes.ts}`,
+`apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx`; tests: `tests/agent/test_provider_fallback.py`
+(default off, opt-in on, outages unaffected), `test_refusal_ladder_scrub_rung.py` (default ladder
+starts at the scrub rung), `test_content_policy_refusal_stop_details.py`,
+`tests/gateway/test_local_viewer_usage.py` (route carries the cause), and the desktop
+`use-statusbar-items.test.tsx` (refusal named, rate-limit keeps the allowance copy).
+
+**Deploy.** Backend takes effect on the next `hermes update` / app Update (in-process route state is
+per-session); the status-bar copy lives in the desktop client and needs the Mac app rebuilt.
+
 ### Fork-only fix — 2026-11-13 (the turn-close contract's call site was dropped by the promise-gate retirement)
 
 **Symptom.** On the desktop surface the agent's replies vanished: a turn that did real tool work
