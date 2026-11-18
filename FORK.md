@@ -54,6 +54,33 @@ killing it) must exist on every host; without it systemd creates an implicit unc
 now live outside `hermes-gateway.service`, so a service stop no longer kills them by cgroup; they
 still die with their owner because a closed control pipe ends the turn (`_die_with_owner`).
 
+### Fork-only fix — 2026-11-17 (tests): the kanban fresh-home fixtures left a `hermes_cli` purge behind and 27 later tests dialled the real gateway
+
+**Symptom.** `pytest tests/hermes_cli/test_kanban*.py` failed 27 later tests
+(`test_kanban_worker_socket_recovery` 24, `test_kanban_worker_owner_wait` 2,
+`test_kanban_worker_session_source` 1) that pass alone: the live-system guard blocked a real
+`gateway run` spawn, or a real discovery answered `DiscoveryError: invalid_control_response`.
+
+**Root cause.** Two fixtures needed `hermes_cli` imported against a fresh `HERMES_HOME`, so they
+deleted every `hermes_cli*`/`hermes_state`/`hermes_constants` entry from `sys.modules` and never
+restored them. Test files that imported at collection kept the pre-purge module objects while
+production code's function-local imports (`kanban_worker_client.run`) bound the fresh ones, so a
+`monkeypatch.setattr` was invisible to the code under test; exceptions built in `parametrize` were
+instances of the stale class that the fresh `except` clause did not catch.
+
+**Fix.** `tests/hermes_cli/hermes_module_purge.py` — `fresh_hermes_modules()` purges for a window
+and restores the session's own objects afterwards; the two fixtures
+(`test_kanban_cli_dispatch_passthrough.py`, `test_kanban_per_profile_cap.py`) use it, and
+`test_kanban_module_purge_scope.py` pins both halves (fresh inside the window, the session's own
+objects after it). `test_kanban_worker_session_source.py` also drops an inherited `INVOCATION_ID`
+so a spawn test no longer inherits the runner's systemd unit.
+
+**Evidence.** The 67 touched/new tests pass, and the directory run no longer shows the 27
+order-dependent failures (the only failures left are the environmental 8 + 14 named in the
+planned-restart entry, identical on a clean checkout).
+
+**Deploy.** Tests only.
+
 ### Fork-only fix — 2026-11-17 (desktop): the Claude status bar stuck on "Week" — the allowance store kept the later-resetting window, and the week always resets later
 
 **Symptom.** The status bar had been reading `Claude Subscription · Current session N%` (the 5-hour

@@ -12,6 +12,20 @@ import pytest
 from hermes_state import SessionDB
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_systemd_unit(monkeypatch):
+    """A spawn test must not inherit the pytest process's own systemd unit.
+
+    ``_default_spawn`` asks ``restart_safe_gateway_child_argv`` where the worker should live, and
+    that helper takes the managed-systemd path whenever ``INVOCATION_ID`` is set — which it is
+    when the suite runs inside a unit (a kanban worker IS a systemd scope). A run-id-less task is
+    then refused with "cannot create restart-safe systemd scope", a fact about the caller's
+    topology and not about the env tagging asserted here. Tests that want the managed path set
+    ``INVOCATION_ID`` themselves, as ``test_kanban_gateway_restart_handoff`` does.
+    """
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

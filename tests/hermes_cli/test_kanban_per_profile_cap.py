@@ -8,30 +8,36 @@ model / API quota / browser pool from being overwhelmed by a fan-out.
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 
 import pytest
 
+from tests.hermes_cli.hermes_module_purge import fresh_hermes_modules
+
 
 @pytest.fixture()
 def isolated_kanban_home_with_profiles(monkeypatch):
-    """Spin up a fresh HERMES_HOME with kanban DB + alpha/beta profiles."""
+    """Spin up a fresh HERMES_HOME with kanban DB + alpha/beta profiles.
+
+    The import purge is a WINDOW (``fresh_hermes_modules``): the modules this test imports must
+    answer for *test_home*, and on the way out the session gets its own module objects back — a
+    purge left behind makes later worker tests patch a module the production code no longer reads
+    (they then dial the real gateway and fail only in a full-directory run; see
+    tests/hermes_cli/hermes_module_purge.py).
+    """
     test_home = tempfile.mkdtemp(prefix="kanban_per_profile_cap_test_")
     for prof in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
         with open(os.path.join(test_home, "profiles", prof, "config.yaml"), "w") as fh:
             fh.write("{}\n")  # identity marker: a bare dir is not a profile
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
-    from hermes_cli import kanban_db_dispatch
-    # The module purge above discards the conftest's memory-sample neutralizer;
-    # re-apply it so the host's live memory pressure cannot cap this tick.
-    monkeypatch.setattr(kanban_db_dispatch, "_system_memory_sample", dict)
-    yield kanban_db
+    with fresh_hermes_modules():
+        from hermes_cli import kanban_db
+        from hermes_cli import kanban_db_dispatch
+        # The fresh copy re-reads the host's live memory pressure: re-apply the neutralizer the
+        # conftest patched onto the session's module so the host's pressure cannot cap this tick.
+        monkeypatch.setattr(kanban_db_dispatch, "_system_memory_sample", dict)
+        yield kanban_db
 
 
 def _fake_spawn(*args, **kwargs):

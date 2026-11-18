@@ -9,24 +9,30 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.hermes_cli.hermes_module_purge import fresh_hermes_modules
+
 
 @pytest.fixture()
 def isolated_kanban_home(monkeypatch):
-    """Spin up a fresh HERMES_HOME with a clean kanban DB."""
+    """Spin up a fresh HERMES_HOME with a clean kanban DB.
+
+    The import purge is a WINDOW (``fresh_hermes_modules``): the modules this test imports must
+    answer for *test_home*, but the rest of the session must keep the objects it imported at
+    collection time — a purge left behind makes later worker tests patch a module that the
+    production code's function-local imports no longer read (they then dial the real gateway and
+    fail only in a full-directory run; see tests/hermes_cli/hermes_module_purge.py).
+    """
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    with fresh_hermes_modules():
+        yield test_home
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):
