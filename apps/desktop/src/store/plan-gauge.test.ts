@@ -82,6 +82,28 @@ describe('the plan allowance is an account fact', () => {
     expect(planGaugeFor($planGauges.get(), scope, 'nous')?.used_bp).toBe(400)
   })
 
+  it('lets the current-session window displace the week, and never the reverse', () => {
+    const scope = planScopeFor('runtimeA')
+    const claude = 'claude-subscription-directsdk-experimental'
+    const week = (used_bp: number) => claudeGauge(used_bp, WINDOW_RESET + 172_800_000)
+    const session = (used_bp: number): PlanGauge => ({ ...claudeGauge(used_bp), id: 'session', label: 'Current session' })
+
+    // The week resets days after the session, so "later reset wins" used to pin it for good.
+    notePlanGauge(scope, week(5_700), 'runtimeA')
+    notePlanGauge(scope, session(600), 'runtimeB')
+    expect(planGaugeFor($planGauges.get(), scope, claude)?.id).toBe('session')
+
+    // A session resumed from before the rule replays the week: it must not take the bar back.
+    notePlanGauge(scope, week(5_800), 'runtimeC')
+    expect(planGaugeFor($planGauges.get(), scope, claude)?.id).toBe('session')
+
+    // A full week is what blocks, so it does win over a session with room left.
+    notePlanGauge(scope, week(10_000), 'runtimeC')
+    expect(planGaugeFor($planGauges.get(), scope, claude)?.id).toBe('week')
+    notePlanGauge(scope, session(700), 'runtimeB')
+    expect(planGaugeFor($planGauges.get(), scope, claude)?.id).toBe('week')
+  })
+
   it('does not carry one source allowance onto another', () => {
     recordSessionEventScope({ connectionId: 'work', profile: 'coder', session_id: 'remote-1' })
     $sessionStates.set({

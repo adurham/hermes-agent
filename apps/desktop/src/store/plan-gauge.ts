@@ -80,6 +80,8 @@ export function planGaugeFor(
   return scoped.length === 1 ? scoped[0][1].gauge : null
 }
 
+const isFull = (gauge: PlanGauge): boolean => gauge.used_bp >= 10_000
+
 /**
  * Whether `next` may displace `previous`. Within one window (same reset instant) only a HIGHER
  * used_bp moves the number: usage accrues monotonically, so a session resumed from an older
@@ -89,6 +91,24 @@ export function planGaugeFor(
 function supersedes(previous: PlanGauge, next: PlanGauge): boolean {
   const before = previous.resets_at_ms ?? null
   const after = next.resets_at_ms ?? null
+
+  // Two different KINDS of window (Claude's 5-hour session vs its week) are not successive
+  // windows of one allowance, so "later reset wins" would pin the week (resets days out) over the
+  // session (resets hours out) forever, whichever the gateway meant to show. Mirror the gateway's
+  // rule (`session_usage._account_window_gauge`): a full window is what blocks, so it wins (the
+  // later-freeing one of two); short of that the current-session window leads. A stale session
+  // resumed from before that rule therefore cannot drag the bar back to the week.
+  if (previous.id !== next.id && (previous.id === 'session' || next.id === 'session' || isFull(previous) || isFull(next))) {
+    if (isFull(previous) !== isFull(next)) {
+      return isFull(next)
+    }
+
+    if (isFull(previous)) {
+      return (after ?? 0) > (before ?? 0)
+    }
+
+    return next.id === 'session'
+  }
 
   if (before !== after) {
     return after !== null && (before === null || after > before)

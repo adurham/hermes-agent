@@ -9,6 +9,41 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Fork-only fix — 2026-11-17 (desktop): the Claude status bar stuck on "Week" — the allowance store kept the later-resetting window, and the week always resets later
+
+**Symptom.** The status bar had been reading `Claude Subscription · Current session N%` (the 5-hour
+window, per `2e30a1bd169`) and went back to `Claude Subscription · Week 57%`. Owner: "the Claude
+subscription usage meter shifted BACK to weekly — I don't care about weekly". The gateway was
+correct the whole time: Claude Code's `get_usage` returned `five_hour` 6% / `seven_day` 58%, and
+`gateway/session_usage.py::_account_window_gauge` picks the session window unless a window is full.
+
+**Root cause.** `apps/desktop/src/store/plan-gauge.ts::supersedes` (the one-slot-per-account
+store every tab reads) decided "may this observation replace the held one" by reset instant: a later
+reset wins, the same reset only wins on a higher percentage. That rule is right for successive
+windows of ONE allowance (Nous day → next day), and wrong for two different KINDS of window on one
+account. The week resets days after the session, so the first weekly observation to land — a chat
+resumed from a stored `plan_gauge`, or any payload from before `2e30a1bd169` — beat every session
+observation after it, permanently (until the week rolled over). The gateway fix was never
+overridden by the gateway; the renderer discarded it.
+
+**Fix.** `supersedes` now compares window KIND first when `id` differs and either side is the
+`session` window or a full (`used_bp >= 10_000`) one, mirroring the gateway rule: a full window
+beats one with room (of two full ones, the later-freeing); otherwise the current-session window
+leads. A stale weekly observation can no longer displace the session reading, and a full week still
+wins over a session with room left, because that is the one that blocks. Same-kind observations
+keep the old rules (later reset, then higher percentage). Nous's `day`/`week`/`month` gauges are
+untouched — none is `session` and none is full-vs-not across kinds in practice.
+
+**Evidence.** Live `get_usage` on the workstation (`fetch_usage()` in the plugin's
+`directsdk_setup.py`): `limits[]` = `session` 6%, `weekly_all` 58% (`is_active` true),
+`weekly_scoped` Fable 24%. New vitest case `lets the current-session window displace the week, and
+never the reverse` in `plan-gauge.test.ts`; `plan-gauge.test.ts` 10/10, `use-statusbar-items.test.tsx`
+26/26, eslint clean on both files.
+
+**Deploy.** Desktop client only — needs the Mac app rebuilt via the desktop Update (backend is
+unchanged). A reload of the app window drops the held observation and may repaint the bar as Session
+sooner, but only the rebuild removes the cause.
+
 ### Fork-only fix — 2026-11-17 (a safety refusal is not an outage, and the status bar stops claiming it is)
 
 **Symptom.** The operator, mid-Wi-Fi diagnostic work on a Claude-subscription chat, saw the bar read
