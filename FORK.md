@@ -81,6 +81,63 @@ planned-restart entry, identical on a clean checkout).
 
 **Deploy.** Tests only.
 
+### Fork-only fix — 2026-11-17 (kanban): `hermes update` restarts were booked as card failures, and every lost worker read "EOFError"
+
+**Symptom.** Update restarts amputated 13 in-flight card attempts across three drains, each dying 181–188 s after
+the cut and booked `managed worker lost: EOFError`; a later card read that as a memory-cgroup OOM
+kill and blamed the 4 GiB cap for four deaths that were restarts. Another attempt dialled into an
+update's down window, was refused `Gateway inaccessible: service_identity_unverified`, and read as
+a credential problem (t_39446095).
+
+**Root cause.** (1) `EOFError` on the frame pipe is the symptom of *every* death — OOM kill,
+gateway restart, genuine crash — and the loss record carried nothing else. (2) The worker client
+(`kanban_worker_client.run`) gave up on a silent owner after `OWNER_WAIT_S = 180`, but a restart's
+after-turn wait (`agent.restart_after_turn_timeout`, default 1800 s) refuses every client read, so
+it always looked silent; its exit then ended the very turn the drain was deferring `stop()` for.
+(3) The planned-restart marker was only stamped at `stop()`, so nothing durable said "restart"
+during the wait or the down window. (4) Nothing told the board's host-failure verdict that a
+restart-shaped loss was not the card's.
+
+**Fix.** Evidence: `record_worker_loss` now stores the worker cgroup's counters (`memory`), the
+planned-restart marker (`planned_restart`, only if ≤ 1 h old) and the owner's own state
+(`owner`: `restart_requested`/`draining`/`external_drain`); `loss_evidence()` renders
+`[oom_kill=0; cgroup peak 6.14 GiB of 6.00 GiB cap; planned restart 152s earlier]` into the run
+error. Marker: `request_restart` stamps it at the REQUEST; the stop-time write is
+`stamp_planned_restart_unless_stamped`, so `requested_at` means the request, not the stop. Client:
+a restart the worker can see (`draining`+`restart_wait`, or a marker younger than the budget) is
+waited out on `RESTART_WAIT_BUDGET_S = 2400` (the after-turn cap plus ~60 s for the replacement
+owner) and, while in that mode, any owner refusal outside `_FINAL_OWNER_REASONS` (profile/trust/
+protocol faults) is retried; the budget runs from the first sight of the restart and resets when the
+owner answers. A clean receipt with no `worker_result` prints
+`Kanban attempt ended by a planned gateway restart…`; a settled turn with its own nonzero exit is
+NOT excused. Board: `planned_restart_loss(lost)` (marker or owner flag) marks the loss
+infrastructure (`_stamp_infrastructure`, `_infrastructure_verdict`, `planned gateway restart` in
+`_INFRA_FAILURE_RE`) and never exhausts the strike-free budget — except that a loss which also took a
+memcg `oom_kill` is the card's own and is charged (the counter outranks the marker).
+
+**Files.** `gateway/restart_notice.py`, `gateway/run_shutdown.py`, `gateway/session_kanban.py`,
+`gateway/session_managed_worker.py`, `hermes_cli/kanban_db_dispatch.py`,
+`hermes_cli/kanban_owner_recovery.py`, `hermes_cli/kanban_worker_client.py`; tests
+`tests/hermes_cli/test_kanban_worker_restart_patience.py` (new), `test_kanban_worker_restart_wait.py`,
+`test_kanban_managed_worker_loss.py` (planned loss charges nothing; OOM during a drain is charged),
+`test_kanban_worker_session_source.py`, `tests/gateway/test_planned_restart_marker_cli.py`.
+
+**Evidence.** Test-only for the restart half: the gateway restarted onto this code at 19:29 and no
+restart has been requested since, so no `worker_lost` carries `planned_restart`/`owner` yet and the
+request-time marker has never run live. The `memory` evidence IS live (see the cgroup entry). Run over every
+gateway/agent/plugin test file that touches the changed modules: 992 passed, 9 failed — the same 9
+fail on a clean checkout of the parent commit (startup-race, runtime-downgrade, profile-env and
+codex-fallback tests), so none are from this change; six more
+(`test_session_kanban` 5, `test_kanban_model_override` 1) failed only while `/tmp` — a tmpfs with a
+per-user quota that the suite fills with several GB — was full, and pass with `--basetemp` on disk. The
+kanban directory run on the parent shows the same 8 spawn failures (the suite running inside a
+systemd unit) and 14 worktree-teardown errors (commit signing via an ssh agent).
+
+**Deploy.** Gateway-side pieces need the gateway on this code (it is, since 19:29); the client waits
+apply to every worker spawned afterwards. **Operational note:** a planned-restart loss is strike-free
+*by design* — a host that restarts forever would keep a card in flight forever; the bound is the
+host's own restart cadence, not a counter.
+
 ### Fork-only fix — 2026-11-17 (desktop): the Claude status bar stuck on "Week" — the allowance store kept the later-resetting window, and the week always resets later
 
 **Symptom.** The status bar had been reading `Claude Subscription · Current session N%` (the 5-hour

@@ -103,6 +103,7 @@ _INFRA_FAILURE_RE = re.compile(
     r"kanban owner silent for"
     r"|kanban owner refused"
     r"|gateway draining"
+    r"|planned gateway restart"
     r"|systemd-run --user --scope is unavailable"
     r"|cannot create restart-safe systemd scope"
     r"|no reachable user d-bus session",
@@ -149,7 +150,12 @@ def _strike_free_exhausted(conn: sqlite3.Connection, task_id: str, limit: int = 
     the window is ``limit + 1``: *limit* free retries, then the next one is charged like the
     card's own. Without this a card whose worker wedges at startup (a host-flavoured failure
     text, but its own bug) reclaims on every tick and never trips the breaker — a spawn-budget sink.
+
+    A PLANNED restart never exhausts it: the host will restart again on its own timer, no number
+    of retries changes that, and charging the card would convert `hermes update` into a slow
+    `gave_up` for whichever cards were unlucky enough to be in flight (``planned_restart_loss``).
     """
+    from hermes_cli.kanban_owner_recovery import planned_restart_loss
     rows = conn.execute(
         "SELECT payload FROM task_events WHERE task_id = ? AND kind IN ('crashed', 'reclaimed') "
         "ORDER BY id DESC LIMIT ?",
@@ -161,12 +167,17 @@ def _strike_free_exhausted(conn: sqlite3.Connection, task_id: str, limit: int = 
         data = _kb._json_or(row["payload"], {})
         if not (isinstance(data, dict) and data.get("infrastructure")):
             return False
+        if planned_restart_loss(data.get("worker_lost")):
+            return False
     return True
 
 
 def _infrastructure_verdict(conn: sqlite3.Connection, task_id: str, text: Optional[str], *,
                             host_broken: Optional[bool] = None) -> bool:
     """Host-failure verdict for *task_id*, capped so one card cannot retry strike-free forever."""
+    from hermes_cli.kanban_owner_recovery import _latest_run_event, planned_restart_loss
+    if planned_restart_loss(_latest_run_event(conn, task_id, "worker_lost")):
+        return True
     if not _infrastructure_failure(text, host_broken=host_broken):
         return False
     return not _strike_free_exhausted(conn, task_id)
@@ -1255,9 +1266,17 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
-def _stamp_infrastructure(dead: "_DeadWorker") -> bool:
-    """Mark ``dead`` as a host failure when its text says so, for the event that reaches the board."""
-    if not _infrastructure_failure(dead.error_text):
+def _stamp_infrastructure(dead: _DeadWorker) -> bool:
+    """Mark ``dead`` as a host failure when its text SAYS so, for the event that reaches the board.
+
+    The owner's structured loss record outranks the text: ``apply_attempt_note`` stashes it on the
+    booking, and a record naming a planned restart (marker, ``restart_requested``, ``draining``)
+    is a host failure even when the words no longer match ``_INFRA_FAILURE_RE`` — a restart whose
+    drain ends the attempt prints none of the old phrases (2026-11-17).
+    """
+    from hermes_cli.kanban_owner_recovery import planned_restart_loss
+    if not (_infrastructure_failure(dead.error_text)
+            or planned_restart_loss(dead.event_payload.get("worker_lost"))):
         return False
     dead.infrastructure = True
     dead.event_payload["infrastructure"] = True

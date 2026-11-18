@@ -1689,6 +1689,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._draining = True
         from gateway.drain_control import open_restart_wait
         open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
+        # Stamp the planned-restart marker HERE, not only in ``_stop_persist_exit_state``: the
+        # after-turn wait below can hold every client off for ``restart_after_turn_timeout`` and
+        # the down window after ``stop()`` has no owner at all, so the marker is the only durable
+        # evidence a client has for "the host is restarting" rather than "the install is broken".
+        # Measured 2026-11-17: a card attempt dialled into an update's down window, was refused
+        # ``Gateway inaccessible: service_identity_unverified`` and read as a credential problem
+        # (t_39446095); the marker is what lets it tell the two apart. The next boot consumes the
+        # same file for its "Gateway online" notice, so this only moves the stamp earlier.
+        from gateway.restart_notice import write_planned_restart_marker
+        write_planned_restart_marker(via_service=via_service, detached=detached)
         # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
         # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
         self._mark_api_runs_shutdown_requested()
@@ -2132,10 +2142,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
         if self._restart_requested and self._restart_command_source is None:
             # One writer for the marker (gateway/restart_notice.py): the CLI restart stamps the same
-            # file, and a rename on either side must not strand the other's write.
-            from gateway.restart_notice import write_planned_restart_marker
+            # file, and a rename on either side must not strand the other's write. ``request_restart``
+            # already stamped it BEFORE the after-turn wait; ``stamp_planned_restart_unless_stamped``
+            # keeps that earlier ``requested_at`` (the age a loss record reports is measured from the
+            # REQUEST, not from the stop that can follow a wait of up to ``restart_after_turn_timeout``)
+            # and still covers a restart flag set on a path that did not go through ``request_restart``.
+            from gateway.restart_notice import stamp_planned_restart_unless_stamped
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
-                write_planned_restart_marker(
+                stamp_planned_restart_unless_stamped(
                     via_service=bool(self._restart_via_service),
                     detached=bool(self._restart_detached),
                 )

@@ -8,6 +8,7 @@ never ends the card's turn and the restart (``hermes update``) is held until
 
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -18,8 +19,23 @@ from gateway.drain_control import RESTART_WAIT_REASON
 GUE = gateway_client.GatewayUnavailableError
 
 
+def _rebind_modules():
+    """Follow a module PURGE another test in this session performed (see the patience file).
+
+    An early test deletes every ``hermes_cli*`` entry from ``sys.modules``; after that the module
+    objects this file patched are stale, ``run``'s function-local imports bind fresh ones, and the
+    client dials the REAL gateway — which the live-system guard then blocks.
+    """
+    global gateway_client, gateway_runtime, kanban_worker_client, GUE
+    gateway_client = importlib.import_module("hermes_cli.gateway_client")
+    gateway_runtime = importlib.import_module("hermes_cli.gateway_runtime")
+    kanban_worker_client = importlib.import_module("hermes_cli.kanban_worker_client")
+    GUE = gateway_client.GatewayUnavailableError
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
+    _rebind_modules()
     monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
 
 
@@ -101,8 +117,9 @@ async def test_a_worker_cut_by_a_restart_wait_waits_outside_it(monkeypatch, tmp_
     owner = _RestartingOwner()
     monkeypatch.setattr(gateway_client, "connect_gateway", owner.connect())
 
-    # The worker waits for the next owner without reading anything from the restarting one, and an
-    # owner that never comes back still fails it at OWNER_WAIT_S (which ends the turn it held).
+    # The worker waits for the next owner without reading anything from the restarting one; a
+    # restart that never comes back still fails it — at the restart's own budget, naming the
+    # restart, because the owner announced it (see test_kanban_worker_restart_patience.py).
     with pytest.raises(gateway_client.GatewayClientError, match="owner silent"):
         await kanban_worker_client.run({"task_id": "t1"}, str(tmp_path / "kanban.db"))
     assert owner.receipts_in_wait == 0

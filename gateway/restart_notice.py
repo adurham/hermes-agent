@@ -51,3 +51,20 @@ def write_planned_restart_marker(*, via_service: bool = False, detached: bool = 
         logger.debug(
             "Could not record the planned restart; home channels get no online notice", exc_info=True
         )
+
+
+def stamp_planned_restart_unless_stamped(*, via_service: bool = False, detached: bool = False) -> None:
+    """Stamp the marker only when none exists: ONE ``requested_at`` for the whole restart.
+
+    ``request_restart`` stamps at the REQUEST, before the after-turn wait that can hold every
+    client off for ``restart_after_turn_timeout``; the stop-time call is the fallback for a restart
+    flag set on a path that did not go through ``request_restart``. Re-stamping at stop would move
+    ``requested_at`` forward by the whole drain, and the age a ``worker_lost`` record reports is
+    read against it ("planned restart 152s earlier") — that number has to mean the request.
+    """
+    try:
+        if planned_restart_marker_path().exists():
+            return
+    except OSError:
+        pass
+    write_planned_restart_marker(via_service=via_service, detached=detached)

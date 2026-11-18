@@ -561,8 +561,17 @@ def _record_lost_attempt(authority, policy, exc, reason, scope):
         return None
     from gateway.session_kanban import record_worker_loss
     from gateway.session_runtime_workers import track_mutation
+    # The owner's own state is part of the evidence: a loss taken during a drain/restart is the
+    # restart's doing, and a run record that says so stops the next reader from blaming memory,
+    # the card or the transport (2026-11-17: four such deaths were diagnosed as an OOM kill).
+    owner = {key: True for key, attr in (('restart_requested', '_restart_requested'),
+                                         ('draining', '_draining'),
+                                         ('external_drain', '_external_drain_active'))
+             if getattr(authority, attr, False)}
     return track_mutation(authority, asyncio.to_thread(partial(record_worker_loss, policy, reason,
-                                                               pid=(scope or {}).get('pid'), bound=scope is not None)))
+                                                               pid=(scope or {}).get('pid'),
+                                                               bound=scope is not None,
+                                                               owner=owner or None)))
 
 
 async def _settle_lost(authority, row, scope, recording):

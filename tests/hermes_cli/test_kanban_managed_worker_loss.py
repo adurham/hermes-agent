@@ -71,7 +71,7 @@ class _Board:
         self, tid: str = "t_lost", *, worker_pid=None, record_worker_pid: bool = True,
         claim_expires_in: int = 900, heartbeat_age=None, owner: bool = True,
         admission=("terminal", "interrupted"), worker_lost=None, dead_seconds: int = 120,
-        owner_pid=None,
+        owner_pid=None, loss_extra: dict | None = None,
     ) -> int:
         """A ``running`` card whose managed worker was lost."""
         worker_pid = _absent_pid() if worker_pid is None else int(worker_pid)
@@ -106,7 +106,7 @@ class _Board:
         if worker_lost:
             self.event(tid, run_id, "worker_lost",
                        {"reason": worker_lost, "claim_lock": lock, "run_id": run_id,
-                        "pid": worker_pid, "bound": False}, started + 24)
+                        "pid": worker_pid, "bound": False, **(loss_extra or {})}, started + 24)
         self.conn.commit()
         return run_id
 
@@ -295,6 +295,26 @@ async def test_the_owner_records_the_loss_on_the_board_and_one_tick_disposes_of_
     assert board.state("t_owner")["consecutive_failures"] == 1
 
 
+@pytest.mark.asyncio
+async def test_a_loss_taken_during_a_drain_records_the_owners_restart_state(board):
+    """A restart-time loss must be readable as one: the owner's drain state rides in the event."""
+    from types import SimpleNamespace
+    from gateway.session_managed_worker import _record_lost_attempt
+    run_id = board.running("t_drain", claim_expires_in=900, heartbeat_age=30)
+    policy = _owner_policy(board, "t_drain", run_id)
+    authority = SimpleNamespace(_restart_requested=True, _draining=True, _external_drain_active=False)
+
+    recording = _record_lost_attempt(authority, policy, RuntimeError(), "EOFError", None)
+    if recording is not None:
+        await recording
+
+    payload = json.loads(board.conn.execute(
+        "SELECT payload FROM task_events WHERE task_id='t_drain' AND kind='worker_lost' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert payload["reason"] == "EOFError"
+    assert payload["owner"] == {"restart_requested": True, "draining": True}
+
+
 def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     """The owner's note is run-scoped: it may never be evidence about a LATER attempt."""
     from gateway.session_kanban import record_worker_loss
@@ -310,3 +330,115 @@ def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     board.conn.commit()
     record_worker_loss(policy, "managed_worker_failed", pid=1234, bound=False)
     assert count() == 1
+
+
+# --- the loss must say WHY the pipe closed, not only that it did --------------------------
+#
+# 2026-11-17: four card attempts died with ``[managed worker lost: EOFError]`` during two
+# update restarts, and the card that read those records concluded a memory-cgroup OOM kill
+# from a ``free -g`` and one unrelated kernel line. The owner knows the worker's cgroup and
+# the planned-restart marker at the moment of loss; carrying them into the ``worker_lost``
+# payload is what makes the next reader's question answerable.
+
+def test_a_loss_record_carries_the_cgroup_counters_and_the_restart_marker(board, monkeypatch):
+    from gateway import session_kanban
+    run_id = board.running("t_evidence", claim_expires_in=900, heartbeat_age=30)
+    policy = _owner_policy(board, "t_evidence", run_id)
+    monkeypatch.setattr(session_kanban, "_loss_memory",
+                        lambda pid: {"path": "/x.scope", "max": 6442450944,
+                                     "peak": 6597069766, "events": {"oom_kill": 0}})
+    monkeypatch.setattr(session_kanban, "_planned_restart_evidence",
+                        lambda: {"requested_at": 1.0, "age_s": 152})
+
+    session_kanban.record_worker_loss(policy, "EOFError", pid=4242, bound=True)
+
+    payload = json.loads(board.conn.execute(
+        "SELECT payload FROM task_events WHERE task_id='t_evidence' AND kind='worker_lost' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert payload["reason"] == "EOFError" and payload["bound"] is True
+    assert payload["memory"]["events"]["oom_kill"] == 0
+    assert payload["memory"]["peak"] == 6597069766
+    assert payload["planned_restart"]["age_s"] == 152
+
+
+def test_the_run_error_names_the_cgroup_and_the_planned_restart(board):
+    """The booked crash says ``oom_kill=0`` and the restart age, so memory is not the suspect."""
+    run_id = board.running("t_note", claim_expires_in=900, heartbeat_age=30, worker_lost="EOFError")
+    board.event("t_note", run_id, "worker_lost", {
+        "reason": "EOFError", "run_id": run_id, "pid": 1, "bound": True,
+        "memory": {"max": 6442450944, "peak": 6597069766, "events": {"oom_kill": 0}},
+        "planned_restart": {"age_s": 152},
+    }, NOW + 24)
+    board.conn.commit()
+
+    board.tick(failure_limit=2)
+
+    run = board.run(run_id)
+    assert run["outcome"] == "crashed"
+    assert "managed worker lost: EOFError" in run["error"]
+    assert "oom_kill=0" in run["error"]
+    assert "cgroup peak 6.14 GiB of 6.00 GiB cap" in run["error"]
+    assert "planned restart 152s earlier" in run["error"]
+    # The record says a planned restart was in flight: the host's drain, not the card's work.
+    # (The old assertion here was ``consecutive_failures == 1`` — the charge this card removes.)
+    assert board.state("t_note")["consecutive_failures"] == 0
+    assert json.loads(board.conn.execute(
+        "SELECT payload FROM task_events WHERE task_id='t_note' AND kind='crashed' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])["infrastructure"] is True
+
+
+# --- a restart-caused loss is the HOST's, whatever words the worker left --------------------
+#
+# After a worker waits out a planned restart (``test_kanban_worker_restart_patience.py``) the
+# attempt can still end when the drain's cap interrupts the turn. That record no longer quotes
+# "Kanban owner silent for ...": the words are the drain's own, so the booking must read the
+# owner's structured evidence (``planned_restart`` / ``owner.restart_requested``) instead of a
+# phrase, and it must never charge the card — `hermes update` runs on a timer, so a card in
+# flight often enough would otherwise block itself on the third restart.
+
+def test_a_planned_restart_loss_is_booked_host_side_and_charges_nothing(board):
+    run_id = board.running("t_restart", claim_expires_in=900, heartbeat_age=30,
+                           worker_lost="EOFError",
+                           loss_extra={"owner": {"restart_requested": True, "draining": True}})
+
+    board.tick(failure_limit=2)
+
+    row, run = board.state("t_restart"), board.run(run_id)
+    assert row["status"] == "ready" and row["consecutive_failures"] == 0
+    crashed = json.loads(board.conn.execute(
+        "SELECT payload FROM task_events WHERE task_id='t_restart' AND kind='crashed' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert crashed["infrastructure"] is True
+    assert "managed worker lost: EOFError" in run["error"]
+    assert "owner restart requested" in run["error"]
+
+
+def test_a_planned_restart_never_exhausts_the_strike_free_budget(board):
+    """The fourth restart of one card is still the host's: `hermes update` is not the card's bug."""
+    run_id = board.running("t_many", claim_expires_in=900, heartbeat_age=30, worker_lost="EOFError",
+                           loss_extra={"planned_restart": {"requested_at": 1.0, "age_s": 30}})
+    for _ in range(kbd.INFRA_STRIKE_FREE_LIMIT):
+        board.event("t_many", run_id, "crashed", {
+            "pid": 1, "claimer": "x", "infrastructure": True,
+            "worker_lost": {"reason": "EOFError", "planned_restart": {"requested_at": 1.0, "age_s": 30}},
+        }, NOW + 24)
+    board.conn.commit()
+
+    board.tick(failure_limit=2)
+
+    row = board.state("t_many")
+    assert row["status"] == "ready" and row["consecutive_failures"] == 0
+    assert not any(r["kind"] == "gave_up" for r in board.conn.execute(
+        "SELECT kind FROM task_events WHERE task_id='t_many'"))
+
+
+def test_an_oom_kill_during_a_drain_is_still_the_cards_failure():
+    # The marker says a restart was planned; the cgroup says memory killed the worker anyway.
+    # The counter outranks the marker, so the loss is not booked strike-free.
+    planned = {"reason": "EOFError", "planned_restart": {"requested_at": 1.0, "age_s": 5},
+               "owner": {"draining": True}}
+    assert kanban_owner_recovery.planned_restart_loss(planned) is True
+    assert kanban_owner_recovery.planned_restart_loss(
+        {**planned, "memory": {"events": {"oom_kill": 0}}}) is True
+    assert kanban_owner_recovery.planned_restart_loss(
+        {**planned, "memory": {"events": {"oom_kill": 1}}}) is False

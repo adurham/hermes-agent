@@ -184,19 +184,90 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     return settled or (bool(pids) and _owner_process_gone(receipt))
 
 
+def _gib(value):
+    """A byte count as GiB, or ``''`` — for a note that must stay readable, not precise."""
+    try:
+        return f"{int(value) / (1024 ** 3):.2f} GiB"
+    except (TypeError, ValueError):
+        return ""
+
+
+def planned_restart_loss(lost) -> bool:
+    """True when the owner's loss record says a PLANNED restart was in flight.
+
+    The record is the owner's own statement (``worker_lost`` carries the restart marker and the
+    owner's drain state since 2026-11-17), so this reads evidence rather than wording: a restart
+    the host requested is not the card's attempt failing, and the board must not charge it. Used
+    by the reclaim path (``_stamp_infrastructure``) and by the strike-free budget, which a planned
+    restart never exhausts — otherwise the fourth restart of one card charges it like a bug.
+    """
+    if not isinstance(lost, dict):
+        return False
+    # A memcg OOM kill is the worker's own failure, whatever the host was doing around it: the
+    # cgroup's counter is stronger evidence than the marker, so a loss that ALSO took an OOM kill
+    # is charged like any other (a drain must not launder a runaway allocation into a free retry).
+    memory = lost.get("memory") if isinstance(lost.get("memory"), dict) else {}
+    events = memory.get("events") if isinstance(memory.get("events"), dict) else {}
+    kills = events.get("oom_kill")
+    if isinstance(kills, int) and not isinstance(kills, bool) and kills > 0:
+        return False
+    restart = lost.get("planned_restart")
+    if isinstance(restart, dict) and restart:
+        return True
+    owner = lost.get("owner")
+    owner = owner if isinstance(owner, dict) else {}
+    return bool(owner.get("restart_requested") or owner.get("draining") or owner.get("external_drain"))
+
+
+def loss_evidence(lost) -> str:
+    """One bracketed clause naming what the loss record says BESIDES the exception's name.
+
+    ``EOFError`` is a symptom. The same word covers a memcg OOM kill, a gateway restart and a
+    genuine crash, and a reader who only has it will guess wrong (2026-11-17: a card blamed a
+    4 GiB cap for four deaths that were `hermes update` restarts). The ``worker_lost`` payload
+    now carries the worker cgroup's counters and the planned-restart marker, so say them:
+    ``[oom_kill=0; cgroup peak 6.14 GiB of 6.00 GiB; planned restart 152s earlier]``.
+    """
+    if not isinstance(lost, dict):
+        return ""
+    record = lost
+    bits: list = []
+    memory = record.get("memory") if isinstance(record.get("memory"), dict) else {}
+    if memory:
+        events = memory.get("events") if isinstance(memory.get("events"), dict) else {}
+        oom_kill = events.get("oom_kill")
+        if oom_kill is not None:
+            bits.append(f"oom_kill={int(oom_kill)}")
+        peak, cap = _gib(memory.get("peak")), _gib(memory.get("max"))
+        if peak:
+            bits.append(f"cgroup peak {peak}" + (f" of {cap} cap" if cap else ""))
+    restart = record.get("planned_restart") if isinstance(record.get("planned_restart"), dict) else {}
+    if restart:
+        age = restart.get("age_s")
+        bits.append(f"planned restart {int(age)}s earlier" if isinstance(age, int) else "planned restart")
+    owner = record.get("owner") if isinstance(record.get("owner"), dict) else {}
+    for key in ("restart_requested", "draining", "external_drain"):
+        if owner.get(key):
+            bits.append("owner " + key.replace("_", " "))
+    return (" [" + "; ".join(bits) + "]") if bits else ""
+
+
 def owner_attempt_note(conn, task_id, lost=None) -> str:
     """One clause naming why the owner says the attempt ended, or ``""``.
 
     The reclaim paths put this in the run error so the board says what happened instead of
     a bare ``stale_lock=``: a managed worker that died (its owner recorded ``worker_lost``,
     passed as ``lost`` when the caller already read it) is a different fault from a worker
-    that never started.
+    that never started. The owner's evidence (cgroup counters, a planned restart) rides along
+    so the note names a cause rather than a transport exception.
     """
     if lost is None:
         lost = _latest_run_event(conn, task_id, 'worker_lost')
+    if not isinstance(lost, dict):
+        lost = {}
     reason = str(lost.get('reason') or '')
     if reason:
-        return f"managed worker lost: {reason[:80]}"
+        return f"managed worker lost: {reason[:80]}" + loss_evidence(lost)
     receipt = _owner_receipt(conn, task_id)
     if receipt is None:
         return ""

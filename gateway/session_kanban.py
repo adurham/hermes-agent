@@ -312,11 +312,57 @@ def _record_worker_result(context, code, last_output):
                  'last_output': last_output}, run_id=context['run_id'])
 
 
-def record_worker_loss(policy, reason, *, pid=None, bound=False):
+def _loss_memory(pid):
+    """The memory cgroup's own account of the worker that just died ({} when unreadable).
+
+    ``EOFError`` on the frame pipe is the SYMPTOM of every kind of death — a memcg OOM kill, a
+    gateway restart, a real crash — and the board used to record only that word, so a reader had
+    to guess (2026-11-17: a card blamed a 4 GiB worker cap for four deaths that were update
+    restarts). The cgroup still exists at this moment (the dead worker is usually an unreaped
+    zombie, and its scope keeps living while any child is charged to it), so read it here and
+    carry its counters into the run record: ``oom_kill=1`` or ``oom_kill=0`` settles the question
+    the transport word cannot.
+    """
+    if pid is None:
+        return {}
+    try:
+        from hermes_cli.worker_cgroup import scope_memory
+        return scope_memory(pid)
+    except Exception:
+        return {}
+
+
+def _planned_restart_evidence():
+    """The planned-restart marker when a restart was requested recently ({} otherwise).
+
+    ``hermes update`` and ``hermes gateway restart`` both stamp ``.restart_pending.json`` before
+    the drain; a worker lost while it is present was lost to a planned restart, not to its own
+    failure. Bounded to the hour before the loss so a marker left behind by an old restart cannot
+    explain a new death.
+    """
+    try:
+        import time
+        from gateway.restart_notice import planned_restart_marker_path
+        payload = json.loads(planned_restart_marker_path().read_text(encoding="utf-8-sig"))
+        requested_at = float(payload.get('requested_at') or 0)
+    except Exception:
+        return {}
+    age = time.time() - requested_at
+    if not 0 <= age <= 3600:
+        return {}
+    return {'requested_at': requested_at, 'age_s': int(age)}
+
+
+def record_worker_loss(policy, reason, *, pid=None, bound=False, owner=None):
     """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
 
     Dropped when the card has moved past the run (it says nothing about the current attempt).
     Never raises: the caller's own loss handling must not depend on the board write.
+
+    The payload carries what the owner observed beyond the exception's name — the worker's
+    cgroup counters (``memory``) and the planned-restart marker (``planned_restart``), plus any
+    ``owner`` state the caller passes (``draining`` / ``restart_requested``) — so that
+    ``owner_attempt_note`` can say WHY the pipe closed instead of naming only ``EOFError``.
     """
     try:
         context = json.loads(policy.kanban_json or 'null')
@@ -325,14 +371,22 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
         from hermes_cli.kanban_db_connect import connect_closing
         from hermes_cli import kanban_db as kb
         run_id = int(context['run_id'])
+        evidence = {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                    'run_id': run_id, 'pid': pid, 'bound': bool(bound)}
+        memory = _loss_memory(pid)
+        if memory:
+            evidence['memory'] = memory
+        restart = _planned_restart_evidence()
+        if restart:
+            evidence['planned_restart'] = restart
+        if owner:
+            evidence['owner'] = owner
         with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
             row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
                                (context['task_id'],)).fetchone()
             if row is None or row[0] != 'running' or row[1] != run_id:
                 return
-            kb._append_event(conn, context['task_id'], 'worker_lost',
-                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
-                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+            kb._append_event(conn, context['task_id'], 'worker_lost', evidence,
                              run_id=run_id)
     except Exception:
         import logging
