@@ -1308,6 +1308,19 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
     "results above and continue with the task."
 )
 
+# FORK: re-prompts for a reasoning-only response (no visible text, no tool call), indexed by attempt.
+# The thinking-only prefill stub is dropped from the API copy on every route, so without a user-level
+# steer each retry replays the identical request and a model stuck deliberating just repeats itself.
+# Matched by content in the compressor (the metadata flags do not survive SessionDB projection).
+_THINKING_ONLY_STEERS = (
+    "[System: Your last response contained only reasoning, with no visible text and no tool call. "
+    "Stop deliberating. Choose the simplest reasonable option now and act: issue the next tool call, "
+    "or write your final answer.]",
+    "[System: Your last two responses contained only reasoning. Do not weigh the alternatives again. "
+    "Your next output must be a tool call or the final answer text, nothing else. If the decision is "
+    "minor, pick one option and proceed.]",
+)
+
 
 
 

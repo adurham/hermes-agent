@@ -9,6 +9,42 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Fork-only fix — 2026-11-19 (empty-response ladder): thinking-only retries were byte-identical replays
+
+**Symptom.** A long `claude-sonnet-5-5` / `xhigh` turn (~137K context) committed a change, then
+returned reasoning only — no text, no tool call — and never recovered: "nudging to continue", two
+"prefilling to continue", three "retrying" (~$0.08 of re-billed input), then "No reply". The
+reasoning looped on a trivial choice (new `fact_store` fact vs. editing an existing one).
+
+**Root cause.** `recover_empty_response` (`agent/turn_empty_response.py`) answers a thinking-only
+reply with a "prefill" stub (`_thinking_prefill`) so the model "sees its own reasoning". But
+`drop_thinking_only_and_merge_users` removes every `_thinking_prefill` row from the API copy on
+every route (a trailing thinking block 400s), so the request after a prefill was identical to the
+one that had just failed — and so were the three budgeted empty retries that follow. Only the
+one-shot post-tool nudge changed the wire, and it is spent on the first empty response. A model
+that is deterministically stuck deliberating just repeats itself six times.
+
+**Fix.** After the stub, the ladder now appends a user-level steer (`_THINKING_ONLY_STEERS`,
+`agent/conversation_loop.py`) that escalates per attempt: stop deliberating, pick the simplest
+option, emit a tool call or the final answer. When the stub follows a tool result, a synthetic
+`(empty)` assistant row goes first so the wire stays `tool → assistant → user`. The steer rows carry
+`_empty_recovery_synthetic` (never persisted, popped before the final answer) and `_thinking_steer`
+(popped with the stub when the model recovers with a tool call, `agent/turn_tool_round.py`), and the
+compressor recognises the texts as scaffolding rather than user turns. Reasoning effort is untouched.
+
+**Files.** `agent/turn_empty_response.py`, `agent/conversation_loop.py`, `agent/turn_tool_round.py`,
+`agent/context_compressor.py`, `tests/agent/test_thinking_only_steer.py` (5 tests: every recovery
+request differs, steer text escalates, scaffolding never reaches the final transcript or survives a
+tool-call recovery, `tool → user` is never produced).
+
+**Verification.** On `origin/main` + this change: the 5 new tests plus the prefill / empty-response /
+dropped-tool-call / turn-contract suites → 190 passed. Full `tests/agent` run: 168 failures, none
+attributable to the change — the same files re-run on the unmodified base (`315bc39151`) fail 114 vs.
+107 with it, and the set shifts run to run under xdist (e.g. `test_provider_wire_snapshot_variants.py`
+passes 37/37 serially on both trees). Not reproduced against the live model — the 137K-token loop is
+not replayable — so whether the steer breaks that specific loop is unconfirmed; it guarantees each
+retry is a different request.
+
 ### Fork-only fix — 2026-11-17 (kanban): a runaway card worker OOM-killed the whole gateway — managed workers now adopt their own capped cgroup
 
 **Symptom.** One card that allocated past `hermes-gateway.service`'s `MemoryMax` took the gateway

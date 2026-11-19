@@ -2,7 +2,7 @@
 
 Runs when the model returned no visible text after ``<think>`` blocks. Ladder order is
 load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
-→ one post-tool-call nudge → thinking-only prefill continuation (×2) → empty-response
+→ one post-tool-call nudge → thinking-only reasoning stub + escalating user steer (×2) → empty-response
 retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
 ``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
 """
@@ -208,7 +208,9 @@ def recover_empty_response(
     """Recover from a final response with no visible content (see module docstring for
     the ladder). Role alternation is preserved: the post-tool nudge appends the empty
     assistant row BEFORE the user-level hint (APIs reject tool→user)."""
-    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message
+    from agent.conversation_loop import (
+        _EMPTY_TOOL_RESPONSE_NUDGE, _THINKING_ONLY_STEERS, _sync_failover_system_message,
+    )
 
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
@@ -275,8 +277,9 @@ def recover_empty_response(
         })
         return _verdict("continue")
 
-    # Thinking-only prefill: append the reasoning as-is and continue so the model sees
-    # its own reasoning and writes text.
+    # FORK: thinking-only continuation: record the reasoning stub (kept in the transcript, dropped from
+    # the API copy on every route) and re-prompt with an escalating user-level steer. The stub
+    # alone makes the retry a byte-identical replay, which a model stuck deliberating repeats.
     _has_structured = bool(
         getattr(assistant_message, "reasoning", None)
         or getattr(assistant_message, "reasoning_content", None)
@@ -286,15 +289,27 @@ def recover_empty_response(
     if _has_structured and agent._thinking_prefill_retries < 2:
         agent._thinking_prefill_retries += 1
         logger.info(
-            "Thinking-only response (no visible content) — prefilling to continue (%d/2)",
+            "Thinking-only response (no visible content) — steering to act (%d/2)",
             agent._thinking_prefill_retries,
         )
         agent._buffer_diagnostic_status(
-            f"↻ Thinking-only response — prefilling to continue ({agent._thinking_prefill_retries}/2)"
+            f"↻ Thinking-only response — steering to act ({agent._thinking_prefill_retries}/2)"
         )
+        # Dropping the stub from the API copy would leave tool → user, which strict APIs reject:
+        # a synthetic (empty) assistant row keeps the alternation, as the post-tool nudge does.
+        if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
+            append_message(messages, {
+                "role": "assistant", "content": "(empty)",
+                "_empty_recovery_synthetic": True, "_thinking_steer": True,
+            })
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
         interim_msg["_thinking_prefill"] = True
         append_message(messages, interim_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": _THINKING_ONLY_STEERS[min(agent._thinking_prefill_retries, len(_THINKING_ONLY_STEERS)) - 1],
+            "_empty_recovery_synthetic": True, "_thinking_steer": True,
+        })
         agent._session_messages = messages
         return _verdict("continue")
 

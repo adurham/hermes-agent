@@ -294,8 +294,13 @@ def stage_tool_call_message(
     # Pop thinking-only prefill message(s) before appending (same rationale as the
     # final-response path). Tool calls after a prefill recovery reset the prefill
     # counter, so each tool-call success is a fresh start, not a cumulative burn.
+    # FORK: the steer rows (``_thinking_steer``) the empty-response ladder appends after a
+    # prefill stub are popped with it.
     _had_prefill = False
-    while messages and isinstance(messages[-1], dict) and messages[-1].get("_thinking_prefill"):
+    while (
+        messages and isinstance(messages[-1], dict)
+        and (messages[-1].get("_thinking_prefill") or messages[-1].get("_thinking_steer"))
+    ):
         messages.pop()
         _had_prefill = True
     if _had_prefill:
