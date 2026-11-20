@@ -351,7 +351,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 from agent.i18n import t as _t
 from hermes_cli.fallback_config import get_fallback_chain
-from hermes_state_ids import new_session_id
+from session_rules.session_ids import new_session_id
 from utils import base_url_host_matches, base_url_hostname, fast_safe_load
 
 _hermes_home = get_hermes_home()

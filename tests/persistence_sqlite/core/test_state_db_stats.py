@@ -262,7 +262,7 @@ _ENABLE_ADVICE = "enable sessions.auto_prune"
 def _large_db_issues(tmp_path, monkeypatch, config_yaml):
     """Run doctor's state.db stats step against a HERMES_HOME whose config.yaml is *config_yaml*
     (None = no file) and a state.db that reads as oversized; return (warn details, issues)."""
-    import hermes_state_dbfile
+    from persistence.sqlite._state import dbfile as hermes_state_dbfile
     from hermes_cli import doctor_state
 
     if config_yaml is not None:

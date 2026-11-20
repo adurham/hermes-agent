@@ -21,7 +21,8 @@ import pytest
 from agent.interrupt_control import InterruptControlMixin
 from gateway import session_automation, session_finite, session_queued_controls
 from gateway.session_automation import hand_completion_midturn
-from hermes_state_runtime import STEERING, get_session_admission
+from persistence.authority.admissions import STEERING
+from persistence.sqlite.authority._admission_store import get_session_admission
 from tests.gateway.test_prompt_queued_controls import Agent, _ledger, interactive
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 
