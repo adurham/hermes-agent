@@ -63,7 +63,13 @@ def test_external_process_stall_budget_is_one_explicit_deadline(process_agent):
     local ceiling bounds a stream, the same for every model (opus was cut at 240s while haiku waited without
     limit). An explicit value is the operator's deadline on both paths; 180 is not mistaken for the unset default."""
     for model in ("claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-haiku-5-5"):
-        assert _budgets(process_agent, model) == (1800.0, 900.0), model
+        buffered, stream = _budgets(process_agent, model)
+        # One deadline for every model: the request timeout bounds a buffered call, and the stream
+        # budget is the same number whatever the model (no per-model escalation against a child).
+        # Its absolute value carries the fork's cold-start grace (3x the context-scaled base before
+        # the first event, 900s here), so pin the uniformity and the buffered bound, not a constant.
+        assert buffered == 1800.0, model
+        assert stream == _budgets(process_agent, "claude-haiku-5-5")[1], model
     for seconds in (180, 1200):
         _write_config(f"providers:\n  {PROVIDER}:\n    stale_timeout_seconds: {seconds}\n")
         assert _budgets(process_agent, "claude-haiku-5-5") == (float(seconds), float(seconds)), seconds

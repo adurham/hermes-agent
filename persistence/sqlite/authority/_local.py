@@ -133,7 +133,11 @@ def binding_record(receipt):
     """The stored receipt as a detached ``SessionBinding``; a receipt missing an identity field is
     ``storage_unavailable``."""
     try:
-        lineage = receipt.get('lineage', [receipt['session_id']])
+        raw_lineage = receipt.get('lineage', [receipt['session_id']])
+        # FORK: a receipt whose lineage carries a non-id entry (an older build wrote one) must never
+        # stop the boot — keep the ids that ARE ids, and anchor on the receipt's own session when none
+        # survive. The receipt is the route's truth; refusing here took the whole gateway down.
+        lineage = [sid for sid in raw_lineage if isinstance(sid, str) and sid] or [receipt['session_id']]
         return SessionBinding(
             profile_id=receipt['profile_id'], principal_id=receipt['principal_id'], request_id=receipt['request_id'],
             session_id=SessionId(receipt['session_id']), route=receipt['route'], entry=receipt['entry'],
