@@ -78,6 +78,7 @@ class TestFailoverReason:
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "internal_code_error",
+            "guardrail_blocked",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}

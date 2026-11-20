@@ -72,6 +72,20 @@ siblings publish, a start-up crash (`split-module name collision`) rather than s
 `tools/process_registry._completion_hold_ceiling_seconds` called `_config_value` with a third argument the
 signature never took, so every `delegation.completion_hold_max_seconds` override was silently ignored.
 
+**Sweep result (post-merge, `-j 4` over tests/gateway + tests/agent).** 3,438 files, 32,891 passed, 172
+failed, 13 errors. Baseline on the pre-merge tree for the same files: 15 of 27 comparable files already
+fail there. Of the merge-caused residue, one root cause accounted for most of it: `cli.py` still imported
+`hermes_state_ids`, which the sync deleted — the CLI could not import at all, and every gateway test that
+loads cli.py failed with it (12 of 20 files cleared by the one-line fix). Three more were stale test
+contracts (error_classifier's enum, the midturn notice store name, send_message_tool's patch target) and
+are fixed. **Known, open:** `tests/agent/test_process_transport.py` (a `process://` stream now budgets 2700 s
+where the fork pinned 900 — upstream's `waits_like_local` multiplies the local ceiling);
+`tests/gateway/test_plugin_injected_turn.py` (a plugin-injected prompt no longer appears as its own queued
+turn); `tests/gateway/test_handoff_local_receipt.py` (a malformed-lineage receipt raises
+`_ReceiptRefused(storage_unavailable)` instead of being skipped); `tests/gateway/test_sessiondb_loop_guard.py`
+(an on-loop store read); `tests/gateway/test_store_named_by_its_profile.py` (fixture `git commit` exits 128 —
+this box's commit signing, not the merge).
+
 **Verification.** `compileall` clean over the tree; `hermes_cli.main`, `agent.conversation_loop`,
 `gateway.run_turn_runner`, `tools.registry`, `tui_gateway.server`, `persistence` and all 11 `agent/fork/*`
 modules import. Lane suites green on their own files (persistence 2,887 · contracts 3,099 · gateway

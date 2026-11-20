@@ -116,7 +116,7 @@ def test_the_real_turn_seam_injects_a_pushed_notice(tmp_path, monkeypatch):
     from hermes_state import SessionDB
     from run_agent import AIAgent
 
-    agent = AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"), model="test-model",
+    agent = AIAgent(session_db=SessionDB(db_path=tmp_path / "state.db"), model="test-model",
                     provider="openai-compat", api_key="test", base_url="http://127.0.0.1:1/v1",
                     max_iterations=4, quiet_mode=True, skip_context_files=True, skip_memory=True)
     try:
