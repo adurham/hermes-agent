@@ -213,6 +213,11 @@ class _RecordingSessionDB:
         self.recorded: list[tuple[str, dict]] = []
 
     def record_api_call(self, session_id, **kwargs):
+        # The receipt payload carries ``extra`` as JSON text (it must survive the worker wire).
+        if isinstance(kwargs.get("extra"), str):
+            import json
+
+            kwargs["extra"] = json.loads(kwargs["extra"])
         self.recorded.append((session_id, kwargs))
 
 

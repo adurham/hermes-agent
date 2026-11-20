@@ -23,6 +23,9 @@ async def test_read_receipt_task_is_held_until_done(monkeypatch):
 
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "send_read_receipts": True}))
+    # #149024: the receipt is a credentialed side effect, so a bare adapter (no registered check)
+    # reads as "trust unknown" and never marks read. The gateway registers the real check; allow here.
+    adapter.set_authorization_check(lambda *_a, **_kw: True)
     release = asyncio.Event()
     marked = []
 

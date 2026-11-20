@@ -57,7 +57,8 @@ def live_child():
 
 @pytest.fixture()
 def registry(tmp_path, monkeypatch):
-    monkeypatch.setattr(pr, "CHECKPOINT_PATH", tmp_path / "processes.json")
+    checkpoint_path = tmp_path / "processes.json"
+    monkeypatch.setattr(pr, "_checkpoint_path", lambda: checkpoint_path)
     reg = pr.ProcessRegistry()
     monkeypatch.setattr(pr, "process_registry", reg)
     return reg
@@ -252,7 +253,7 @@ async def test_held_completion_does_not_consume_a_human_queue_slot(registry, liv
     """A held completion waits in the unbounded in-process completion_queue; the human-message cap
     (ADMISSION_QUEUE_MAX, session_admissions FIFO) is not touched until the event is RELEASED and
     admitted as a turn. So a full complement of human inputs is still accepted while it is held."""
-    from hermes_state_runtime import ADMISSION_QUEUE_MAX, list_session_admissions
+    from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX
     from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit
 
     owner = "sa-0-holdslot"
@@ -267,5 +268,5 @@ async def test_held_completion_does_not_consume_a_human_queue_slot(registry, liv
     with db:
         for n in range(ADMISSION_QUEUE_MAX):
             assert (await _submit(authority, f'human-{n}')).status == 'queued'
-        assert len(list_session_admissions(db, session_id='s')) == ADMISSION_QUEUE_MAX
+        assert len(authority.persistence.admissions.list(session_id='s')) == ADMISSION_QUEUE_MAX
     assert registry.completion_queue.qsize() == 1  # still held, not lost

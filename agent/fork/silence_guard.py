@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 
 logger = logging.getLogger("agent.conversation_loop")
 

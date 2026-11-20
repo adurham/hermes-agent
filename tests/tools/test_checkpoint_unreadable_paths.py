@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-import tools.checkpoint_manager as checkpoints
+import agent.checkpoints.manager as checkpoints
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
@@ -23,7 +23,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", tmp_path / "checkpoints")
+    # The checkpoint base is resolved per call (per-profile under the multiplexed gateway), so
+    # there is no module constant to patch: redirect the resolver the manager itself calls.
+    monkeypatch.setattr(checkpoints, "_resolve_checkpoint_base", lambda: tmp_path / "checkpoints")
     work = tmp_path / "project"
     work.mkdir()
     (work / "keep.txt").write_text("original\n", encoding="utf-8")
@@ -58,7 +60,7 @@ def test_unreadable_file_is_skipped_and_the_rest_is_snapshotted(project, caplog)
     _lock(locked, secret)
     manager = checkpoints.CheckpointManager(enabled=True)
 
-    with caplog.at_level(logging.WARNING, logger=checkpoints.__name__):
+    with caplog.at_level(logging.WARNING, logger="tools.checkpoint_manager"):
         assert manager.ensure_checkpoint(str(work), "baseline") is True
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]

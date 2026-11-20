@@ -26,10 +26,12 @@ from gateway.status import (
 from gateway.status_served import local_liveness_pid
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
+from hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
 from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
+from hermes_cli.web_routers.status_public import redact_status_for_unverified
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -60,6 +62,7 @@ served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
 
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
@@ -78,19 +81,20 @@ def _safe_call(mod, fn_name: str, default):
 def _count_status_active_sessions() -> int:
     """Best-effort status garnish. Opens read-only (via the shared stale-schema heal) so
     /api/status never routinely writes to state.db while another Hermes process uses it."""
-    from hermes_state import _default_db_path
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
+
     # The heal helper bootstraps a missing store; this garnish must not — on a fresh install
     # /api/status polls would otherwise create state.db before the user's first session.
-    if not Path(_default_db_path()).exists():
+    db_path = _session_db_path_for_profile(None)
+    if not db_path.exists():
         return 0
-    db = _open_session_db_for_profile(None, read_only=True)
+    store = _open_session_db_for_profile(None, read_only=True)
     try:
-        sessions = db.list_sessions_rich(limit=50, compact_rows=True)
+        sessions = store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50), compact_rows=True)
         now = time.time()
-        return sum(1 for s in sessions if s.get("ended_at") is None
-                   and (now - s.get("last_active", s.get("started_at", 0))) < 300)
+        return sum(1 for s in sessions if s.session.ended_at is None and (now - s.last_active) < 300)
     finally:
-        db.close()
+        store.close()
 
 
 async def _status_active_sessions() -> int:
@@ -405,15 +409,19 @@ def _auth_gate_status() -> dict[str, Any]:
     always available in gated mode; "native_pkce" when at least one interactive session
     provider is registered (token-only credentials such as drain, and provisioned-credential
     session providers such as session-token, don't count). Missing
-    "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically."""
+    "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically. ``peer_access`` is the
+    peer-pass contract this agent takes on ``/api/peer`` (0: none), which the pass issuer reads."""
     auth_required = bool(getattr(app.state, "auth_required", False))
     auth_providers: list[str] = []
     auth_flows: list[str] = []
+    peer_access = 0
     try:
         from hermes_cli.dashboard_auth import (
             list_interactive_providers as _list_interactive_providers,
             list_providers as _list_providers)
+        from hermes_cli.dashboard_auth.peer_pass import peer_access_contract
         auth_providers = [p.name for p in _list_providers()]
+        peer_access = peer_access_contract()
         if auth_required:
             auth_flows.append("cookie")
             if _list_interactive_providers():
@@ -422,7 +430,7 @@ def _auth_gate_status() -> dict[str, Any]:
         # Module not importable yet (early startup) — leave as [].
         pass
     return {"auth_required": auth_required, "auth_providers": auth_providers,
-            "auth_flows": auth_flows}
+            "auth_flows": auth_flows, "peer_access": peer_access}
 
 
 def _nous_session_validity() -> str:
@@ -505,16 +513,16 @@ def _status_local_reads() -> dict[str, Any]:
 
 def _fts_rebuild_status() -> Optional[dict[str, Any]]:
     """Deferred FTS rebuild progress of this home's state.db (read-only open), or None."""
-    from hermes_state import SessionDB as _SDB
-    from hermes_constants import get_hermes_home as _ghh
-    _db_path = _ghh() / "state.db"
-    if not _db_path.exists():
+    from persistence_assembly import open_persistence_reader, profile_scope, store_exists
+    scope = profile_scope()
+    if not store_exists(scope):
         return None
-    _sdb = _SDB(db_path=_db_path, read_only=True)
-    try:
-        return _sdb.fts_rebuild_status()
-    finally:
-        _sdb.close()
+    with open_persistence_reader(scope.profile_dir) as _store:
+        _rebuild = _store.search.search_index_rebuild_status()
+    if _rebuild is None:
+        return None
+    return {"pending": True, "total": _rebuild.total, "indexed": _rebuild.indexed,
+            "percent": min(100, int(100 * _rebuild.indexed / _rebuild.total))}
 
 
 #: What the gateway's Webapp answers a caller who has not signed in: liveness, version and the
@@ -535,11 +543,14 @@ _GATEWAY_UNAUTHENTICATED_STATUS_KEYS = frozenset({
     "gateway_running", "gateway_state", "overall", "auth_required", "auth_providers", "auth_flows"})
 
 
-async def _status_caller_authenticated(request: Request) -> bool:
+async def _status_caller_verified(request: Optional[Request]) -> bool:
     """True when this request carries a credential the listener's gated routes would accept (a
     native ticket, a hosted grant, a sign-in session, or the session token). Public paths skip
     both auth gates, so nothing has verified one yet. A fault in the session check reads as no
-    session: a public liveness probe answers the trimmed body, never a 500."""
+    session: a public liveness probe answers the trimmed body, never a 500. ``None`` is an
+    in-process caller, not a network one."""
+    if request is None:
+        return True
     from hermes_cli.web_server import _require_token
     if getattr(request.app.state, "auth_required", False) \
             and getattr(request.state, "session", None) is None:
@@ -557,7 +568,7 @@ async def _status_caller_authenticated(request: Request) -> bool:
     return True
 
 
-async def _status_unauthenticated_keys(request: Request) -> Optional[frozenset]:
+async def _status_unauthenticated_keys(request: Request, *, verified: Optional[bool] = None) -> Optional[frozenset]:
     """The allowlist this caller's public ``/api/status`` body is cut to, or None for the full
     body: the Webapp behind its sign-in gate and the gateway's private listener trim a caller
     without a credential; the standalone dashboard keeps its public body."""
@@ -571,14 +582,16 @@ async def _status_unauthenticated_keys(request: Request) -> Optional[frozenset]:
         allowed = _GATEWAY_UNAUTHENTICATED_STATUS_KEYS
     else:
         return None
-    return None if await _status_caller_authenticated(request) else allowed
+    if verified is None:
+        verified = await _status_caller_verified(request)
+    return None if verified else allowed
 
 
 async def _gateway_caller_uncredentialed(request: Optional[Request]) -> bool:
     """True for a request on the gateway's private listener that carries no credential."""
     from hermes_cli.web_server_surface import surface
     return request is not None and surface(request.app.state) == "gateway" \
-        and not await _status_caller_authenticated(request)
+        and not await _status_caller_verified(request)
 
 
 @router.get("/api/status")
@@ -590,11 +603,12 @@ async def get_status(profile: Optional[str] = None,
     gate and on the gateway's private listener (``_status_unauthenticated_keys``).
 
     ``?profile=`` (dashboard management switcher) uses the config-only contextvar scope, NOT
-    _profile_scope: this handler awaits the remote health probe, and _profile_scope swaps
-    process-global skills-module attributes a concurrent request would cross-restore.
+    _profile_scope: this handler awaits the remote health probe, and _profile_scope holds a
+    process-wide lock that must never be held across an await.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
-    signed_out_keys = await _status_unauthenticated_keys(request)
+    verified = await _status_caller_verified(request)
+    signed_out_keys = await _status_unauthenticated_keys(request, verified=verified)
     status_scope = None
     # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
     requested_profile = "" if signed_out_keys is not None else (profile or "").strip()
@@ -630,6 +644,8 @@ async def get_status(profile: Optional[str] = None,
 
         status = {
             "version": local["version"], "release_date": __release_date__,
+            # `hermes import --keep-host` and /api/ops/transfer/*: a client checks it before a transfer.
+            "import_keep_host": 1,
             "config_version": local["config_version"], "latest_config_version": local["latest_config_version"],
             "can_update_hermes": local["can_update_hermes"],
             "gateway_running": gateway_running, "gateway_state": gateway_state,
@@ -669,8 +685,11 @@ async def get_status(profile: Optional[str] = None,
         # Profile NAMES and ``gateway_mode`` are low-sensitivity product surface (Hermes Cloud
         # renders the profile list over a gated bind) so they survive the auth gate; the
         # per-gateway ``gateways[]`` carries host ports and stays gated below.
-        status["profiles"] = topology["profiles"]
-        status["parked_profiles"] = topology.get("parked_profiles", [])
+        # An operator's `-p <name> serve --isolated` lists only <name>: a listing choice, not a
+        # boundary (hermes_cli/isolated_scope.py).
+        status["profiles"] = scope_to_launch_profile(topology["profiles"])
+        status["parked_profiles"] = scope_to_launch_profile(topology.get("parked_profiles", []))
+        status["isolated_profile"] = isolated_launch_profile()
         status["gateway_mode"] = topology["gateway_mode"]
         status["multiplex_standalone_reason"] = topology.get("multiplex_standalone_reason")
 
@@ -683,6 +702,11 @@ async def get_status(profile: Optional[str] = None,
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
+        # Upstream's field-level redaction (#90700) applies to every unverified caller, the
+        # standalone dashboard included: it keeps its public body (no allowlist), but never the
+        # adapters' free-text diagnostics.
+        if not verified:
+            redact_status_for_unverified(status)
         if signed_out_keys is not None:
             return {key: value for key, value in status.items() if key in signed_out_keys}
         return status
@@ -862,6 +886,17 @@ async def get_portal_status(profile: Optional[str] = None):
     return await config_scoped_to_thread(profile, _get_portal_status_sync)
 
 
+@router.get("/api/cloud/agents")
+async def list_cloud_agents(org: Optional[str] = None, profile: Optional[str] = None):
+    """The signed-in Nous account's Hermes Cloud agents, for a client with no portal session of its
+    own (the Webapp's browser tab): ``hermes_cli.cloud_agents``."""
+    from hermes_cli.cloud_agents import CloudAgentsError, discover
+    try:
+        return await config_scoped_to_thread(profile, lambda: discover(org))
+    except CloudAgentsError as exc:
+        raise HTTPException(status_code=exc.status, detail={"code": exc.code, "message": str(exc)}) from None
+
+
 def _feature_state(feat) -> str:
     if getattr(feat, "managed_by_nous", False):
         return "via Nous Portal"
@@ -923,12 +958,17 @@ async def run_config_migrate(profile: Optional[str] = None):
 @router.post("/api/ops/debug-share")
 async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
                                    profile: Optional[str] = None):
-    """Upload a redacted debug report + full logs and return the paste URLs. Synchronous,
+    """Upload the allowlisted public debug summary (no log text; full logs only via
+    ``hermes debug share --nous``) and return the paste URL; refused (400) unless the body
+    carries ``consent: true`` from a user confirmation. Synchronous,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
     from hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
+    if not req.consent:
+        raise HTTPException(status_code=400,
+                            detail="Debug share requires explicit consent (consent: true)")
     try:
         result = await config_scoped_to_thread(profile, lambda: build_debug_share(
             log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))

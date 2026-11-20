@@ -78,7 +78,7 @@ class _TempPersonas:
 class TestPersonaInjectionIntoChildPrompt(unittest.TestCase):
     """The persona brief reaches the prompt the child is actually constructed with."""
 
-    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool_config._load_config", return_value={})
     def test_dispatched_child_prompt_carries_ruflo_persona_block(self, _cfg):
         """E2E through _build_child_agent: agent_type= puts the persona in ephemeral_system_prompt."""
         parent = _make_parent()
@@ -104,7 +104,7 @@ class TestPersonaInjectionIntoChildPrompt(unittest.TestCase):
         self.assertIn("focused subagent", prompt)
         self.assertNotIn("ship the fix", prompt)
 
-    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool_config._load_config", return_value={})
     def test_no_agent_type_means_no_persona_block(self, _cfg):
         """Symmetric negative: a persona-less dispatch gets the plain prompt."""
         parent = _make_parent()
@@ -120,7 +120,7 @@ class TestPersonaInjectionIntoChildPrompt(unittest.TestCase):
         self.assertNotIn("RUFLO PERSONA", prompt)
         self.assertIn("focused subagent", prompt)
 
-    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool_config._load_config", return_value={})
     def test_unknown_agent_type_falls_through_silently(self, _cfg):
         """An agent_type with no matching .md must not break the dispatch."""
         parent = _make_parent()

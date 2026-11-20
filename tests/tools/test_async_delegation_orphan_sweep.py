@@ -28,8 +28,8 @@ from tools.process_registry_awaiting import release, take_ready
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # The owner dispatches, its child fails (the reload-interrupted child of the report lands as
-# state='error'), and the process dies before anything delivers it. Dead work has no replay: this
-# row must be retired, never re-offered by a later process.
+# state='error'), and the process dies before anything delivers it. The failure keeps its replay: a
+# later process re-offers it (owner liveness retires nothing) until the replay age cap.
 _DEAD_CHILD_OWNER = r'''
 import os, time
 from tools import async_delegation as ad
@@ -147,29 +147,35 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
     assert _row(home, delegation_id)["delivery_state"] == "delivered"
 
 
-def test_dead_childs_completion_is_retired_at_the_next_startup(tmp_path, caplog):
+def test_dead_childs_completion_is_reoffered_at_the_next_startup(tmp_path, caplog):
     """The reload-interrupted child of the report: its owner was alive when the child failed, so the
-    failure kept its replay (the owner could still push it). The owner then died with it; the next
-    startup retires the row instead of leaving it pending until the 48 h age cap."""
+    failure kept its replay (the owner could still push it). The owner then died with it, and the next
+    startup re-offers the completion instead of retiring it: owner liveness is not a retirement rule.
+    Only the replay age cap drops it, and the outcome stays queryable."""
     home = tmp_path / "home"
     delegation_id = _orphan(home, _DEAD_CHILD_OWNER)
     row = _row(home, delegation_id)
     assert (row["state"], row["delivery_state"]) == ("error", "pending") and row["event_json"]
-    # Age it past the dead-completion grace window: that, not owner liveness, is what retires a row.
+    q = queue.Queue()
+    with _Home(home):
+        assert ad.restore_undelivered_completions(q) == 1
+    (evt,) = _drain(q)
+    assert (evt["delegation_id"], evt["status"], evt["restored"]) == (delegation_id, "error", True)
+    assert _row(home, delegation_id)["delivery_state"] == "pending"
+    # Age it past the replay cap: that, not owner liveness, is what retires a row.
     conn = sqlite3.connect(home / "state.db")
     try:
         conn.execute("UPDATE async_delegations SET completed_at=? WHERE delegation_id=?",
-                     (time.time() - ad._DEAD_COMPLETION_GRACE_S - 60, delegation_id))
+                     (time.time() - ad._MAX_COMPLETION_REPLAY_AGE_S - 60, delegation_id))
         conn.commit()
     finally:
         conn.close()
-    q = queue.Queue()
     with _Home(home), caplog.at_level(logging.INFO, logger="tools.async_delegation"):
-        assert ad.restore_undelivered_completions(q) == 0
-    assert q.empty()
+        assert ad.restore_undelivered_completions(queue.Queue()) == 0
     assert _row(home, delegation_id)["delivery_state"] == "dropped"
     assert json.loads(_row(home, delegation_id)["result_json"])["status"] == "error"
-    assert f"Async delegation {delegation_id}: terminal state 'error' was never claimed" in caplog.text
+    assert f"Async delegation {delegation_id}: pending completion is" in caplog.text
+    assert "terminally dropping the replay" in caplog.text
 
 
 def test_dead_childs_failure_is_offered_by_the_running_sweep(tmp_path):

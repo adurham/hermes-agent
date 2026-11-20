@@ -1382,4 +1382,6 @@ registry.register(
     ),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    # Flat single-op shape from old transcripts; memory_tool words its own missing-field errors.
+    compat_args=("action", "content", "old_text", "new_text"), self_checked_args=("target", "operations"),
     dynamic_schema_overrides=_build_memory_schema_overrides)

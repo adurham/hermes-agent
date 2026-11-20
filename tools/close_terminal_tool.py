@@ -56,4 +56,5 @@ registry.register(
     handler=lambda args, **kw: close_terminal_tool(process_id=args.get("process_id", "")),
     check_fn=check_close_terminal_requirements,
     emoji="🖥",
+    self_checked_args=("process_id",),
 )

@@ -33,9 +33,9 @@ def _cli():
 _REASONING_TAGS = THINK_TAG_NAMES
 
 
-# FORK: "invoke"/"parameter" appended — some backends leak Anthropic-style tool XML
-# (paired with the same tags in cli.py's own _TOOL_CALL_TAGS).
-_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls",
+_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls", "toolcall",
+                   # FORK: "invoke"/"parameter" appended — some backends leak Anthropic-style tool XML
+                   # (paired with the same tags in cli.py's own _TOOL_CALL_TAGS).
                    "invoke", "parameter")
 
 

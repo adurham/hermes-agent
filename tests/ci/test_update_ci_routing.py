@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from hermes_agent.compat.paths import current_module, current_path, original_path
 from hermes_platform.host.facts import native_arch
 from tests.ci import _gha_expr as gha
 from tests.ci import workflow_steps
@@ -106,7 +107,8 @@ _UPSTREAM_REPO = "NousResearch/hermes-agent"
 _FORK_REPO = "adurham/hermes-agent"
 
 
-def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch") -> dict[str, Any]:
+def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch",
+                    inputs: dict[str, Any] | None = None) -> dict[str, Any]:
     """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs.
 
     Replays a manual dispatch by default: E2E lanes reach their consumers only on a dispatch or a
@@ -121,7 +123,8 @@ def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": event_name, "repository": _UPSTREAM_REPO}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": event_name, "repository": _UPSTREAM_REPO},
+           "inputs": inputs or {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -134,11 +137,12 @@ def _inputs_for(called: str, given: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None,
-                  repository: str = _UPSTREAM_REPO) -> dict:
-    """Which jobs of ``rel`` run on a pull request, recursing into called workflows.
+                  event_name: str = "pull_request", repository: str = _UPSTREAM_REPO) -> dict:
+    """Which jobs of ``rel`` run on ``event_name``, recursing into called workflows.
 
     Returns ``{job: {"inputs": ..., "jobs": <child result>}}`` for every job that runs.
-    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs.
+    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs. A called
+    workflow sees its caller's event, so every nested ``if`` is evaluated under it.
     """
     jobs = _yaml(rel)["jobs"]
     ran: dict[str, dict] = {}
@@ -161,7 +165,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
             all_ran = all(n in ran for n in needs)
             ctx = {
                 "inputs": inputs,
-                "github": {"event_name": "pull_request", "ref_type": "branch", "repository": repository},
+                "github": {"event_name": event_name, "ref_type": "branch", "repository": repository},
                 "needs": {n: {"outputs": (ran.get(n) or {}).get("outputs", {}),
                               "result": "success" if n in ran else "skipped"} for n in needs},
                 "__status__": {"always": True, "success": all_ran, "failure": False, "cancelled": False},
@@ -183,7 +187,8 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
                 given = {k: gha.render(v, ctx) for k, v in (body.get("with") or {}).items()}
                 entry["inputs"] = _inputs_for(called, given)
                 # Inside a workflow_call, github.repository is the CALLER's repository.
-                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"], repository=repository)
+                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"], event_name=event_name,
+                                             repository=repository)
             ran[name] = entry
         assert progressed, f"{rel}: unresolvable needs among {pending}"
     return ran
@@ -315,8 +320,8 @@ _R15_CASES = {
 @_NATIVE_WINDOWS_TOO
 @pytest.mark.parametrize("path,lanes", list(_R15_CASES.items()))
 def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
-    assert (_REPO / path).is_file(), f"{path} moved: update this table"
-    classified = _real_classifier([path])
+    assert (_REPO / current_path(path)).is_file(), f"{path} is gone: update this table"
+    classified = _real_classifier([current_path(path)])
     run = _ci_run(classified)
     for lane in lanes:
         assert classified[lane], f"{path}: classifier leaves {lane} off"
@@ -373,8 +378,8 @@ _TAURI_UPDATER = tuple(f"apps/bootstrap-installer/src-tauri/src/{name}.rs" for n
 @pytest.mark.parametrize("path", _TAURI_UPDATER)
 def test_tauri_updater_routes_as_one_unit_to_the_lane_that_builds_it(path):
     """No slow lane builds the bootstrap installer: starting one for its updater runs nothing of it."""
-    assert (_REPO / path).is_file(), f"{path} moved: update this table"
-    classified = _real_classifier([path])
+    assert (_REPO / current_path(path)).is_file(), f"{path} is gone: update this table"
+    classified = _real_classifier([current_path(path)])
     assert classified["rust"], f"{path}: cargo test never runs"
     started = [lane for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update", "e2e_desktop_core") if classified[lane]]
     assert not started, f"{path}: starts {started}, which never build the Tauri installer"
@@ -647,15 +652,16 @@ _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "w
 
 
 def _product_python() -> list[Path]:
+    """Product modules where they live; a file left at a path ``MOVES`` maps elsewhere only forwards."""
     out = []
     for dirpath, dirnames, filenames in os.walk(_REPO):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         out += [Path(dirpath) / f for f in filenames if f.endswith(".py")]
-    return out
+    return [p for p in out if current_path(rel := p.relative_to(_REPO).as_posix()) == rel]
 
 
 def _module_file(module: str) -> Path | None:
-    base = _REPO / module.replace(".", "/")
+    base = _REPO / current_module(module).replace(".", "/")
     for candidate in (base.with_suffix(".py"), base / "__init__.py"):
         if candidate.is_file():
             return candidate
@@ -664,7 +670,7 @@ def _module_file(module: str) -> Path | None:
 
 @cache
 def _imports(path: Path) -> frozenset[str]:
-    """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
+    """Repo modules ``path`` imports anywhere (module level or lazily in a function), by original path."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8-sig"))
     except (SyntaxError, UnicodeDecodeError):
@@ -687,12 +693,12 @@ def _imports(path: Path) -> frozenset[str]:
     for name in names:
         target = _module_file(name)
         if target is not None and target != path:
-            found.add(target.relative_to(_REPO).as_posix())
+            found.add(original_path(target.relative_to(_REPO).as_posix()))
     return frozenset(found)
 
 
 def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
-    hits = [p for p in _product_python() if p.relative_to(_REPO).as_posix().startswith(prefixes)]
+    hits = [p for p in _product_python() if original_path(p.relative_to(_REPO).as_posix()).startswith(prefixes)]
     assert hits, f"no module matches {prefixes}: the entry-point list went stale"
     return sorted(hits)
 
@@ -828,7 +834,7 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
     """`gh workflow run ci.yaml -f strict_acceptance=upd-txn` (the batch's acceptance run)."""
     lanes = cc.classify([])  # a dispatch has no diff: every lane on
     run = _run_workflow(".github/workflows/ci.yaml", inputs={"release": False, "strict_acceptance": value},
-                        detect=_detect_outputs(lanes))
+                        detect=_detect_outputs(lanes), event_name="workflow_dispatch")
     for path, rel, job, step in _STRICT_STEPS:
         assert _strict_env(run, path, rel, job, step) == value, "/".join(path)
 
@@ -837,11 +843,25 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
 def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
     """E2E suites run only on a release run or a manual dispatch, whatever the diff or labels select."""
     lanes = cc.classify([], run_e2e=True)  # every lane on, as a label or an update-path diff would
-    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name))
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name),
+                        event_name=event_name)
     for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
         assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
     assert "e2e-desktop-core" not in run
     assert "tests" in run and "tests-os" in run  # the unit lanes still run
+
+
+def test_a_canary_e2e_run_reaches_every_e2e_suite():
+    """canary-e2e.yml calls ci.yaml from a workflow_run event, so only its release input opens E2E."""
+    call = _yaml(".github/workflows/canary-e2e.yml")["jobs"]["ci"]
+    ctx = {"needs": {"resolve": {"outputs": {"commit": "0" * 40}}}}
+    inputs = _inputs_for(".github/workflows/ci.yaml", {k: gha.render(v, ctx) for k, v in call["with"].items()})
+    run = _run_workflow(".github/workflows/ci.yaml", inputs=inputs,
+                        detect=_detect_outputs(cc.classify([]), "workflow_run", inputs), event_name="workflow_run")
+    for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
+        reached = _consumers_reached(run, lane)
+        assert reached and all(reached.values()), f"{lane}: {reached}"
+    assert "e2e-desktop-core" in run
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():

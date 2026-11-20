@@ -100,6 +100,15 @@
       "workdir": {
         "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears.",
         "type": "string"
+      },
+      "wrap_response": {
+        "description": "Per-job override for the 'Cronjob Response: <name>' header and 'To stop or manage this job...' footer around delivered output. 'on' wraps; 'off' delivers the raw output verbatim (useful for briefings meant to read clean); 'inherit' removes an override so the job follows the global cron.wrap_response again. Omit to leave it unchanged (a new job inherits).",
+        "enum": [
+          "on",
+          "off",
+          "inherit"
+        ],
+        "type": "string"
       }
     },
     "required": [

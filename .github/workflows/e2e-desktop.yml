@@ -127,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-report-${{ github.sha }}
+          name: playwright-report-${{ inputs.commit || github.sha }}
           path: apps/desktop/playwright-report
           retention-days: 14
           overwrite: true
@@ -138,7 +138,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-test-results-${{ github.sha }}
+          name: playwright-test-results-${{ inputs.commit || github.sha }}
           path: apps/desktop/test-results
           retention-days: 14
           overwrite: true
@@ -149,7 +149,7 @@ jobs:
         if: always() && (github.ref_name != 'main' || inputs.commit != '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: visual-diffs-${{ github.sha }}
+          name: visual-diffs-${{ inputs.commit || github.sha }}
           path: |
             apps/desktop/test-results/**/*-diff.png
             apps/desktop/test-results/**/*-actual.png

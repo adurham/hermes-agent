@@ -1,12 +1,15 @@
 """FORK: the ``api_calls`` per-call telemetry sink must actually be written.
 
-``hermes_state``'s FORK_SCHEMA_SQL creates ``api_calls`` (and FK-heals it) on
-every store open, but the v2026.9.14 merge dropped its only writer: upstream
-moved usage handling out of ``agent/conversation_loop.py`` into the new
-``agent/turn_usage.py`` and the fork's ``record_api_call`` call site went with
-it. The table was created-but-never-written -- session totals still landed, so
-nothing looked broken, but the per-call cache split / latency / request id that
-answers "was THIS turn a cold prefill?" was silently gone.
+``SCHEMA_SQL`` (persistence/sqlite/_schema_ddl.py) declares ``api_calls`` and
+``_init_schema`` FK-heals it on every store open, but the v2026.9.14 merge
+dropped its only writer: upstream moved usage handling out of
+``agent/conversation_loop.py`` into the new ``agent/turn_usage.py`` and the
+fork's ``record_api_call`` call site went with it. The table was
+created-but-never-written -- session totals still landed, so nothing looked
+broken, but the per-call cache split / latency / request id that answers
+"was THIS turn a cold prefill?" was silently gone. The row is now written
+through ``UsageRepository.record_api_call`` (or the stand-in's store handle when
+the agent was given only a ``hermes_state.SessionDB``).
 
 These tests exercise the real ``record_response_usage`` against a real
 ``SessionDB`` and read the real rows back, rather than asserting a mock was

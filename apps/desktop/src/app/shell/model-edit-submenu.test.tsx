@@ -33,6 +33,8 @@ function renderSubmenu(opts: {
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
+  serviceTier?: string
+  ultrafastSupported?: boolean
 }) {
   return render(
     <DropdownMenu open>
@@ -51,6 +53,8 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            serviceTier={opts.serviceTier}
+            ultrafastSupported={opts.ultrafastSupported}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -194,5 +198,33 @@ describe('ModelEditSubmenu offers only the levels the route declares', () => {
     fireEvent.click(screen.getByText('High'))
 
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
+  })
+})
+
+describe('inherited ultrafast tier on models without ultrafast support', () => {
+  it('keeps the Fast switch checked on an active -fast variant model', () => {
+    renderSubmenu({
+      fastControl: { baseId: 'm1', fastId: 'm1-fast', kind: 'variant', on: true },
+      onSetOptions: vi.fn(),
+      reasoning: false,
+      serviceTier: 'ultrafast',
+      ultrafastSupported: false
+    })
+
+    expect(screen.getByRole('switch', { name: 'Fast' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.queryByRole('switch', { name: 'Ultrafast' })).toBeNull()
+  })
+
+  it('keeps the Fast switch off on a param fast-only model when serviceTier is ultrafast', () => {
+    renderSubmenu({
+      fastControl: { kind: 'param', on: true },
+      onSetOptions: vi.fn(),
+      reasoning: false,
+      serviceTier: 'ultrafast',
+      ultrafastSupported: false
+    })
+
+    expect(screen.getByRole('switch', { name: 'Fast' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByRole('switch', { name: 'Ultrafast' })).toBeNull()
   })
 })

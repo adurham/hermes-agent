@@ -109,9 +109,11 @@ def test_each_thinking_only_retry_sends_a_different_request(loop_agent):
     assert _THINKING_ONLY_STEERS[1] not in _text(steered_1[-1])
     assert _THINKING_ONLY_STEERS[1] in _text(steered_2[-1])
     assert _text(nudged[-1]) != _text(steered_1[-1]) != _text(steered_2[-1])
-    # Every recovery request ends on a user row, never on the dropped reasoning stub.
+    # The steer rides the canonical tail row as a request-local suffix: the wire keeps the
+    # same row sequence on every recovery attempt and never gains a synthetic user/assistant row.
     for w in (nudged, steered_1, steered_2):
-        assert w[-1]["role"] == "user"
+        assert [m["role"] for m in w] == [m["role"] for m in nudged]
+        assert w[-1]["role"] == "tool"
     assert result["final_response"] == "All done."
 
 
@@ -170,10 +172,11 @@ def _recover(agent, messages):
         )
 
 
-def test_steer_after_a_tool_result_keeps_the_wire_sequence_valid():
-    """With the stub dropped from the API copy, tool -> user is rejected by strict APIs:
-    a synthetic (empty) assistant row must sit between them."""
+def test_steer_after_a_tool_result_rides_the_request_not_the_transcript():
+    """A tool -> user boundary is rejected by strict APIs and the reasoning stub is dropped from
+    the API copy, so the steer rides the outgoing tail as a suffix instead of a synthetic row."""
     from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
+    from agent.turn_empty_response import add_empty_response_retry_hint
 
     messages = [
         {"role": "user", "content": "go"},
@@ -181,25 +184,40 @@ def test_steer_after_a_tool_result_keeps_the_wire_sequence_valid():
             {"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
     ]
+    canonical = [dict(m) for m in messages]
+    agent = _ladder_agent()
     with patch("agent.agent_runtime_helpers._ra") as ra:
         ra.return_value.AIAgent._is_thinking_only_assistant = staticmethod(
             lambda m, **kw: bool(m.get("_thinking_prefill"))
         )
-        verdict = _recover(_ladder_agent(), messages)
-        wire = drop_thinking_only_and_merge_users([dict(m) for m in messages])
+        verdict = _recover(agent, messages)
+        wire = [dict(m) for m in messages]
+        suffix = add_empty_response_retry_hint(agent, wire)
+        api_copy = drop_thinking_only_and_merge_users([dict(m) for m in wire])
 
     assert verdict.action == "continue"
-    assert [m["role"] for m in wire] == ["user", "assistant", "tool", "assistant", "user"]
-    assert wire[-1]["content"] == _THINKING_ONLY_STEERS[0]
-    assert all(m.get("_thinking_steer") for m in (messages[3], messages[5]))
-    assert messages[4].get("_thinking_prefill")
+    # The transcript itself is untouched: no synthetic assistant row, no stored steer row.
+    assert messages == canonical
+    # The outgoing copy gains one text suffix, never a new row.
+    assert suffix and _THINKING_ONLY_STEERS[0] in suffix
+    assert [m["role"] for m in wire] == ["user", "assistant", "tool"]
+    assert wire[-1]["content"].endswith(_THINKING_ONLY_STEERS[0])
+    # And the send-time sanitizer leaves the alternation alone: tool -> tool is fine, tool -> user is not.
+    assert [m["role"] for m in api_copy] == ["user", "assistant", "tool"]
 
 
 def test_steer_text_escalates_and_stops_at_the_last_entry():
     agent = _ladder_agent()
     messages = [{"role": "user", "content": "go"}]
-    _recover(agent, messages)
-    _recover(agent, messages)
-    steers = [m["content"] for m in messages if m.get("_thinking_steer")]
-    assert steers == list(_THINKING_ONLY_STEERS)
-    assert agent._thinking_prefill_retries == 2
+    hints = []
+    for _ in _THINKING_ONLY_STEERS:
+        _recover(agent, messages)
+        hints.append(agent._empty_response_retry_hint)
+    assert _THINKING_ONLY_STEERS[0] in hints[0]
+    assert _THINKING_ONLY_STEERS[1] in hints[1]
+    assert hints[0] != hints[1]
+    # The ladder never asks for an entry past the last one.
+    assert [s for s in _THINKING_ONLY_STEERS if s in hints[-1]] == [_THINKING_ONLY_STEERS[-1]]
+    assert agent._thinking_prefill_retries == len(_THINKING_ONLY_STEERS)
+    # Nothing was written into the transcript along the way.
+    assert messages == [{"role": "user", "content": "go"}]

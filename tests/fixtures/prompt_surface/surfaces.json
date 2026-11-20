@@ -5,7 +5,7 @@
       "stable": 1891,
       "volatile": 1528
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -44,7 +44,7 @@
       "stable": 1276,
       "volatile": 1528
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -83,7 +83,7 @@
       "stable": 1820,
       "volatile": 1526
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -122,7 +122,7 @@
       "stable": 2594,
       "volatile": 1524
     },
-    "tool_tokens": 19445,
+    "tool_tokens": 19140,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -161,7 +161,7 @@
       "stable": 1276,
       "volatile": 1528
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -200,7 +200,7 @@
       "stable": 1263,
       "volatile": 1528
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -236,49 +236,31 @@
   "desktop.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1525,
+      "stable": 1500,
       "volatile": 1529
     },
-    "tool_tokens": 23053,
+    "tool_tokens": 12837,
     "tools": [
-      "annotate_preview",
       "browser_cdp",
       "browser_dialog",
       "browser_exec",
-      "browser_vault",
       "clarify",
-      "close_terminal",
-      "computer_use",
       "consult",
-      "cronjob_manage",
       "delegate_task",
-      "desktop_preview",
-      "desktop_project",
-      "drive_preview",
       "execute_code",
-      "focus_pane",
-      "gui_tour",
-      "image_generate",
-      "manage_catalog",
-      "manage_connections",
       "memory",
       "patch",
-      "process_manage",
       "react_to_message",
       "read_file",
-      "read_terminal",
-      "read_window_below",
       "search_files",
-      "session_search",
-      "set_theme",
-      "show_tip",
       "skill_manage",
       "skill_pitfalls",
       "skill_view",
       "skills_list",
       "terminal",
-      "text_to_speech",
-      "todo_list",
+      "tool_call",
+      "tool_describe",
+      "tool_search",
       "vision_analyze",
       "web_extract",
       "web_search",
@@ -291,7 +273,7 @@
       "stable": 1296,
       "volatile": 1529
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",
@@ -330,7 +312,7 @@
       "stable": 1382,
       "volatile": 1529
     },
-    "tool_tokens": 19289,
+    "tool_tokens": 18984,
     "tools": [
       "browser_cdp",
       "browser_dialog",

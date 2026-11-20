@@ -7,7 +7,7 @@ wake, and each wake runs as its own model turn first. From the user's side the q
 cancel" and the new message "doesn't flush it". Expected: the claim takes the oldest queued human
 input first; wakes keep their own FIFO order and run once no person is waiting.
 
-Real SessionStore SQLite and the real drain; the turn executor is a stand-in.
+Real ``SessionStore`` SQLite and the real drain; the turn executor is a stand-in.
 """
 import queue
 from types import SimpleNamespace
@@ -19,8 +19,7 @@ from gateway.session import SessionSource, SessionStore
 from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_controls import AuthorityConnection
-from hermes_state_runtime import (admit_session_input, claim_session_input, list_session_admissions,
-                                  settle_session_input)
+from tests.fixtures.storage_seed import seed_session
 from tests.waiting import async_wait_until
 
 ROUTE = 'agent:main:telegram:dm:wake'
@@ -35,17 +34,9 @@ class Peer:
         return True
 
 
-def _wake(db, epoch, name):
-    return admit_session_input(db, epoch=epoch, principal_id='automation:' + ROUTE, session_id='s',
-                               request_id=f'["completion","{name}",1]',
-                               payload={'text': f'[IMPORTANT: Background process {name} completed]'})['admission_id']
-
-
-@pytest.mark.asyncio
-async def test_message_typed_after_cancel_runs_before_queued_process_wakes(tmp_path, monkeypatch):
+def _runner(tmp_path, monkeypatch, executed):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    executed = []
 
     async def answer(event):
         from gateway.session_results import execution_result
@@ -53,10 +44,26 @@ async def test_message_typed_after_cancel_runs_before_queued_process_wakes(tmp_p
         execution_result.get()['result'] = {'final_response': 'ok', 'completed': True, 'messages': []}
         return 'ok'
 
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
-    db = store._db
-    db.create_session('s', source='telegram')
+    return store, runner
+
+
+def _wake(db, epoch, name, session_id='s'):
+    """One admitted process-completion wake, filed the way a producer files it."""
+    row, _created = db.admissions.admit(
+        epoch=epoch, principal_id='automation:' + ROUTE, session_id=session_id,
+        request_id=f'["completion","{name}",1]',
+        payload={'text': f'[IMPORTANT: Background process {name} completed]'})
+    return row.admission_id
+
+
+@pytest.mark.asyncio
+async def test_message_typed_after_cancel_runs_before_queued_process_wakes(tmp_path, monkeypatch):
+    executed = []
+    store, runner = _runner(tmp_path, monkeypatch, executed)
+    db = store.persistence
+    seed_session(db, 's', 'telegram')
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='wake'), ROUTE)
     ref = SessionRef('p', 's')
@@ -64,12 +71,12 @@ async def test_message_typed_after_cancel_runs_before_queued_process_wakes(tmp_p
     authority._schedule = lambda ref: None  # hold the drain: the long turn is "running"
     try:
         long_turn = await authority.submit(actor, Submission('long', ref, {'text': 'LONG'}, 'queue'))
-        claimed = claim_session_input(db, epoch=authority.epoch, session_id='s')
-        assert claimed['admission_id'] == long_turn.admission_id
+        claimed = db.admissions.claim(epoch=authority.epoch, session_id='s')
+        assert claimed.admission_id == long_turn.admission_id
         wakes = [_wake(db, authority.epoch, name) for name in ('proc_a', 'proc_b')]
         # Ctrl+C: the running turn settles interrupted.
-        settle_session_input(db, epoch=authority.epoch, admission_id=claimed['admission_id'],
-                             generation=claimed['generation'], outcome='interrupted')
+        db.admissions.settle(epoch=authority.epoch, admission_id=claimed.admission_id,
+                             generation=claimed.generation, outcome='interrupted')
         # The person types again after the cancel.
         typed = await authority.submit(actor, Submission('typed', ref, {'text': 'TYPED'}, 'queue'))
         del authority._schedule
@@ -79,24 +86,24 @@ async def test_message_typed_after_cancel_runs_before_queued_process_wakes(tmp_p
         assert executed[0] == 'TYPED', f'the typed message waited behind internal wakes: {executed}'
         assert executed[1:] == ['[IMPORTANT: Background process proc_a completed]',
                                 '[IMPORTANT: Background process proc_b completed]']  # wakes keep FIFO
-        statuses = {r['admission_id']: (r['status'], r['outcome'])
-                    for r in list_session_admissions(db, session_id='s', pending_only=False)}
+        statuses = {r.admission_id: (r.status, r.outcome)
+                    for r in db.admissions.list(session_id='s', pending_only=False)}
         assert statuses[typed.admission_id] == ('terminal', 'completed')
         assert all(statuses[w] == ('terminal', 'completed') for w in wakes)  # nothing stranded
     finally:
         store.close_all_db_handles()
 
 
-def test_claim_picks_oldest_human_row_over_older_wakes(tmp_path):
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
-    db = SessionDB(tmp_path / 'state.db')
+def test_claim_picks_oldest_human_row_over_older_wakes(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store.persistence
+    seed_session(db, 's', 'telegram')
     try:
-        db.create_session('s', source='telegram')
-        epoch = begin_runtime_epoch(db, instance_id='x')
+        epoch = db.runtime.begin_epoch(instance_id='fifo-wakes')
         _wake(db, epoch, 'proc_a')
-        human = admit_session_input(db, epoch=epoch, principal_id='human', session_id='s',
-                                    request_id='h', payload={'text': 'H'})['admission_id']
-        assert claim_session_input(db, epoch=epoch, session_id='s')['admission_id'] == human
+        human, _created = db.admissions.admit(epoch=epoch, principal_id='human', session_id='s',
+                                              request_id='h', payload={'text': 'H'})
+        assert db.admissions.claim(epoch=epoch, session_id='s').admission_id == human.admission_id
     finally:
-        db.close()
+        store.close_all_db_handles()

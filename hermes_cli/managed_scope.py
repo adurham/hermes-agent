@@ -197,16 +197,18 @@ def _strict_fallback(path: Path, cache: dict[str, tuple], reason: str):
     return copy.deepcopy(hit[-1])
 
 
-def _cached_read(path: Path, cache: dict[str, tuple], parse, *, required: bool = False, mapping: bool = False):
+def _cached_read(path: Path, cache: dict[str, tuple], parse, *, required: bool = False, mapping: bool = False,
+                 strict: bool = False):
     """Shared stat-signature-keyed read; returns a deepcopy of the parsed value.
 
     ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
     LOUDLY — the admin needs to know their policy isn't applied — but never raises, so a malformed
-    managed file can't brick startup. Under ``HERMES_MANAGED_STRICT`` (``strict_mode``) a missing
-    *required* file, an unreadable or unparseable one, or a non-mapping root when *mapping* is set
-    raises ``ManagedScopeError`` (or keeps the last value parsed in this process).
+    managed file can't brick startup. Under ``HERMES_MANAGED_STRICT`` (``strict_mode``), or for a
+    caller that passes *strict*, a missing *required* file, an unreadable or unparseable one, or a
+    non-mapping root when *mapping* is set raises ``ManagedScopeError`` (or keeps the last value
+    parsed in this process) — the fail-closed behaviour a security gate needs.
     """
-    strict = strict_mode()
+    strict = strict or strict_mode()
     try:
         st = path.stat()
     except FileNotFoundError:
@@ -244,12 +246,13 @@ def _parse_managed_config(path: Path):
     return fast_safe_load(path.read_text(encoding="utf-8-sig"))
 
 
-def _read_managed_config_file(managed_dir: Path):
-    return _cached_read(managed_dir / "config.yaml", _CONFIG_CACHE, _parse_managed_config, required=True, mapping=True)
+def _read_managed_config_file(managed_dir: Path, *, strict: bool = False):
+    return _cached_read(managed_dir / "config.yaml", _CONFIG_CACHE, _parse_managed_config, required=True,
+                        mapping=True, strict=strict)
 
 
-def _read_managed_env_file(managed_dir: Path):
-    return _cached_read(managed_dir / ".env", _ENV_CACHE, _parse_managed_env)
+def _read_managed_env_file(managed_dir: Path, *, strict: bool = False):
+    return _cached_read(managed_dir / ".env", _ENV_CACHE, _parse_managed_env, strict=strict)
 
 
 def _merge_layer(base: dict, top: dict) -> dict:
@@ -264,10 +267,10 @@ def _merge_layer(base: dict, top: dict) -> dict:
     return out
 
 
-def _load_managed_file(read, merge) -> dict:
+def _load_managed_file(read, merge, *, strict: bool = False) -> dict:
     merged: dict = {}
     for managed_dir in get_managed_dirs():
-        parsed = read(managed_dir)
+        parsed = read(managed_dir, strict=strict)
         if isinstance(parsed, dict):
             merged = merge(merged, parsed)
     return merged
@@ -284,15 +287,17 @@ def check_strict() -> None:
         _read_managed_env_file(managed_dir)
 
 
-def load_managed_config() -> dict:
+def load_managed_config(*, strict: bool = False) -> dict:
     """Parsed managed config.yaml — every managed dir's, merged per leaf with ``/etc/hermes`` on top
     — or {} when absent/malformed (fail-open). Always {} under a config backend that takes config
-    and locks from elsewhere (remote mode, D18; boot warns about the file)."""
+    and locks from elsewhere (remote mode, D18; boot warns about the file). *strict* raises on an
+    unreadable or malformed file (or keeps the last policy this process loaded) instead of
+    returning {}."""
     from hermes_cli.config_backend import get_config_backend
 
     if not get_config_backend().honors_managed_config():
         return {}
-    return _load_managed_file(_read_managed_config_file, _merge_layer)
+    return _load_managed_file(_read_managed_config_file, _merge_layer, strict=strict)
 
 
 def load_managed_env() -> dict[str, str]:

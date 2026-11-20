@@ -3,6 +3,10 @@
   "name": "process_manage",
   "parameters": {
     "properties": {
+      "acknowledge": {
+        "description": "'poll' on an exited process: you handled its result, so skip its notify_on_complete turn.",
+        "type": "boolean"
+      },
       "action": {
         "enum": [
           "list",

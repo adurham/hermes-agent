@@ -209,8 +209,14 @@ def _check_tools(a: dict, kwargs: dict) -> None:
 def _check_messages(a: dict, kwargs: dict) -> None:
     tool_uses = [b for m in kwargs["messages"] if isinstance(m["content"], list)
                  for b in m["content"] if b.get("type") == "tool_use"]
-    if not a["tools"]:
+    # No tools block on the request — absent, or dropped because tool_choice='none' — means the
+    # adapter sent the tool history as assistant text: a tool_use or tool_result block would dangle
+    # and Anthropic 400s on either without ``tools``, so only the text breadcrumb may survive.
+    if not a["tools"] or a["tool_choice"] == "none":
+        body = json.dumps(kwargs["messages"])
         assert tool_uses == []
+        assert '"tool_result"' not in body
+        assert "read_file" in body and "ghost_tool" in body
         return
     wire = "mcp__read_file" if a["is_oauth"] else "read_file"
     assert [(b["id"], b["name"], b["input"]) for b in tool_uses] == [("c1", wire, {"path": "a"})]

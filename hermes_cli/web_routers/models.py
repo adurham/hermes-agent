@@ -6,6 +6,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 from typing import Optional
 
@@ -16,10 +17,11 @@ from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _aux_provider_first_context,
     _dashboard_code_skew_guard, _plugin_aux_tasks, _prepare_main_assignment,
 )
-from agent.model_metadata import is_local_endpoint
+from agent.process_transport import is_local_server
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_cli.web_routers._common import config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -60,20 +62,41 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
 _MODEL_INFO_PROBE_BUDGET_S = 5.0
 
 
-def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> int:
-    """``get_model_context_length`` with the route's blocking budget.
+def _context_length_with_endpoint_key(model: str, model_cfg, base_url: str, provider: str,
+                                      profile: Optional[str]) -> int:
+    """The auto context length, probed with the key the runtime sends to ``model.base_url``.
+
+    Runs on the probe worker, so it binds the request's profile itself: ``key_env`` reads that
+    profile's secrets and the credential pools live in its ``auth.json``.
+    """
+    from agent.model_metadata import get_model_context_length
+    from hermes_cli.runtime_provider_custom import main_endpoint_key_for
+
+    with _config_profile_scope(profile):
+        api_key = main_endpoint_key_for(model_cfg, base_url)
+        return get_model_context_length(model=model, base_url=base_url, provider=provider, api_key=api_key,
+                                        config_context_length=None)
+
+
+def _bounded_context_length_probe(model: str, model_cfg, base_url: str, provider: str,
+                                  profile: Optional[str]) -> int:
+    """:func:`_context_length_with_endpoint_key` with the route's blocking budget.
+
+    The key lookup is inside the budget: loading a credential pool can persist ``auth.json``
+    and wait up to ``AUTH_LOCK_TIMEOUT_SECONDS`` for its lock, which an OAuth refresh holds
+    across its network call.
 
     On timeout the abandoned probe keeps running in its worker thread (bounded
     by its own per-request timeouts) while the response degrades to
     ``auto_context_length = 0`` ("auto-detected: unknown").
     """
-    from agent.model_metadata import get_model_context_length
-
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
     try:
+        # copy_context: an unnamed profile is the request's effective home, which may be a
+        # task-local override the bare worker thread would not see.
         return pool.submit(
-            get_model_context_length, model=model, base_url=base_url, provider=provider,
-            config_context_length=None
+            contextvars.copy_context().run, _context_length_with_endpoint_key, model, model_cfg, base_url,
+            provider, profile,
         ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
     except concurrent.futures.TimeoutError:
         _log.warning(
@@ -105,7 +128,7 @@ def get_model_info(profile: Optional[str] = None):
             # config_context_length=None: ignore the override — we want the auto value.
             # Bounded: the resolver's provider probes can hang for tens of seconds
             # when model.base_url is unreachable (#63214).
-            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider)
+            auto_ctx = _bounded_context_length_probe(model_name, model_cfg, base_url, provider, profile)
         except Exception:
             auto_ctx = 0
 
@@ -248,7 +271,7 @@ def _aux_task_row_provider_first(slot: str, aux_cfg: dict, main_provider: str) -
         "task": slot, "provider": resolved_provider or "auto",
         "model": str(resolved.get("model", "") or ""), "base_url": base_url,
         "reasoning_effort": str(resolved.get("reasoning_effort") or "") or None,
-        "local_endpoint": is_local_endpoint(base_url), "source": source,
+        "local_endpoint": is_local_server(base_url, resolved_provider or "auto"), "source": source,
     }
 
 
@@ -262,7 +285,7 @@ def _aux_task_row_task_first(slot: str, aux_cfg: dict) -> dict:
         "base_url": base_url,
         "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
         # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
-        "local_endpoint": is_local_endpoint(base_url),
+        "local_endpoint": is_local_server(base_url, provider),
         "source": "pin" if slot_cfg.get("model") or provider.lower() != "auto" else "auto",
     }
 
@@ -284,8 +307,8 @@ def get_auxiliary_models(profile: Optional[str] = None):
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
         with _profile_scope(profile):
             cfg = load_config()
-            # Inside the scope on purpose: plugin discovery and the resolver key on the same
-            # context-local home, so profile B's rows come from B's plugins and B's config.
+            # Inside the scope on purpose: plugin discovery, the resolver and ``is_local_server``'s
+            # provider lookup key on the same context-local home, so profile B's rows are B's.
             plugin_tasks = _plugin_aux_tasks()
             effective = {entry["key"]: _get_auxiliary_task_config(entry["key"])
                          for entry in plugin_tasks if entry.get("inherit_from")}
@@ -478,7 +501,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
             with _profile_scope(body.profile or profile):
                 prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
                             if scope == "main" else None)
-                with _CONFIG_MUTATION_LOCK:
+                with CONFIG_MUTATION_LOCK:
                     return _apply_model_assignment_sync(
                         scope, provider, model, task, base_url, api_key,
                         reasoning_effort=reasoning_effort, prepared=prepared)

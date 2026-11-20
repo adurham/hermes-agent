@@ -13,6 +13,7 @@ from hermes_cli import source_check
 from hermes_cli.source_check import _github_compare_behind
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from hermes_cli._startup_fast import project_root_str
 
 # rich and prompt_toolkit are imported lazily: this module sits on the TUI gateway's critical
 # startup path purely for the lightweight update-check helpers, and eager rich/prompt_toolkit
@@ -159,7 +160,7 @@ def _resolve_repo_dir() -> Optional[Path]:
     against the path actually imported keeps the banner honest when a
     developer ``pip install -e``'s a fork checkout.
     """
-    repo_dir = Path(__file__).parent.parent.resolve()
+    repo_dir = Path(project_root_str())
     if not (repo_dir / ".git").exists():
         repo_dir = get_hermes_home() / "hermes-agent"
     return repo_dir if (repo_dir / ".git").exists() else None

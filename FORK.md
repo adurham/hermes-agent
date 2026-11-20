@@ -9,6 +9,79 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Upstream sync — 2026-11-19 (v0.23.1 → v0.23.3, 9,829 commits, 8,484 files, 115 conflict files)
+
+**Range.** `v0.23.1` (`3b421578588`, merged 2026-11-12) → `v0.23.3` (`caafe5389ae`): 9,829 commits, 8,484
+files, +491,357/−142,222. Two releases were skipped (v0.23.2 2026-11-16, v0.23.3 2026-11-19). The merged
+tree carries 8,461 changed files against the fork's `main` and 1,418 against the tag — that second number
+is what the fork still adds. `upstream/main` was a further 99 commits past the tag (`9f47677483d`) and is
+NOT in this merge.
+
+**Conflict surface.** `git merge v0.23.3` reported **115 conflicted paths** (109 `UU`, 6 delete/modify
+where `persistence/` replaced `hermes_state.py`). `git merge-tree` predicted 736 — the gap is rename
+detection (108 renames), not missed work: every conflicted path was one both sides touched. Lanes: 20
+`agent/`, 25 `tests/`, 15 `hermes_cli/`, 14 `tools/`, 10 `plugins/platforms/`, 9 `gateway/`, 10
+desktop+docs, plus `tui_gateway`/`cron`/`acp_adapter`.
+
+**Upstream's structural moves the merge had to absorb.** `hermes_state.py` became a deprecated stand-in
+over a new `persistence/` package (the fork's `hermes_state_common`/`_messages`/`_sessions`/`_runtime`
+modules were deleted); `agent/message_content.py` moved to `session_rules/turns.py`; tool history is
+re-expressed as text by `agent/tool_history_as_text.py` when a route drops its tools block; `tui_gateway`'s
+monoliths split into modules published through `method_ctx.bind_module`; `gateway.outbound.senders` took
+the senders; cron delivery split into `scheduler_delivery_media`/`_standalone`; checkpoints moved to
+`agent/checkpoints/{manager,maintenance}.py`; Feishu's synthetic-event handling became a mixin;
+`tools/skills_tool.py` now owns `SKILLS_DIR`.
+
+**Fork deltas re-ported onto the new structure.** The per-call telemetry schema (`api_calls` table + index,
+`sessions.compression_attempts_total`, `messages.anthropic_content_blocks`) is declared in
+`persistence/sqlite/_schema_ddl.py`; existing stores gain it through upstream's own `_reconcile_columns`
+ALTER pass, a legacy `api_calls` whose FK lacks `ON DELETE CASCADE` is healed before `executescript`
+(`_heal_api_calls_fk`), and SCHEMA_HISTORY gains events 17/34 so the salvage lane can place the columns;
+`_ROW_REASONING_KEYS`' block field rides `NewMessage`. The four-deque status history survives on upstream's
+`session_totals_lock` + `add_session_usage`; the prompt-cache `tools[]` reservation rides upstream's
+session-tail split with a hard 4-marker clamp; `anthropic_adapter` keeps the fork's phase-delegating
+`build_anthropic_kwargs` and gains upstream's `tool_history_for_request()`; the kanban worker's
+planned-restart wait, the hosted-tool refusal gate (beside the fork's off-loop `resolve()`), the
+`agent_type` persona, `profile --link` (now threaded through `ProfileCreateRequest`/`provision_profile`),
+and the `InsightsEngine` handle fallback all carried over.
+
+**People-before-wakes (#141822) moved into the persistence admission store.** Upstream's authority store
+replaced `hermes_state_runtime` as the admission ledger and claimed `ORDER BY seq` only, dropping the rule.
+It now lives in the store's own query layer, `persistence/sqlite/authority/_admission_store.py`:
+`QUEUED_HEAD_CLASS_SQL` / `QUEUED_HEAD_ORDER_SQL` (`(principal_id GLOB 'automation:*'), seq`, the GLOB
+prefix guard asserted at import) used by `claim_session_input`, plus
+`list_session_admissions(order="head")` so a caller's preclaim read names the row the claim takes
+(`gateway/session_authority._claim_next` reads it that way; it used to sort a `seq` listing by
+`queued_head_key`). The Python twin `queued_head_key` moved to `persistence/authority/vocabulary.py` and is
+held to the SQL by `tests/persistence_sqlite/core/test_queued_head_order_parity.py` plus a contract case on
+both backends. `tests/gateway/test_fifo_human_before_wakes.py` drives the real drain (long turn → two wakes
+→ interrupt → the typed message runs first, the wakes follow in order); with the ordering neutered it
+fails with exactly the reported shape.
+
+**Dropped by the de-fork bar.** `MUTATING_TOOL_NAMES` (no callers), `CHECKPOINT_BASE` (upstream's
+`b3f4682` implements the same per-call base resolution), the async-delegation dead-replay retirement
+(upstream's store re-offers a dead owner's completion instead of retiring it; the fork tests were re-pinned
+to that design), the auxiliary per-task timeout duplicate (upstream shipped the fork's own fix as a PR),
+and the inline Feishu/WeCom/Slack copies that shadowed upstream's mixins/modules.
+
+**Traps the compile/import pass caught** (none were marker conflicts): `plugins/platforms/a2a/security.py`
+lost `import os` upstream while the fork's `get_trusted_proxies()` still calls `os.getenv` — every A2A auth
+with `A2A_TRUSTED_PROXIES` set would have NameError'd; two `tui_gateway` files re-defined names their split
+siblings publish, a start-up crash (`split-module name collision`) rather than shadowing;
+`session.archive`/`session.set_hidden` still referenced a `db` handle upstream renamed to `persistence`;
+`tools/process_registry._completion_hold_ceiling_seconds` called `_config_value` with a third argument the
+signature never took, so every `delegation.completion_hold_max_seconds` override was silently ignored.
+
+**Verification.** `compileall` clean over the tree; `hermes_cli.main`, `agent.conversation_loop`,
+`gateway.run_turn_runner`, `tools.registry`, `tui_gateway.server`, `persistence` and all 11 `agent/fork/*`
+modules import. Lane suites green on their own files (persistence 2,887 · contracts 3,099 · gateway
+queue/FIFO 132 · adapter/auxiliary 380 · prompt-cache/policy 147 · delegate 97 · profiles 480 ·
+async-delegation 120). **Operational notes for the follow-up sweep:** always run it through
+`scripts/run_tests.sh` at a low `-j` — a `-j 32` run over 55.7k tests froze the workstation (cgroup
+overcommit on top of the desktop-serve tree and the Windows VM), and the canonical runner is also the only
+env that does not resolve modules deleted upstream from the pre-merge checkout through the shared venv's
+editable finder. The full sweep and the push are the remaining follow-ups; nothing here is pushed yet.
+
 ### Fork-only fix — 2026-11-19 (desktop/gateway): the bar dropped to "Week" every time Claude's 5-hour window reset — a rolled-over session window was thrown away, not re-anchored
 
 **Symptom.** `Claude Subscription · Current session N%` flipped to `Claude Subscription · Week 12%`
