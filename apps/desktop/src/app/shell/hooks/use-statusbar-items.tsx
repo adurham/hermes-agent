@@ -14,6 +14,7 @@ import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
 import { useCompactConversation } from '@/app/shell/hooks/use-compact-conversation'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
+import { usePlanGaugeRefresh } from '@/app/shell/hooks/use-plan-gauge-refresh'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -53,7 +54,7 @@ import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/f
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { $gateway } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
-import { $planGauges, planGaugeFor, planScopeFor } from '@/store/plan-gauge'
+import { $planGauges, notePlanGauge, planGaugeFor, planScopeFor } from '@/store/plan-gauge'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
@@ -83,7 +84,7 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { FreeTierStatus, StatusResponse, UsageStats } from '@/types/hermes'
+import type { FreeTierStatus, PlanGauge, StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
@@ -351,6 +352,30 @@ export function useStatusbarItems({
     sessionId: activeSessionId
   })
 
+  // The allowance is an ACCOUNT fact, but every producer of it is turn-driven
+  // (`session.usage` ticks mid-turn, `message.complete`, the hydrate on a
+  // switch), so an open idle tab held the last number it was pushed — minutes
+  // behind the account until the view was refreshed. Re-read the same dict on a
+  // slow beat while the bar is on screen (#158347); a running turn needs no
+  // extra read because its ticks carry the gauge.
+  const planItemHidden = useStore($statusbarHiddenIds).includes('plan-usage')
+
+  // The account slot is shared across tabs of one source; `notePlanGauge` keeps
+  // the per-window ordering rules in one place. Stable identity: it is an effect
+  // dependency of the refresh hook.
+  const applyPlanGauge = useCallback(
+    (gauge: PlanGauge) => notePlanGauge(planScopeFor(activeSessionId), gauge, activeSessionId ?? undefined),
+    [activeSessionId]
+  )
+
+  usePlanGaugeRefresh({
+    applyGauge: applyPlanGauge,
+    busy,
+    enabled: !planItemHidden,
+    requestGateway,
+    sessionId: activeSessionId
+  })
+
   const compactConversation = useCompactConversation({ busy, sessionId: activeSessionId })
 
   // The breakdown wins whenever we have one, for two reasons: it reports the
@@ -422,6 +447,7 @@ export function useStatusbarItems({
   // until then" for one of those claims the operator is out of credits when they are not.
   const fallbackCause = (fallbackRoute?.reason || '').trim()
   const causeIsPlanLimit = !fallbackCause || PLAN_LIMIT_FALLBACK_CAUSES.has(fallbackCause)
+
   const fallbackCauseText = fallbackCause
     ? copy.fallbackCauses[fallbackCause] || fallbackCause.replace(/_/g, ' ')
     : ''
