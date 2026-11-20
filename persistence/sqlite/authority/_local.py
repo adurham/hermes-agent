@@ -136,8 +136,11 @@ def binding_record(receipt):
         raw_lineage = receipt.get('lineage', [receipt['session_id']])
         # FORK: a receipt whose lineage carries a non-id entry (an older build wrote one) must never
         # stop the boot — keep the ids that ARE ids, and anchor on the receipt's own session when none
-        # survive. The receipt is the route's truth; refusing here took the whole gateway down.
-        lineage = [sid for sid in raw_lineage if isinstance(sid, str) and sid] or [receipt['session_id']]
+        # survive. An empty lineage is a real value (a fresh local receipt) and stays empty.
+        if isinstance(raw_lineage, (list, tuple)) and raw_lineage:
+            lineage = [sid for sid in raw_lineage if isinstance(sid, str) and sid] or [receipt['session_id']]
+        else:
+            lineage = list(raw_lineage) if isinstance(raw_lineage, (list, tuple)) else [receipt['session_id']]
         return SessionBinding(
             profile_id=receipt['profile_id'], principal_id=receipt['principal_id'], request_id=receipt['request_id'],
             session_id=SessionId(receipt['session_id']), route=receipt['route'], entry=receipt['entry'],

@@ -686,7 +686,7 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None, *, principal_prefix='automation:'):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
@@ -720,7 +720,7 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
         # (its output already ran) refuses the replacement. A folded completion must also still be the
         # queued tail but for the finishing process's ticks.
         row, created = store.admissions.admit(
-            epoch=authority.epoch, principal_id='automation:' + entry.session_key, session_id=ref.session_id,
+            epoch=authority.epoch, principal_id=principal_prefix + entry.session_key, session_id=ref.session_id,
             request_id=identity, payload=payload, gate=authority.gate_refusal(),
             supersedes=replaces if fold is None else None,
             fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))

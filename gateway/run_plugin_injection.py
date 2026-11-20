@@ -26,13 +26,15 @@ logger = logging.getLogger("gateway.run")
 
 # First element of the identity a plugin's FIFO admission carries (``_admit_plugin_injection``).
 _PLUGIN_PRODUCER = "plugin"
+# The principal class a plugin injection is admitted under (not ``automation:`` — see the call site).
+_PLUGIN_PRINCIPAL = "plugin:"
 
 
 def _plugin_admission(row) -> bool:
     import json
     request_id, identity = row.get("request_id"), None
     if (isinstance(request_id, str) and request_id.startswith("[")
-            and str(row.get("principal_id")).startswith("automation:")):
+            and str(row.get("principal_id")).startswith(("automation:", _PLUGIN_PRINCIPAL))):
         with contextlib.suppress(ValueError):
             identity = json.loads(request_id)
     return isinstance(identity, list) and identity[:1] == [_PLUGIN_PRODUCER]
@@ -508,7 +510,10 @@ class GatewayPluginInjectionMixin:
             metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
         )
         try:
-            await authority.admit_automation(adapter, event, identity)
+            # FORK: a plugin's injected message is a user-visible turn, not an internal wake —
+            # its own principal class keeps it FIFO with people (people-before-wakes sorts only
+            # ``automation:`` rows last, so admitting it as a wake dropped it behind a queued person).
+            await authority.admit_automation(adapter, event, identity, principal_prefix=_PLUGIN_PRINCIPAL)
         except AuthorityRefusal as exc:
             logger.warning("Plugin message injection refused by the session authority: plugin=%s session=%s (%s)",
                            plugin_id, session_key, exc.reason)

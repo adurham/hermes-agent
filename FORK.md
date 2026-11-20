@@ -58,6 +58,12 @@ both backends. `tests/gateway/test_fifo_human_before_wakes.py` drives the real d
 → interrupt → the typed message runs first, the wakes follow in order); with the ordering neutered it
 fails with exactly the reported shape.
 
+**Plugin messages are turns, not wakes.** Upstream routes `PluginContext.inject_message` through
+`authority.admit_automation`, whose principal (`automation:<route>`) the #141822 ordering now sorts
+behind a person's queued input — the plugin's prompt silently stopped becoming its own turn. Plugin
+injections are admitted under their own `plugin:` principal class (a `principal_prefix` argument on
+`admit_automation`), so they keep FIFO with people; `_plugin_admission` recognises both prefixes.
+
 **Dropped by the de-fork bar.** `MUTATING_TOOL_NAMES` (no callers), `CHECKPOINT_BASE` (upstream's
 `b3f4682` implements the same per-call base resolution), the async-delegation dead-replay retirement
 (upstream's store re-offers a dead owner's completion instead of retiring it; the fork tests were re-pinned
