@@ -537,3 +537,48 @@ def test_resume_snapshot_carries_the_resident_agents_own_readouts():
         stored = snapshot_usage(authority, ref, agent)
         assert stored['cache_hit_pct'] == 80 and stored['calls'] == 3 and 'avg_tps' not in stored
     assert snapshot_usage(authority, SimpleNamespace(session_id='gone'), None) is None
+
+
+def test_a_rolled_over_session_window_keeps_the_bar_on_the_session(monkeypatch):
+    """Claude's 5-hour window resets several times a day, and until a fetch re-anchors it the cached
+    snapshot still holds the window that just ended. Dropping it for being spent promoted the weekly
+    window onto the bar, so the one glanceable number flipped to "week 12%" the moment a fresh session
+    started. The session window is the one to keep — at 0% until the provider reports the new one — and
+    the stale snapshot must ask for a refresh rather than wait out the 15-minute staleness clock."""
+    from datetime import UTC, datetime, timedelta
+
+    from agent import account_usage_cache
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    from gateway.session_usage import plan_gauge
+
+    provider = 'claude-subscription-directsdk-experimental'
+    now = datetime.now(UTC)
+    snapshot = AccountUsageSnapshot(
+        provider=provider, source='claude_code_get_usage', fetched_at=now,
+        windows=(AccountUsageWindow('Current session', 42.0, now - timedelta(minutes=2)),
+                 AccountUsageWindow('Current week', 12.0, now + timedelta(days=6))))
+    refreshes = []
+    monkeypatch.setattr(account_usage_cache, 'cached_account_usage',
+                        lambda name, **_kw: snapshot if name == provider else None)
+    monkeypatch.setattr(account_usage_cache, 'snapshot_is_stale', lambda _snapshot: False)
+    monkeypatch.setattr(account_usage_cache, 'refresh_account_usage_async',
+                        lambda providers: refreshes.append(list(providers)))
+    agent = _agent()
+    agent.provider = provider
+    agent._credits_state = None
+    agent._fallback_activated = False
+
+    assert plan_gauge(agent) == {'id': 'session', 'label': 'Current session', 'used_bp': 0,
+                                 'resets_at_ms': None, 'provider': provider}
+    assert refreshes == [[provider]]
+
+    # A full window still blocks the bar whatever the session window is doing.
+    full = AccountUsageSnapshot(
+        provider=provider, source='claude_code_get_usage', fetched_at=now,
+        windows=(AccountUsageWindow('Current session', 42.0, now - timedelta(minutes=2)),
+                 AccountUsageWindow('Current week', 100.0, now + timedelta(days=6))))
+    monkeypatch.setattr(account_usage_cache, 'cached_account_usage',
+                        lambda name, **_kw: full if name == provider else None)
+    gauge = plan_gauge(agent)
+    assert gauge is not None and gauge['id'] == 'week' and gauge['used_bp'] == 10_000

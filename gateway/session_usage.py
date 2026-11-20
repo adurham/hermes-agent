@@ -208,6 +208,7 @@ def _account_window_gauge(provider: str) -> dict | None:
         return None
     now_ms = int(time.time() * 1000)
     live: list[tuple[object, int | None, float]] = []
+    rolled_session: object | None = None
     for window in snapshot.windows:
         used = getattr(window, "used_percent", None)
         if getattr(window, "scope", "account") != "account" or used is None:
@@ -215,9 +216,17 @@ def _account_window_gauge(provider: str) -> dict | None:
         reset = getattr(window, "reset_at", None)
         reset_ms = int(reset.timestamp() * 1000) if reset is not None else None
         if reset_ms is not None and reset_ms <= now_ms:
-            continue  # the window it describes already rolled over
+            # The window it describes already rolled over. For the current-session window that is the
+            # normal state right after it resets — the provider keeps handing back the window that
+            # just ended until a fetch re-anchors it — so the snapshot is behind, not informative:
+            # ask for a fresh one and remember the window instead of quietly promoting another.
+            if _window_gauge_id(getattr(window, "label", "")) == "session" and rolled_session is None:
+                rolled_session = window
+            continue
         live.append((window, reset_ms, float(used)))
-    if not live:
+    if rolled_session is not None:
+        refresh_account_usage_async([provider])
+    if not live and rolled_session is None:
         return None
     full = [row for row in live if row[2] >= 100.0]
     session = [row for row in live if _window_gauge_id(getattr(row[0], "label", "")) == "session"]
@@ -225,9 +234,18 @@ def _account_window_gauge(provider: str) -> dict | None:
     # ``usage_gauges.binding_gauge``). Short of that, the current-session window (Claude's 5-hour,
     # Codex's session) is what the operator watches while working, so it wins over a fuller
     # weekly one; with no session window the fullest is the one worth showing.
-    window, reset_ms, used = (max(full, key=lambda row: row[1] or 0) if full
-                              else session[0] if session
-                              else max(live, key=lambda row: row[2]))
+    if full:
+        window, reset_ms, used = max(full, key=lambda row: row[1] or 0)
+    elif session:
+        window, reset_ms, used = session[0]
+    elif rolled_session is not None:
+        # The session allowance just reset: its new window starts empty, and until the provider
+        # reports it there is no reset time to show. Keeping the bar on that window — rather than
+        # falling through to a fuller weekly one — is the whole point of the session-first rule.
+        return {"id": "session", "label": getattr(rolled_session, "label", "Current session"),
+                "used_bp": 0, "resets_at_ms": None, "provider": provider}
+    else:
+        window, reset_ms, used = max(live, key=lambda row: row[2])
     return {"id": _window_gauge_id(getattr(window, "label", "")), "label": getattr(window, "label", ""),
             "used_bp": max(0, min(10_000, round(used * 100))), "resets_at_ms": reset_ms,
             "provider": provider}

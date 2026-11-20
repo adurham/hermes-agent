@@ -9,6 +9,47 @@ is a pending upstream contribution — divergence is permanent and is managed lo
 what the fork carries is `docs/fork-inventory-2026-11-05.md`; the boundary table further down is
 computed from the tree, not maintained by hand.
 
+### Fork-only fix — 2026-11-19 (desktop/gateway): the bar dropped to "Week" every time Claude's 5-hour window reset — a rolled-over session window was thrown away, not re-anchored
+
+**Symptom.** `Claude Subscription · Current session N%` flipped to `Claude Subscription · Week 12%`
+the moment the 5-hour window rolled over, and stayed there. Owner: "when my current session usage
+rolls over/resets on claude, it then defaults back to showing the weekly limit used instead of
+staying on the 'current session' usage like it should". Screenshot: the bar read `Week 12%` while
+`get_usage` on the same account reported `session` 2% / `weekly_all` 13%.
+
+**Root cause.** `gateway/session_usage.py::_account_window_gauge` drops every window whose
+`reset_at` has passed ("the window it describes already rolled over"). That is right for a window
+that is merely stale, but Claude keeps handing back the 5-hour window that *just ended* until a
+fetch re-anchors it — so right after a reset the session window failed the rollover test, and the
+remaining rule ("otherwise the fullest") picked the weekly. The refresh was only requested when the
+whole snapshot crossed `SNAPSHOT_STALE_AFTER_S` (15 min), so the wrong window could sit on the bar
+for a quarter of an hour and outlive several turns. The renderer was not involved: `supersedes`
+(`apps/desktop/src/store/plan-gauge.ts`) already lets a session observation displace a week one
+(2026-11-17 desktop entry below), and it was never offered a session observation.
+
+**Fix.** A rolled-over session window is remembered instead of silently promoting another one:
+`rolled_session` is set while scanning, `refresh_account_usage_async([provider])` is called at once
+(the cache's own 120 s claim throttles it, so this cannot storm the CLI), and when no live window is
+left to lead, the gauge returns `id: session`, `used_bp: 0`, `resets_at_ms: None` — the new window
+starts empty on first use, so there is no reset instant to report and the bar prints no "resets in".
+Pick order is otherwise unchanged: a live full (100%) window still wins, then a live session window,
+then the rolled-over session, then the fullest. The client accepts the transition in both
+directions (week → session 0% displaces; a later session with a known reset replaces the 0%/no-reset
+one, and the no-reset form can never drag a known number backwards).
+
+**Files.** `gateway/session_usage.py`; test `tests/gateway/test_local_viewer_usage.py::test_a_rolled_over_session_window_keeps_the_bar_on_the_session`
+(the 0%/no-reset verdict, the forced refresh, and a live 100% week still winning).
+
+**Evidence.** Live: at the reported rollover the running gauge returned the week while a fresh
+`fetch_account_usage('claude-subscription-directsdk-experimental')` returned `Current session` 3%
+(reset 07:20Z) / `Current week` 13%, and a fresh `_account_window_gauge` picked the session. Tests:
+64 passed across `tests/gateway/test_local_viewer_usage.py` and
+`tests/hermes_cli/test_model_picker_usage.py`; ruff clean.
+
+**Deploy.** Gateway-side only — `hermes-desktop-serve` must be on this code (a restart, i.e.
+`hermes update` or the app's Update) before the bar changes; no desktop rebuild. Until then the
+running process keeps the old selection.
+
 ### Fork-only fix — 2026-11-19 (empty-response ladder): thinking-only retries were byte-identical replays
 
 **Symptom.** A long `claude-sonnet-5-5` / `xhigh` turn (~137K context) committed a change, then
